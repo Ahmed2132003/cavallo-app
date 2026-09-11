@@ -162,3 +162,42 @@ The two repos now live at:
 * Backend: if a new setting or code line is provably unavoidable in length (e.g., a long fully-qualified import path or URL), the precedent is an inline `# noqa: E501` on that exact line — not raising the global `max-line-length` further.
 * Flutter: any new widget/feature code just needs to pass `flutter analyze` and existing/new tests under `test/` to merge cleanly.
 * Neither workflow has a deploy step yet (that's Phase 21 / P-220+) and neither references any secrets — both are pure lint/test gates.
+
+## Part P-003 — Environment/Config Management & Secrets Handling (Both Sides)
+
+**Status: COMPLETE**
+
+Validated live on both repos — pushed and confirmed present on GitHub via a fresh clone
+of each after push (not just checked locally).
+
+### Backend (`cavallo-app`)
+
+* `.env.example` extended with every category from the plan's Section 7: `JWT_ACCESS_TTL_MINUTES` (default `15`), `JWT_REFRESH_TTL_DAYS` (default `7`), `SENTRY_DSN`, `OBJECT_STORAGE_PROVIDER` / `OBJECT_STORAGE_BUCKET` / `OBJECT_STORAGE_KEY` / `OBJECT_STORAGE_SECRET` / `OBJECT_STORAGE_REGION`, `FCM_PROJECT_ID` / `FCM_SERVICE_ACCOUNT_JSON_PATH`, `PAYMOB_API_KEY` / `PAYMOB_WEBHOOK_SECRET`. Each blocked category is commented inline with `# INPUT REQUIRED — see architecture Section 7`.
+* `CONFIG.md` created at the repo root: documents every env var, which part of the codebase consumes it, and whether it's required to run the app locally (only `SECRET_KEY`/`DEBUG`/`ALLOWED_HOSTS`/`DATABASE_URL`/`REDIS_URL`/the `POSTGRES_*` init vars are required — everything else is optional in dev, with the consequence of leaving it blank spelled out per category). Includes an explicit cross-check confirming every Section 7 blocked item has a corresponding named placeholder.
+* No SDK wiring was added (no `sentry_sdk.init()`, no storage backend, no FCM/Paymob client code) — per scope, that happens in each value's own later part (Sentry in P-024, etc.). This part only reserves where the values will live.
+* Confirmed via a fresh `git clone` after push that `.env.example` and `CONFIG.md` are both live on `main` with the expected content.
+
+### Flutter (`cavallo-mobile`)
+
+* `lib/core/config/app_config.dart` created: `AppConfig.environment` (enum `dev`/`staging`/`prod`, read via `String.fromEnvironment('ENVIRONMENT', defaultValue: 'dev')`) and `AppConfig.apiBaseUrl`.
+* `apiBaseUrl` always honors an explicit `--dart-define=API_BASE_URL=...` override first. Without one, in `dev` it auto-picks a platform-correct default against the real backend port documented in P-000 (host port `8090`, not the plan's literal `8000` placeholder — corrected here since `8090` is what's actually running): `http://10.0.2.2:8090` on the Android emulator (Android's documented host-machine alias), `http://localhost:8090` everywhere else (iOS Simulator, web, desktop). In `staging`/`prod` it deliberately **throws `StateError`** if `API_BASE_URL` wasn't passed explicitly, so a release build can never silently fall back to a local dev URL.
+* `CONFIG.md` created at the repo root: documents both `--dart-define` values, the auto-detection table above, exactly how to reach a real physical device on the same Wi-Fi (LAN IP override — neither `localhost` nor `10.0.2.2` works from a real device), and the `flutter build ... --dart-define=...` invocation pattern for staging/prod.
+* Validated live on the user's machine: `flutter pub get` + `flutter analyze` → **No issues found!**
+* Confirmed via a fresh `git clone` after push that `CONFIG.md` and `lib/core/config/app_config.dart` are both live on `main`.
+
+### What's still pending real values (blocked on external input)
+
+Every one of these already has a named, documented placeholder — nothing here blocks any other part from proceeding. They just need real values before the parts that actually consume them can be fully validated end-to-end:
+
+* `SENTRY_DSN` — needed before **P-024 (monitoring)** can call `sentry_sdk.init()` for real.
+* `OBJECT_STORAGE_PROVIDER` / `OBJECT_STORAGE_BUCKET` / `OBJECT_STORAGE_KEY` / `OBJECT_STORAGE_SECRET` / `OBJECT_STORAGE_REGION` — needed before **Phase 2 (storage)** can be fully validated; until then, dev falls back to local disk and product/post/reel/story media won't survive a container rebuild.
+* `FCM_PROJECT_ID` / `FCM_SERVICE_ACCOUNT_JSON_PATH` — needed before **Phase 13 (notifications)** can send real push notifications.
+* `PAYMOB_API_KEY` / `PAYMOB_WEBHOOK_SECRET` — needed before **Phase 15 (payments)**, if/when that phase is actually built (the current MVP scope has no in-app payment/checkout at all — deals happen outside the platform).
+
+**Ask Ahmed for these specific values before treating those specific later parts as done** — nothing to ask for right now to unblock P-004 onward.
+
+### What the next parts can assume is available
+
+* Every config value any future part needs already has a reserved name in `.env.example` (backend) or a documented `--dart-define` flag (`CONFIG.md`, Flutter) — add new values to these two docs, don't invent an ad hoc read.
+* No code anywhere in either repo reads an environment variable or `String.fromEnvironment` key that isn't listed in its repo's `.env.example`/`CONFIG.md`.
+* Flutter feature code should call `AppConfig.apiBaseUrl` (once the Dio client exists, from P-010 onward) rather than hardcoding a URL or reading `String.fromEnvironment` directly.
