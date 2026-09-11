@@ -1,0 +1,20 @@
+# Core
+Django==5.2.*          # Current Django LTS (supported through Apr 2028)
+djangorestframework==3.18.*
+djangorestframework-simplejwt==5.5.*
+django-environ==0.14.*
+django-cors-headers==4.9.*
+
+# Realtime / websockets
+channels==4.3.*
+channels-redis==4.3.*
+
+# Async tasks
+celery==5.6.*
+redis==8.1.*
+
+# Database driver
+psycopg2-binary==2.9.*
+
+# Ops / observability
+sentry-sdk==2.69.*
