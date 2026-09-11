@@ -201,3 +201,46 @@ Every one of these already has a named, documented placeholder — nothing here 
 * Every config value any future part needs already has a reserved name in `.env.example` (backend) or a documented `--dart-define` flag (`CONFIG.md`, Flutter) — add new values to these two docs, don't invent an ad hoc read.
 * No code anywhere in either repo reads an environment variable or `String.fromEnvironment` key that isn't listed in its repo's `.env.example`/`CONFIG.md`.
 * Flutter feature code should call `AppConfig.apiBaseUrl` (once the Dio client exists, from P-010 onward) rather than hardcoding a URL or reading `String.fromEnvironment` directly.
+
+## Part P-004 — Core Network Layer (Dio Client, Interceptors, Error Mapping)
+
+**Status: VALIDATED**
+
+Actually run on the real machine (Flutter 3.29.3 / Dart 3.7.2, Windows, `D:\Cavallo\social_commerce_app`):
+
+| Check | Result |
+| --- | --- |
+| `flutter pub get` | ✅ `Changed 2 dependencies!` — `http_mock_adapter 0.6.1` resolved cleanly against `flutter_riverpod 3.3.2`, no conflict |
+| `flutter test test/core/network/` | ✅ `+14: All tests passed!` (after two fixes below) |
+| `flutter analyze` | ✅ `No issues found!` |
+
+**Two fixes made during real-machine validation:**
+
+1. **`lib/core/network/interceptors/error_interceptor.dart`** — `dio 5.11.1` (resolved version) adds a `DioExceptionType.transformTimeout` enum value that didn't exist when this part was authored, so the `switch` in `_mapToFailure` wasn't exhaustive and failed to compile. Fixed by adding `case DioExceptionType.transformTimeout:` to the same case group as `connectionTimeout`/`sendTimeout`/`receiveTimeout`/`connectionError` (all map to `NetworkFailure`, since a transform failure is a connection-layer problem from the caller's point of view).
+2. **`test/core/network/dio_client_test.dart`** — the "3 interceptors in order" test asserted `dio.interceptors.length == 3`, but `Dio()` itself prepends an internal `ImplyContentTypeInterceptor` on construction, making the real count 4. Fixed by checking that `LoggingInterceptor`/`AuthInterceptor`/`ErrorInterceptor` are present (via `indexWhere`) and appear in that relative order, instead of asserting an exact total count.
+
+Confirmed present and correct on disk during validation: `lib/core/network/{api_failure.dart, dio_client.dart}`, `lib/core/network/interceptors/{auth_interceptor.dart, error_interceptor.dart, logging_interceptor.dart}`, `test/core/network/{auth_interceptor_test.dart, dio_client_test.dart, error_interceptor_test.dart}`, and the `http_mock_adapter: ^0.6.1` dev dependency line in `pubspec.yaml`.
+
+### What now exists
+
+* `lib/core/network/api_failure.dart` — sealed `ApiFailure` with `final class` variants `ValidationFailure(message, fields)`, `AuthFailure(message)`, `NetworkFailure(message)`, `ServerFailure(message)`, `UnknownFailure(message)`.
+* `lib/core/network/interceptors/logging_interceptor.dart` — `LoggingInterceptor` checks `AppConfig.environment == AppEnvironment.dev` itself on every request/response/error, so it's always safe to attach unconditionally.
+* `lib/core/network/interceptors/auth_interceptor.dart` — `AuthInterceptor` takes `Future<String?> Function() getToken`, attaches `Authorization: Bearer <token>` only when non-null **and non-empty**.
+* `lib/core/network/interceptors/error_interceptor.dart` — maps every `DioException` (incl. `transformTimeout`) to the right `ApiFailure` variant, parsing the backend's `{"error": {"code","message","fields"}}` envelope.
+* `lib/core/network/dio_client.dart` — `dioClientProvider`, interceptors in order **logging → auth → error**. `authTokenGetterProvider` is the exact override point for P-005.
+* `test/core/network/{error_interceptor_test.dart, auth_interceptor_test.dart, dio_client_test.dart}` — 14 tests total, all green.
+* `pubspec.yaml` — added `http_mock_adapter: ^0.6.1` (dev dependency).
+
+### Still open before this part is 100% closed
+
+* [x] `flutter pub get`
+* [x] `flutter test test/core/network/`
+* [x] `flutter analyze`
+* [ ] Not yet pushed to `github.com/Ahmed2132003/cavallo-mobile` — آخر خطوة باقية.
+
+### Auth-token-getter interface (for P-005 and P-022)
+
+```dart
+typedef AuthTokenGetter = Future<String?> Function();
+```
+
