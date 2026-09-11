@@ -120,3 +120,45 @@ The skeleton was originally hand-authored in an environment with no Flutter SDK 
 * `pubspec.yaml` already declares `flutter_riverpod` (`^3.3.2`), `dio`, `flutter_secure_storage` as dependencies, already resolved and building on Android — do not re-add them or bump `flutter_riverpod` past `^3.3.2` without first upgrading the project's Flutter SDK to ≥3.47.3.
 * `android/` is real, builds, and runs — package name is consistently `com.example.social_commerce_app` throughout (`build.gradle.kts` namespace/applicationId and `MainActivity.kt`'s path/package). Any future native Android changes should keep using this exact package name.
 * `ios/` exists but has **not** been verified to build/run or renamed away from the throwaway scaffold's identifiers — treat it as unverified until someone with a Mac checks and fixes it the same way Android was fixed.
+
+## Part P-002 — CI Skeleton (Lint/Test Pipelines) for Both Repos
+
+**Status: COMPLETE**
+
+Both workflows were pushed to their respective repos and validated live on GitHub Actions — both runs completed green.
+
+### Backend (`cavallo-app` repo)
+
+* `.github/workflows/backend-ci.yml`: on push/PR — checkout, Python 3.12 (matches Dockerfile's `python:3.12-slim`), install `requirements.txt`, spin up real `postgres:16` + `redis:7` service containers (health-checked), `flake8`, `black --check`, `python manage.py check`, `pytest`.
+* `flake8` and `black` are installed directly in the CI step (not added to `requirements.txt`, which stays runtime-only).
+* **Issue hit + fix:** `flake8`'s default max line length (79) conflicted with `black`'s (88), which caused false-positive `E501` failures on lines `black` had already formatted correctly. Fixed by adding a `.flake8` config file at the repo root:
+```ini
+  [flake8]
+  max-line-length = 88
+  extend-ignore = E203, W503
+```
+* **Issue hit + fix:** one line in `config/settings.py` (`AUTH_PASSWORD_VALIDATORS` → `UserAttributeSimilarityValidator`) is a single unbreakable string that stays at 90 characters even after `black` explodes the dict onto multiple lines — `black` cannot split string literals. Suppressed with an inline `# noqa: E501` on that specific line, since it's an unavoidable long line, not a real style violation.
+* `pytest`: no test suite exists yet (Phase 0), so the step is configured to accept pytest's exit code 5 ("no tests collected") as a pass: `pytest || [ "$?" -eq 5 ]`. Any future part that adds real tests plugs directly into this step — no pipeline changes needed.
+* Validated live: `https://github.com/Ahmed2132003/cavallo-app/actions` — **Backend CI run #4, green, all steps passed** (checkout, install deps, flake8, black --check, Django system check, pytest).
+
+### Flutter (`cavallo-mobile` repo)
+
+* `.github/workflows/flutter-ci.yml`: on push/PR — checkout, Flutter pinned to `3.29.3` (the exact version P-001 was validated against on the real machine, per P-001's handoff notes — not just `>=3.27.0` from `pubspec.yaml`'s loose constraint), `flutter pub get`, `flutter analyze`, `flutter test`.
+* No issues hit — passed on the first run.
+* Validated live: `https://github.com/Ahmed2132003/cavallo-mobile/actions` — **Flutter CI run #1, green, all steps passed**.
+
+### Repository note (deviation from original plan)
+
+The two repos now live at:
+* Backend: `https://github.com/Ahmed2132003/cavallo-app`
+* Flutter: `https://github.com/Ahmed2132003/cavallo-mobile`
+
+(Original plan referred to the backend repo generically as `scd-backend` — the actual GitHub repo name is `cavallo-app`. Functionally identical, just noting the real name for anyone following the docs literally.)
+
+### What the next parts (P-003 onward) can assume about CI being in place
+
+* Every push/PR to either repo automatically triggers its respective workflow — no manual trigger needed.
+* Backend: any new Django app/module just needs to pass `flake8`/`black --check`/`manage.py check` to merge cleanly; real `pytest` tests can be dropped in anywhere and will be picked up automatically, no CI file changes required.
+* Backend: if a new setting or code line is provably unavoidable in length (e.g., a long fully-qualified import path or URL), the precedent is an inline `# noqa: E501` on that exact line — not raising the global `max-line-length` further.
+* Flutter: any new widget/feature code just needs to pass `flutter analyze` and existing/new tests under `test/` to merge cleanly.
+* Neither workflow has a deploy step yet (that's Phase 21 / P-220+) and neither references any secrets — both are pure lint/test gates.
