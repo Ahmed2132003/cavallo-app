@@ -387,3 +387,45 @@ automatically once the project's Flutter SDK is upgraded past 3.35.
 * `shared_preferences: ^2.5.3` is now a real dependency of this project —
   future parts needing it should not re-add it or bump it past `^2.5.3`
   without first upgrading the project's Flutter SDK to ≥3.35.0.
+
+Part P-006 — Shared UI Widget Library Baseline (Design Tokens, Theming)
+
+Status: COMPLETE — pushed to GitHub and validated
+
+Confirmed by the user: this part was implemented, tested successfully on a real machine, and pushed to main.
+
+Definition of Done
+ All five widgets implemented and tested
+ Theme applied in main.dart
+ Placeholder-theme comment present and clear
+ No feature-specific widget snuck into this part's scope
+ Pushed to GitHub and confirmed present on main
+What now exists
+lib/core/config/app_theme.dart — AppTheme built via ColorScheme.fromSeed, neutral placeholder seed color, with the required // PLACEHOLDER THEME comment flagging it as pending real brand assets (project plan, Section 7 item 5).
+lib/core/widgets/app_button.dart — AppButton (wraps ElevatedButton/FilledButton, label + onPressed + loading flag).
+lib/core/widgets/app_text_field.dart — AppTextField (wraps TextFormField, label + controller + validator + obscureText + keyboardType).
+lib/core/widgets/loading_indicator.dart — centered CircularProgressIndicator wrapper.
+lib/core/widgets/error_state_widget.dart — error message + retry button (onRetry callback).
+lib/core/widgets/empty_state_widget.dart — "nothing here yet" message + optional icon.
+lib/main.dart updated to apply AppTheme via MaterialApp(theme: ...).
+test/core/widgets/ — widget tests confirming each of the five widgets renders and its callbacks fire (e.g. AppButton.onPressed fires unless loading: true; ErrorStateWidget's retry button calls onRetry).
+
+Note: the actual flutter test / flutter analyze output and any real-machine fixes weren't relayed for this part, so they aren't recorded here the way P-001/P-005 document theirs blow-by-blow. Send those over (pasted terminal output is enough) and I'll fold them into this section the same way.
+
+What the next parts can assume is available
+Every later feature-presentation part should use AppButton, AppTextField, LoadingIndicator, ErrorStateWidget, and EmptyStateWidget from lib/core/widgets/ instead of raw ElevatedButton/TextField/CircularProgressIndicator — flag any part that deviates from this.
+AppTheme is neutral/placeholder — a future restyle part should be scheduled once real brand assets (Section 7, item 5) are available; no part before that restyle pass should hardcode colors that assume a final brand palette.
+Content
+PROJECT IMPLEMENTATION MASTER PLAN.docx
+
+DOCX
+
+PDF
+
+PROJECT_PROGRESS.md
+
+MD
+
+PART P-006 — Shared UI Widget Library Baseline (Design Tokens, Theming) Part Metadata: Phase 1 | Priority: Medium | Complexity: Low | Dependencies: P-001 | Parallelizable: Yes | Backend dependency: No | External input required: Yes (brand/design assets — Section 7 item 5) Objective: A minimal Them
+
+PASTED
