@@ -429,3 +429,99 @@ MD
 PART P-006 — Shared UI Widget Library Baseline (Design Tokens, Theming) Part Metadata: Phase 1 | Priority: Medium | Complexity: Low | Dependencies: P-001 | Parallelizable: Yes | Backend dependency: No | External input required: Yes (brand/design assets — Section 7 item 5) Objective: A minimal Them
 
 PASTED
+
+## Part P-007 — Routing Skeleton (go_router) + Navigation Guard Stub
+
+**Status: COMPLETE**
+
+| Check                                        | Result                                                        |
+| --------------------------------------------- | --------------------------------------------------------------- |
+| `flutter pub get`                             | ✅ `go_router 15.1.3` resolved cleanly, no conflict with `flutter_riverpod 3.3.2` |
+| `flutter analyze`                             | ✅ No issues found!                                              |
+| `flutter test test/routing/`                  | ✅ All 6 tests passed                                            |
+| `flutter test` (full suite)                   | ✅ All 48 tests passed — nothing from prior parts broke          |
+| `flutter run` on Android emulator (Pixel 2)   | ✅ App launched, no exceptions (only standard emulator-only `libEGL`/`OnBackInvokedCallback` warnings, unrelated to this part) |
+| Manual 12-screen debug cycle                  | ✅ Confirmed by Ahmed: splash → login → register → home → discover → search → businessProfile → productDetail → chatList → chatThread → notifications → businessConsole → back to splash, with all 3 `:id` params displaying correctly |
+| Push to `github.com/Ahmed2132003/cavallo-mobile` | ✅ Commit `1be5fd0` on `main`. Independently re-verified via a fresh download of `main` after push: all files present at the correct paths, including the final `discover` folder layout and the corrected import in `app_router.dart` |
+
+### Resolved: `discover` folder placement
+Originally placed under `lib/features/feed/presentation/` as a stopgap
+(Section 12's feature set from P-001 had no `discover` folder). Ahmed
+confirmed a dedicated folder was the right call — moved to its own
+`lib/features/discover/{data,domain,presentation}/`, matching the
+`data/domain/presentation` convention every other feature uses.
+`app_router.dart`'s import updated accordingly; `flutter analyze` and
+`flutter test test/routing/` re-confirmed clean after the move.
+
+### What now exists
+* `lib/routing/route_names.dart` — all 12 route names/paths as constants
+  (`splash`, `login`, `register`, `home`, `discover`, `search`,
+  `businessProfile` (`/business/:id`), `productDetail` (`/product/:id`),
+  `chatList`, `chatThread` (`/chat/:id`), `notifications`,
+  `businessConsole`), plus the shared `idParam` key.
+* `lib/routing/app_router.dart` — `appRouterProvider` (`Provider<GoRouter>`)
+  wired via Riverpod. Redirect guard stub always returns `null` (no
+  redirect yet), with a `// TODO(Phase 3)` comment showing the intended
+  real logic shape. Backing placeholder: `_sessionPlaceholderProvider`,
+  type `Provider<AsyncValue<Object?>>`, currently always
+  `AsyncValue.data(null)`.
+* 12 placeholder screens, one per route, each a bare `Scaffold` (AppBar =
+  route name, body = route label + one `AppButton` from P-006's widget
+  library that navigates via `context.goNamed(...)` to the next route in a
+  closed 12-route test cycle — see cycle order above). The three
+  parameterized screens (`BusinessProfileScreen`, `ProductDetailScreen`,
+  `ChatThreadScreen`) also display the received `:id` on-screen.
+  `DiscoverScreen` now lives in its own `lib/features/discover/` folder
+  (see "Resolved" note above); the other 11 live in their existing
+  Section-12 feature folders.
+* `lib/main.dart` — `SocialCommerceApp` is now a `ConsumerWidget`;
+  `MaterialApp` → `MaterialApp.router(routerConfig: ref.watch(appRouterProvider))`.
+  `AppTheme` application from P-006 unchanged.
+* `test/widget_test.dart` — updated: now asserts `'Route: splash'` instead
+  of the old static placeholder text, since `main.dart`'s behavior changed.
+* `test/routing/app_router_test.dart` — 6 tests: splash resolves at
+  initial location; all 8 non-parameterized named routes resolve; each of
+  the 3 parameterized routes resolves and displays its `:id` correctly;
+  one full-cycle test taps all 12 debug buttons and confirms it lands back
+  on `splash`.
+* `pubspec.yaml` — added `go_router: ^15.1.3`, pinned to match this
+  project's own stated Flutter 3.27/Dart 3.6 floor rather than the newest
+  available version (15.2.0+/16.x require Flutter 3.29/Dart 3.7 — also
+  satisfied by this project's validated real-machine Flutter 3.29.3, so
+  bumping later is safe but not required now).
+* `.gitkeep` removed from `lib/routing/` and from the `presentation/`
+  folder of every feature that now has a placeholder screen (`auth`,
+  `feed`, `search`, `business_profile`, `products`, `chat`,
+  `notifications`, `business_console`); added fresh to
+  `lib/features/discover/data/` and `lib/features/discover/domain/`
+  (its `presentation/` has the real placeholder screen instead).
+
+### Issues hit during real-machine validation, and the fixes
+None on the dependency/analyze/test front — `go_router: ^15.1.3` resolved
+against `flutter_riverpod: 3.3.2` on the first try. The only actual hiccup
+was a PowerShell-vs-CMD command issue (`type nul` doesn't work in
+PowerShell — `New-Item -ItemType File ... -Force` does), not a code issue.
+
+### What the next parts can assume is available
+* Every feature screen from here on must be reached via a named route in
+  `RouteNames` + `appRouterProvider` — no feature builds its own
+  `Navigator`.
+* `lib/features/discover/{data,domain,presentation}/` now exists as a
+  first-class feature folder alongside the original Section-12 set — any
+  future part touching discovery-related logic belongs there.
+* When Phase 3 (Part P-018/P-021) builds the real session provider: the
+  **only** file that needs to change is `lib/routing/app_router.dart` —
+  replace `_sessionPlaceholderProvider` (currently
+  `Provider<AsyncValue<Object?>>`, always `AsyncValue.data(null)`) with the
+  real session provider, `ref.watch` it inside `appRouterProvider`, and
+  fill in the `redirect` callback body per the inline TODO. Every feature
+  screen already navigates through `RouteNames` and needs no changes.
+* Part P-022 (token refresh / logout) should call
+  `context.goNamed(RouteNames.login)` (or let the eventual redirect do it
+  automatically) after `SecureTokenStorage.clear()` — no new route needs
+  to be added for that.
+* Each of the 12 placeholder screens is meant to be replaced file-by-file
+  by its real feature part — the route wiring in `app_router.dart` does
+  not need to change when that happens, only the `builder:` callback's
+  constructor call if the real screen's constructor differs from the
+  placeholder's.
