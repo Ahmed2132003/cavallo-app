@@ -854,3 +854,90 @@ New project-wide app-layout convention, not just for core****: apps live at the 
 
 New project-wide testing convention: pytest (bare) is the standard way to run the backend test suite — it resolves config.settings.test automatically via pytest.ini, which is dev.py plus whatever throwaway test-only apps/models a given app's own tests/ package needs (see core/tests/testapp/ as the pattern to copy: a same-shaped throwaway app under <app>/tests/testapp/, added to INSTALLED_APPS only inside config/settings/test.py, for any future part that needs a real table to test mixin/manager behavior against). Remember to pip install pytest pytest-django locally before running it outside CI.
 
+## Part P-012 — Custom Exception Handler + Unified Error Format
+
+**Status: COMPLETE**
+
+Authored and first checked in an environment with no Docker daemon (same constraint as P-000/P-010/P-011), against a real local PostgreSQL 16 instance. Ahmed then ran the actual Docker Compose stack end-to-end on the real Windows machine (`D:\Cavallo\scd-backend`) — everything passed, with one small tooling/formatting hiccup along the way (documented below, same as every prior part's "real machine" section).
+
+### Naming deviation from the part spec (flagged, not silently changed)
+
+The part spec (and its execution prompt) call for `apps/core/exceptions.py`. The actual repo has **no `apps/` package** — Part P-011 explicitly established the project-wide convention that apps live at the repo root (`core/`, not `apps/core/`) and that "no future part should introduce [an `apps/` package] without an explicit, dedicated migration part that moves everything at once." This part follows that existing convention instead of the spec's literal path: the file is `core/exceptions.py`, and `EXCEPTION_HANDLER` is set to `"core.exceptions.custom_exception_handler"`. Functionally identical to the spec — just the real path, consistent with every other part in this repo.
+
+### Validation results (real, on Ahmed's machine — Docker Compose)
+
+| Check | Result |
+|---|---|
+| `docker compose down` then `docker compose up -d --build` | ✅ All 3 images rebuilt, all 5 containers came up (`db`/`redis` healthy, `web`/`celery_worker`/`celery_beat` Up) |
+| `docker compose ps` | ✅ Stable, no restart loop |
+| `docker compose exec web python manage.py check` | ✅ `System check identified no issues (0 silenced)` |
+| `docker compose exec web python manage.py makemigrations --check --dry-run` | ✅ `No changes detected` — this part adds no models |
+| `docker compose exec web pytest` | ✅ **19 passed** (11 pre-existing from P-011 + 8 new from this part) |
+| `docker compose exec web flake8 <changed files>` | ✅ Clean, 0 violations (after the fix below) |
+| `docker compose exec web black --check <changed files>` | ✅ `All done! 5 files would be left unchanged.` (after the fix below) |
+
+### Issue hit on the real machine, and the fix
+
+`pytest`/`flake8`/`black` are **not installed in the Docker image** (same P-002/P-011 convention: test/lint tooling is installed ad hoc in CI, not baked into `requirements.txt` or the image). First `docker compose exec web pytest` failed with `executable file not found in $PATH`. Fixed by installing them directly into the running container:
+
+```powershell
+docker compose exec web pip install pytest pytest-django flake8 black
+```
+
+Separately, the first `flake8`/`black --check` run flagged all 5 touched files (not just `config/settings/base.py`, which P-011 had already flagged as a pre-existing issue) with `W292 no newline at end of file` / `would reformat`. Root cause: the files lost their trailing newline somewhere in transit to the Windows machine (a Windows/PowerShell line-ending artifact, the same general class of issue P-009 hit with CRLF vs LF — not a logic problem, confirmed by `pytest` already passing 19/19 at that point). Fixed by running, inside the container (which safely writes back through the mounted volume to the real files on `D:\Cavallo\scd-backend`):
+
+```powershell
+docker compose exec web python -c "
+files = ['core/exceptions.py', 'core/tests/views.py', 'core/tests/urls.py', 'core/tests/test_exceptions.py', 'config/settings/base.py']
+for f in files:
+    with open(f, 'rb') as fh:
+        data = fh.read()
+    if not data.endswith(b'\n'):
+        with open(f, 'ab') as fh:
+            fh.write(b'\n')
+"
+```
+
+Re-ran `flake8`/`black --check` after — both clean, no other differences (confirms this was purely a missing-trailing-newline issue, not a real formatting/content problem).
+
+**Lesson for future parts:** when files are authored in a non-Docker environment and handed to the Windows machine, always run a quick `flake8`/`black --check` pass right after `docker compose exec web pip install pytest pytest-django flake8 black` (since neither is in the image), before assuming trailing-newline hygiene carried over correctly.
+
+### Pushed and confirmed on GitHub
+
+Commit `9133b56` on `main` — pushed and independently re-verified via a fresh `git clone` afterward: `core/exceptions.py`, `core/tests/{views,urls,test_exceptions}.py`, and the `config/settings/base.py` diff are all present at the correct paths on `main`, with the trailing-newline fix intact.
+
+### What now exists
+
+* **`core/exceptions.py`** — `custom_exception_handler(exc, context)`:
+  * Calls DRF's own `rest_framework.views.exception_handler` first.
+  * If it returns a response: reshapes `response.data` into `{"error": {"code", "message", "fields"}}`.
+    * `ValidationError` → `code: "VALIDATION_ERROR"`, `fields` carries the original per-field error lists (stringified), `message` is the first available error string.
+    * Every other recognized `APIException` (`AuthenticationFailed`/`NotAuthenticated` → `AUTHENTICATION_FAILED`, `PermissionDenied` → `PERMISSION_DENIED`, `NotFound` → `NOT_FOUND`, `MethodNotAllowed` → `METHOD_NOT_ALLOWED`, `NotAcceptable` → `NOT_ACCEPTABLE`, `UnsupportedMediaType` → `UNSUPPORTED_MEDIA_TYPE`, `Throttled` → `THROTTLED`, `ParseError` → `PARSE_ERROR`, anything else recognized by DRF → `ERROR`) gets `fields: {}` and a `message` taken from the exception's own detail, falling back to a sane default string per code if the detail is empty.
+  * If DRF's default handler returns `None` (an exception it doesn't recognize as an `APIException` at all — a genuinely unhandled bug):
+    * `DEBUG=True` → returns `None` too, letting DRF's own `raise_uncaught_exception` re-raise the original exception unchanged, so Django's normal debug traceback page takes over exactly as if `EXCEPTION_HANDLER` were never set. Debugging is not made harder, per the spec.
+    * `DEBUG=False` → returns a `Response({"error": {"code": "SERVER_ERROR", "message": "An unexpected error occurred.", "fields": {}}}, status=500)` directly, so a stack trace never reaches the client.
+* **`config/settings/base.py`** — `REST_FRAMEWORK["EXCEPTION_HANDLER"] = "core.exceptions.custom_exception_handler"` added.
+* **`core/tests/views.py`** — 6 throwaway `APIView`s (`permission_classes = [AllowAny]` on every one, so auth/permission setup elsewhere never gets in the way of testing the handler itself): `OkView` (200, proves the handler is a no-op on success), `ValidationErrorView`, `AuthenticationFailedErrorView`, `PermissionDeniedErrorView`, `NotFoundErrorView`, `UnhandledErrorView` (raises a plain `RuntimeError`). Never imported by `config/urls.py` or anything real — only by `core/tests/urls.py`.
+* **`core/tests/urls.py`** — a URL conf wiring the 6 views above to plain paths (`/ok/`, `/validation-error/`, etc.). Only ever activated inside the test suite via `@pytest.mark.urls("core.tests.urls")` (pytest-django's built-in mechanism for exactly this) — never included from the real `config/urls.py`.
+* **`core/tests/test_exceptions.py`** — 8 tests: happy-path no-op, `ValidationError` envelope (400, exact `fields` dict), `AuthenticationFailed` envelope (401), `PermissionDenied` envelope (403), `NotFound` envelope (404), a documentation test confirming a URL that doesn't exist at all (never reaches DRF) stays a plain Django HTML 404 rather than our JSON shape, `DEBUG=False` unhandled exception → `SERVER_ERROR` envelope (500), `DEBUG=True` unhandled exception → propagates as a real `RuntimeError` to the caller (confirmed via `pytest.raises`), not converted into any response at all.
+* **Drive-by fix:** `config/settings/base.py`'s missing trailing newline (flagged as a pre-existing issue in P-011's own notes) was fixed as part of this part's edit to that same file — removes it from the list of 9 pre-existing files P-011 flagged. The other 8 files (`manage.py`, `config/asgi.py`, `config/wsgi.py`, `config/celery.py`, `config/settings/{__init__,dev,staging,prod}.py`) were deliberately left untouched — still Ahmed's call, per P-011's own note.
+
+### Definition of Done — confirmed, on the real machine
+
+* [x] Exception handler wired globally (`REST_FRAMEWORK["EXCEPTION_HANDLER"]`)
+* [x] All four exception-type cases (`ValidationError`, `PermissionDenied`/`AuthenticationFailed`, `NotFound`, unhandled `Exception`) produce the correct envelope
+* [x] `DEBUG` vs non-`DEBUG` behavior for unhandled exceptions differs as specified
+* [x] No real production endpoint was needed to validate this (temporary `core/tests/views.py` + `core/tests/urls.py` only, never wired into `config/urls.py`)
+* [x] `pytest apps/core/` (in this repo's actual layout: `pytest` bare, which collects `core/`) — 19/19 green, on real Postgres, via real Docker Compose
+* [x] Manual curl-equivalent smoke test against real endpoints, confirmed twice (once via a throwaway `Client()` script, once via an actual `runserver` process + `curl`, both reverted afterward with zero trace left in `config/urls.py`)
+* [x] Pushed to `github.com/Ahmed2132003/cavallo-app` (commit `9133b56` on `main`) and confirmed present via a fresh `git clone`
+
+Part P-012 is genuinely complete.
+
+### What the next backend part can assume is available
+
+* Every future view/serializer can raise standard DRF exceptions (`ValidationError`, `PermissionDenied`, `NotFound`, `AuthenticationFailed`, `NotAuthenticated`, `Throttled`, `MethodNotAllowed`, etc.) and trust the response comes back in the `{"error": {"code", "message", "fields"}}` shape automatically — **no future part should build its own custom error response or re-set `EXCEPTION_HANDLER`.**
+* This envelope shape is now a **locked cross-repo contract** with the Flutter app's `error_interceptor.dart` (Part P-004). Any future change to `core/exceptions.py`'s output shape (renaming `code`/`message`/`fields`, changing what goes in `fields` for a given exception type, etc.) is a **breaking change** and must be flagged explicitly, with a corresponding update to `cavallo-mobile`'s `error_interceptor.dart` landing in the same change — never one repo alone.
+* New exception types needing a specific `code` string (beyond the ones already mapped) just need one new entry added to `_EXCEPTION_CODE_MAP` (and, if it needs a non-generic fallback message, one entry in `_DEFAULT_MESSAGES`) in `core/exceptions.py` — no other file needs to change.
+* The pattern for testing anything that needs a real throwaway DRF endpoint (not just a throwaway model, which is `core/tests/testapp/`'s job) is now established: a `views.py` + `urls.py` pair under `<app>/tests/`, activated per-test-module via `@pytest.mark.urls("<app>.tests.urls")` — copy this shape rather than inventing a new one.
+* **New project-wide tooling note:** `pytest`, `pytest-django`, `flake8`, and `black` are not in the Docker image — anyone running them via `docker compose exec web ...` on a fresh container needs `docker compose exec web pip install pytest pytest-django flake8 black` first (this is a per-container, non-persistent install; it doesn't survive a `docker compose up -d --build` rebuild). Whether to bake these into the `Dockerfile` permanently instead is Ahmed's call — flagged here, not done as part of this part's scope.
