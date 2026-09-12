@@ -13,6 +13,10 @@ channels-redis==4.3.*
 celery==5.6.*
 redis==8.1.*
 
+# Cache framework (Part P-014) — django-redis on a Redis DB index
+# distinct from Celery's broker (see config/settings/base.py)
+django-redis==7.0.*
+
 # Database driver
 psycopg2-binary==2.9.*
 

@@ -16,6 +16,7 @@ https://docs.djangoproject.com/en/5.2/topics/settings/
 """
 
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import environ
 
@@ -105,10 +106,48 @@ DATABASES = {
 # ---------------------------------------------------------------------------
 REDIS_URL = env("REDIS_URL")
 
+
+def _redis_url_with_db(base_url, db_index):
+    """
+    Return a copy of a Redis URL with its logical DB index replaced.
+
+    Rebuilds the URL's path as "/{db_index}" via urllib.parse rather than
+    string-splicing, so this is robust regardless of whether base_url
+    already ends in "/N" or has no path/auth/query component at all.
+    """
+    parts = urlsplit(base_url)
+    return urlunsplit((parts.scheme, parts.netloc, f"/{db_index}", parts.query, parts.fragment))
+
+
+# ---------------------------------------------------------------------------
+# Cache — Part P-014. django-redis, pointed at a Redis DB index distinct
+# from Celery's broker/result backend (CELERY_BROKER_URL below), so cache
+# keys and Celery's broker/task metadata never collide in the same Redis
+# keyspace.
+#
+# Redis logical DB index convention for this project (also documented in
+# .env.example and CONFIG.md):
+#   DB 0  — Celery broker/result backend, and (for now) the Channels layer
+#           too — both still point at plain REDIS_URL, unchanged by this
+#           part.
+#   DB 1  — Django cache framework (this part). Index is read from
+#           REDIS_CACHE_DB rather than hardcoded, per this part's scope.
+#   DB 2+ — reserved. In particular, Phase 12's Channels layer work
+#           should give CHANNEL_LAYERS its own dedicated index (e.g. DB 2)
+#           instead of continuing to share DB 0 with Celery — this part's
+#           scope was the cache framework only, so CHANNEL_LAYERS below is
+#           intentionally left untouched.
+# ---------------------------------------------------------------------------
+REDIS_CACHE_DB = env.int("REDIS_CACHE_DB", default=1)
+REDIS_CACHE_URL = _redis_url_with_db(REDIS_URL, REDIS_CACHE_DB)
+
 CACHES = {
     "default": {
-        "BACKEND": "django.core.cache.backends.redis.RedisCache",
-        "LOCATION": REDIS_URL,
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": REDIS_CACHE_URL,
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        },
     }
 }
 
