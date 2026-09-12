@@ -187,11 +187,33 @@ USE_TZ = True
 
 # ---------------------------------------------------------------------------
 # Static / media
-# Architecture rule: no local-disk media storage, even as a dev placeholder.
-# Media/file uploads are out of scope for this part entirely; the setting
-# is deliberately absent rather than pointed at local disk.
+# Architecture rule: no local-disk media storage, ever — not even as a
+# dev placeholder. Part P-013 wires the "default" (media) storage to a
+# provider-agnostic S3-compatible backend (core/storage_backends.py),
+# reading connection details from the OBJECT_STORAGE_* env vars below.
+# In dev/test these default to the MinIO container added in P-013's
+# docker-compose.yml; staging/prod will point at a real provider once
+# architecture Section 7 item 2 is resolved — a pure env-var change,
+# no code change, since core/storage_backends.py reads only these vars.
 # ---------------------------------------------------------------------------
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+OBJECT_STORAGE_PROVIDER = env("OBJECT_STORAGE_PROVIDER", default="")
+OBJECT_STORAGE_BUCKET = env("OBJECT_STORAGE_BUCKET", default="")
+OBJECT_STORAGE_KEY = env("OBJECT_STORAGE_KEY", default="")
+OBJECT_STORAGE_SECRET = env("OBJECT_STORAGE_SECRET", default="")
+OBJECT_STORAGE_REGION = env("OBJECT_STORAGE_REGION", default="")
+OBJECT_STORAGE_ENDPOINT_URL = env("OBJECT_STORAGE_ENDPOINT_URL", default=None)
+OBJECT_STORAGE_USE_SSL = env.bool("OBJECT_STORAGE_USE_SSL", default=True)
+
+STORAGES = {
+    "default": {
+        "BACKEND": "core.storage_backends.MediaStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+}
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

@@ -28,6 +28,58 @@ services:
       timeout: 5s
       retries: 10
 
+  # Part P-013: local S3-compatible object storage for dev/test parity.
+  # Django (via core/storage_backends.py) talks to this over the
+  # internal Compose network at http://minio:9000 — see
+  # OBJECT_STORAGE_ENDPOINT_URL in .env.example. Host ports are
+  # remapped (9010/9011, not MinIO's default 9000/9001) following this
+  # project's existing convention of avoiding host port collisions
+  # (see db/redis/web above) — only relevant if you want to browse the
+  # MinIO console or hit the S3 API directly from the host machine;
+  # Django itself never uses the host ports.
+  #
+  # NOTE: MinIO's OSS project was archived by MinIO Inc. and the last
+  # image published to Docker Hub (minio/minio, minio/mc) shipped with
+  # an unpatched high-severity CVE, so it's no longer safe/available to
+  # pull from docker.io. Pulling from quay.io/minio instead, which is
+  # still the maintained distribution channel.
+  minio:
+    image: quay.io/minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9010:9000"
+      - "9011:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot init job: creates the dev bucket (OBJECT_STORAGE_BUCKET)
+  # if it doesn't already exist, then exits. Uses the "mc" (MinIO
+  # Client) image directly rather than adding mc to the app's own
+  # Dockerfile, since it's only ever needed for this one bootstrap
+  # step. Safe to re-run — `mc mb --ignore-existing` is a no-op if the
+  # bucket is already there (e.g. on every `docker compose up` after
+  # the first one, since minio_data is a persistent volume).
+  createbuckets:
+    image: quay.io/minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    env_file: .env
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+      mc mb --ignore-existing local/$${OBJECT_STORAGE_BUCKET}
+      "
+
   web:
     build: .
     restart: unless-stopped
@@ -47,6 +99,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      createbuckets:
+        condition: service_completed_successfully
 
   celery_worker:
     build: .
@@ -62,6 +116,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      createbuckets:
+        condition: service_completed_successfully
 
   celery_beat:
     build: .
@@ -77,6 +133,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      createbuckets:
+        condition: service_completed_successfully
 
 volumes:
   postgres_data:
+  minio_data:

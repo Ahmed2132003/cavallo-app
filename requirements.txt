@@ -16,5 +16,10 @@ redis==8.1.*
 # Database driver
 psycopg2-binary==2.9.*
 
+# Object storage (Part P-013) — S3-compatible, provider-agnostic
+django-storages==1.14.*
+boto3==1.43.*
+python-magic==0.4.*
+
 # Ops / observability
 sentry-sdk==2.69.*
