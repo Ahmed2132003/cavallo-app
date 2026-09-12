@@ -661,3 +661,65 @@ PASTED
 
 flutter test 00:02 +0: D:/Cavallo/social_commerce_app/test/core/error_reporting_test.dart: reportError does not throw for a normal error/stack pair [reportError] Exception: boom #0 main.<anonymous closure>.<anonymous closure> (file:///D:/Cavallo/social_commerce_app/test/core/error_reporting
 
+## Part P-010 — Django Settings Split (base/dev/staging/prod)
+
+**Status: COMPLETE**
+
+Authored and first checked in an environment with no Docker daemon (same constraint as P-000), against a local virtualenv running Django's own tooling directly. Ahmed then took the files to the real Windows machine (`D:\Cavallo\scd-backend`) and validated the actual Docker Compose stack end-to-end — no fixes were needed on the real machine.
+
+### Validation results (real, on Ahmed's machine)
+
+| Check                                                                          | Result                                                                                                                    |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `docker compose down` then `docker compose up -d --build`                        | ✅ All 3 images rebuilt (`scd-backend-web`, `-celery_worker`, `-celery_beat`), all 5 containers came up                        |
+| `docker compose ps`                                                               | ✅ `db` and `redis` **healthy**; `web`, `celery_worker`, `celery_beat` all `Up`, stable (no restart loop)                      |
+| `docker compose exec web python manage.py check` (no `--settings` flag)          | ✅ `System check identified no issues (0 silenced)` — confirms `config.settings.dev` is picked up as the default inside the container |
+| `docker compose exec web python manage.py migrate`                               | ✅ `No migrations to apply` — the existing DB connection/volume from before P-010 still works correctly against the split settings, nothing needed re-running |
+| Dev server boots, `GET /admin/login/` in a real browser at `http://localhost:8090/admin/login/` | ✅ Django admin login page rendered normally                                                                    |
+
+### Validation results (authoring environment, no Docker daemon — kept for reference)
+
+| Check                                                                                          | Result                                                                                                  |
+| ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `manage.py check --settings=config.settings.dev`                                                 | ✅ 0 issues                                                                                              |
+| `manage.py check --settings=config.settings.staging` (with `ALLOWED_HOSTS` set)                  | ✅ 0 issues                                                                                              |
+| `manage.py check --settings=config.settings.staging` (with `ALLOWED_HOSTS` **unset**)             | ✅ Fails loudly with `ImproperlyConfigured: Set the ALLOWED_HOSTS environment variable` — confirmed staging has no unsafe default |
+| `manage.py check --deploy --settings=config.settings.prod` (with `ALLOWED_HOSTS` set)             | ✅ Only 2 expected warnings: `security.W004` (HSTS not configured — out of this part's scope on purpose) and `security.W009` (the dummy `SECRET_KEY` used for this local check looks auto-generated — not a real issue, a production deploy would use a real long secret) |
+| `manage.py check` with no `--settings` flag at all                                               | ✅ 0 issues — confirms the new default (`config.settings.dev`) resolves correctly                       |
+| `black --check` / `flake8` on all new/edited files                                               | ✅ Clean, no changes needed, no violations                                                               |
+| `docker-compose.yml` parsed as YAML and confirmed `DJANGO_SETTINGS_MODULE: config.settings.dev` is present under `web`/`celery_worker`/`celery_beat`'s `environment:` | ✅                                                                        |
+
+**Note:** staging/prod settings (`ALLOWED_HOSTS` required, prod's security headers) were only exercised in the authoring environment, not on the real machine — there's no staging/prod deployment target yet at this phase of the project. Nothing about that is a gap in this part; it just means the "required, no default" behavior for those two modules is proven correct but not yet exercised against a real staging/prod deploy (that happens naturally whenever Phase 21/P-220+ deployment work starts).
+
+### What now exists
+
+* `config/settings/__init__.py` — empty package marker (deliberately does not re-export anything; `DJANGO_SETTINGS_MODULE` must always name a concrete module like `config.settings.dev`, never bare `config.settings`).
+* `config/settings/base.py` — everything environment-agnostic from the old single `config/settings.py`: `SECRET_KEY`, `INSTALLED_APPS` (framework apps only, unchanged), `MIDDLEWARE`, `TEMPLATES`, `ROOT_URLCONF`, `WSGI_APPLICATION`/`ASGI_APPLICATION`, `DATABASES` (from `DATABASE_URL`), `REDIS_URL` + `CACHES` + `CHANNEL_LAYERS`, all `CELERY_*` settings, `REST_FRAMEWORK`, the env-gated `SENTRY_DSN`/`sentry_sdk.init()` block (kept here rather than duplicated in staging.py/prod.py, since it's already a no-op unless `SENTRY_DSN` is set), `AUTH_PASSWORD_VALIDATORS`, i18n settings, `STATIC_URL`/`STATIC_ROOT`, `DEFAULT_AUTO_FIELD`. `BASE_DIR` was updated to `Path(__file__).resolve().parent.parent.parent` to account for the extra `settings/` nesting level. `DEBUG` and `ALLOWED_HOSTS` were deliberately **not** put here — they're the whole point of the per-environment files.
+* `config/settings/dev.py` — `from .base import *`, `DEBUG = True`, `ALLOWED_HOSTS` defaults to `["localhost", "127.0.0.1"]` if unset, `CORS_ALLOW_ALL_ORIGINS = True`, `EMAIL_BACKEND` set to the console backend.
+* `config/settings/staging.py` — `from .base import *`, `DEBUG = False`, `ALLOWED_HOSTS`/`CORS_ALLOWED_ORIGINS` read from env **with no default** (confirmed above: missing `ALLOWED_HOSTS` fails loudly instead of silently allowing any host).
+* `config/settings/prod.py` — same env-required posture as staging, plus `SECURE_SSL_REDIRECT`, `SESSION_COOKIE_SECURE`, `CSRF_COOKIE_SECURE` all `True` (exactly the three settings this part's scope named — HSTS and other hardening deliberately left for a later dedicated part, per the `W004` warning above).
+* Old single `config/settings.py` — deleted.
+* `manage.py` — default `DJANGO_SETTINGS_MODULE` changed from `"config.settings"` to `"config.settings.dev"`.
+* `config/wsgi.py`, `config/asgi.py`, `config/celery.py` — **beyond this part's literal file list, but necessary for correctness**: their hardcoded `os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")` fallbacks were updated to `"config.settings.dev"` too. Left unchanged, they'd have pointed at the now-empty `config/settings/__init__.py` (a package, not a real settings module) whenever `DJANGO_SETTINGS_MODULE` isn't already set in the process environment — e.g. running `celery -A config worker` locally outside Docker Compose without exporting the var first.
+* `.env.example` — added `DJANGO_SETTINGS_MODULE=config.settings.dev` under a new "Settings module (Part P-010)" section.
+* `docker-compose.yml` — `web`, `celery_worker`, `celery_beat` each got an explicit `environment: DJANGO_SETTINGS_MODULE: config.settings.dev` (in addition to their existing `env_file: .env`), so anyone with a pre-P-010 local `.env` (which won't automatically pick up the new `.env.example` line) still gets the correct settings module without regenerating their `.env` file.
+
+### Still open before this part is 100% closed
+
+Nothing — every Definition of Done item is confirmed, on the real machine:
+
+* Four settings files exist with correct inheritance
+* `check` passes against all three environment configs (dev on the real machine; staging/prod in the authoring environment, per the note above)
+* Dev Docker Compose stack still fully functional — rebuilt, all 5 containers healthy/up, `migrate` clean, admin login page renders
+* No app-specific (non-framework) settings present yet
+
+Part P-010 is genuinely complete.
+
+## What the next backend part can assume is available
+
+* `DJANGO_SETTINGS_MODULE` is always one of `config.settings.dev` / `config.settings.staging` / `config.settings.prod` — never bare `config.settings`.
+* Any new setting that doesn't vary by environment goes in `config/settings/base.py` (via `env(...)` + a new `.env.example` entry, same convention as before); anything that does vary by environment goes in the matching `dev.py`/`staging.py`/`prod.py`.
+* Local dev continues to work exactly as before (`docker compose up`, `manage.py` commands) with zero extra steps — the new `DJANGO_SETTINGS_MODULE` var is already wired into both `.env.example` and `docker-compose.yml` directly, so a fresh `.env` copied from `.env.example` or an existing pre-P-010 `.env` both work.
+* Staging and prod are intentionally strict: forgetting to set `ALLOWED_HOSTS` (or `CORS_ALLOWED_ORIGINS`, which just defaults to empty rather than failing) on either will make the app refuse to boot with a clear `ImproperlyConfigured` error, not a silently-insecure default.
+
+---
