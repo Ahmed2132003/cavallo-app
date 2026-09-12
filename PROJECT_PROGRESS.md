@@ -1065,3 +1065,72 @@ pull error will recur.
 
 *Completion note: this section reflects actual, fully executed verification, including
 resolving the MinIO Docker Hub discontinuation issue and switching to quay.io.*
+
+## Part P-014 — Redis Cache Framework Config
+
+Status: ✅ COMPLETE — validated on the real machine against real Redis (Docker Compose) Phase: 2 | Priority: Medium | Complexity: Low | Dependencies: P-010 | Parallelizable: Yes
+
+Summary
+
+Django's cache framework is now wired to the existing Redis instance from P-000 on a separate logical Redis DB index from Celery's broker, so cache keys and task-broker data never collide in the same keyspace. apps/core/cache.py's convention was adapted to this repo's established top-level-app layout (per P-011/P-012/P-013) — the real file is core/cache.py, not apps/core/cache.py.
+
+Verified DB index separation (real Redis, via docker compose exec redis redis-cli)
+docker compose exec redis redis-cli -n 1 keys "*"
+1) ":1:core_test:key_b"
+2) ":1:core_test:key_a"
+
+docker compose exec redis redis-cli -n 0 keys "*"
+1) "_kombu.binding.celery"
+2) "_kombu.binding.celeryev"
+3) "_kombu.binding.celery.pidbox"
+
+This confirms, against the real running stack, that:
+
+Redis DB 0 holds only Celery's broker keys (_kombu.binding.*) — untouched by this part.
+Redis DB 1 holds only cache keys written via cache_get_or_set — correctly namespaced under the core_test: prefix used by the test suite.
+.env change
+
+REDIS_CACHE_DB=1 added — read by base.py's CACHES setting so the cache DB index is never hardcoded and stays independent from REDIS_URL's own DB index (used by Celery).
+
+Test results (real Redis, Docker Compose)
+collected 3 items
+core/tests/test_cache.py::test_cache_get_or_set_hits_on_second_call   PASSED [ 33%]
+core/tests/test_cache.py::test_cache_get_or_set_expires_after_ttl     PASSED [ 66%]
+core/tests/test_cache.py::test_cache_get_or_set_keys_are_independent  PASSED [100%]
+================================== 3 passed in 1.82s ==================================
+
+All three tests ran against the real Compose Redis service (not mocked), per this part's own validation requirement — cache correctness (hit/miss behavior, TTL expiry, and key independence) matters more than test isolation here.
+
+What now exists
+core/cache.py — cache_get_or_set(key: str, compute_fn: Callable, ttl_seconds: int): checks the cache, returns the cached value on a hit, otherwise calls compute_fn(), stores the result with the given TTL, and returns it. Module docstring documents the key-naming convention ({domain}:{identifier}:{qualifier}, e.g. feed:42:page1, business_profile:17) and references architecture Section 16's TTL table (feed 60–120s, business profile 5 min, categories ~1h) as the source of truth for future TTL values.
+config/settings/base.py — CACHES["default"] configured via django-redis, pointed at REDIS_URL but on a distinct DB index (REDIS_CACHE_DB, default 1) from Celery's broker DB (0) — read from env, not hardcoded.
+requirements.txt — django-redis added.
+.env.example — REDIS_CACHE_DB=1 documented alongside the existing Redis vars.
+core/tests/test_cache.py — 3 tests against the real Compose Redis service: a cache hit on the second call (compute_fn's counter doesn't increment again), TTL expiry (a very short TTL value expires correctly), and independent keys not interfering with each other.
+Definition of Done — confirmed, on the real machine
+ CACHES configured on a distinct Redis DB index from Celery's broker (verified directly via redis-cli -n 0 vs -n 1, not just assumed from settings)
+ cache_get_or_set implemented and tested against real Redis — 3/3 passing
+ Key-naming and TTL convention documented in the module docstring
+ No feature-specific caching implemented yet (no Feed/Business Profile/Categories endpoint touched — out of scope, per this part's own spec)
+ docker compose up still boots cleanly with the new REDIS_CACHE_DB env var
+
+Part P-014 is genuinely complete.
+
+What the next backend part can assume is available
+from core.cache import cache_get_or_set is the only sanctioned way to read/write the Django cache anywhere in this project — no future part should call cache.get/ cache.set directly with ad hoc key strings.
+Redis DB indices are now a locked convention: DB 0 = Celery broker, DB 1 = Django cache. Phase 12's Channels layer (which also needs a Redis DB) must use a different index again (e.g. DB 2) — never reuse 0 or 1.
+Cache keys must follow the {domain}:{identifier}:{qualifier} convention documented in core/cache.py's docstring (e.g. feed:{user_id}:page1, business_profile:{id}) so future cache calls stay auditable against architecture Section 16's TTL table.
+Phase 4 (business profile cache) and Phase 10 (feed cache) both build directly on cache_get_or_set with the TTLs already specified in Section 16 (60–120s feed, 5 min business profile, ~1h categories) — no new caching mechanism needs to be built for either.
+Content
+PROJECT IMPLEMENTATION MASTER PLAN.docx
+
+DOCX
+
+PDF
+
+PROJECT_PROGRESS.md
+
+MD
+
+PART P-014 — Redis Cache Framework Config Part Metadata: Phase 2 | Priority: Medium | Complexity: Low | Dependencies: P-010 | Parallelizable: Yes | Backend dependency: Yes | External input required: No Objective: Wire Django's cache framework to the existing Redis instance (from P-000) using a dis
+
