@@ -33,6 +33,11 @@ services:
     restart: unless-stopped
     command: python manage.py runserver 0.0.0.0:8000
     env_file: .env
+    environment:
+      # Set explicitly (not just via .env) so existing local .env files
+      # from before Part P-010 still work without regenerating them from
+      # .env.example. The dev Compose stack always targets dev.py.
+      DJANGO_SETTINGS_MODULE: config.settings.dev
     volumes:
       - .:/app
     ports:
@@ -48,6 +53,8 @@ services:
     restart: unless-stopped
     command: celery -A config worker --loglevel=info
     env_file: .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
     volumes:
       - .:/app
     depends_on:
@@ -61,6 +68,8 @@ services:
     restart: unless-stopped
     command: celery -A config beat --loglevel=info
     env_file: .env
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.dev
     volumes:
       - .:/app
     depends_on:

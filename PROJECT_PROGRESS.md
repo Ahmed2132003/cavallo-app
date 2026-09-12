@@ -588,9 +588,9 @@ PASTED
 
 flutter pub get ┌─────────────────────────────────────────────────────────┐ │ A new version of Flutter is available! │ │ │ │ To update to the latest version, run "flutter upgrade". │ └────────────────────────────────────
 
-Part P-009 — Flutter Core-Layer Tests (Network/Storage Utilities Consolidation)
+## Part P-009 — Flutter Core-Layer Tests (Network/Storage Utilities Consolidation)
 
-Status: VALIDATED (pending push confirmation)
+Status: COMPLETE
 
 Actually run on the real machine (Flutter, Windows, D:\Cavallo\social_commerce_app):
 
@@ -598,12 +598,14 @@ Check	Result
 flutter test test/core/integration_test.dart	✅ All 4 new tests passed (network+storage round-trip, no-token-omits-header, theme+router combined, reportError under a real widget-build error)
 flutter test (full suite)	✅ +54: All tests passed! — exactly the 50 tests that existed after P-008, plus these 4 new ones; nothing from P-004–P-008 broke
 flutter analyze	✅ No issues found! (56.3s)
+Push to github.com/Ahmed2132003/cavallo-mobile	✅ Commit 64d3a64 on main (1 file changed, 206 insertions)
+Fresh-clone re-verification	✅ Independently re-cloned main after push: test/core/integration_test.dart present at the correct path with content identical to what was authored (only difference is CRLF vs LF line endings, matching every other file in this repo that was edited on the Windows machine — not a real content difference)
 
 No fixes were needed on the real machine — the file authored against the cloned repo (see below) matched real signatures/types on the first try, and no genuine integration bug turned up between P-004 through P-008 either. Per the part's own scope note ("no production code changes expected unless this pass surfaces a real integration bug"), no lib/ files were touched — this part is test-only.
 
 How this was authored (before the real-machine run above)
 
-Exactly like Part P-000 hit with no Docker daemon available, the authoring environment had no Flutter SDK installed and no network access to pub.dev — flutter test/flutter analyze could not be run there. Instead, the actual Ahmed2132003/cavallo-mobile repo (commit f9b8a8d, the tip after P-008) was cloned and inspected directly, and the new test file was written against the exact real signatures/types found there — not against the plan document's description of them. The real-machine run above is what actually validated it.
+Exactly like Part P-000 hit with no Docker daemon available, the authoring environment had no Flutter SDK installed and no network access to pub.dev — flutter test/flutter analyze could not be run there. Instead, the actual Ahmed2132003/cavallo-mobile repo (commit f9b8a8d, the tip after P-008) was cloned and inspected directly, and the new test file was written against the exact real signatures/types found there — not against the plan document's description of them. The real-machine run above is what actually validated it, and the fresh-clone check above is what confirmed the push.
 
 What was checked by direct repo inspection (not by running anything)
 Piece	Confirmed present, matches plan	Notes
@@ -620,11 +622,25 @@ test/core/integration_test.dart — three groups, matching the three checks the 
 Network + storage round-trip. Seeds a real SecureTokenStorage (backed by FlutterSecureStorage.setMockInitialValues({}), same mechanism P-005's own suite uses) with a fake access token, overrides authTokenGetterProvider with tokenStorage.getAccessToken in a throwaway ProviderContainer, reads dioClientProvider from it, swaps in a DioAdapter (P-004's own http_mock_adapter dependency — no real network touched), and asserts the outgoing request's Authorization header is exactly Bearer seeded-access-token-p009. A second test in the same group confirms an unseeded storage correctly omits the header entirely, rather than sending a literal "Bearer null" — a real failure mode worth guarding against that the spec's single round-trip check wouldn't have caught on its own.
 Theme + router. Pumps a real MaterialApp.router(theme: AppTheme.theme, routerConfig: ref.read(appRouterProvider)) tree, confirms it resolves to the splash route with zero thrown exceptions (tester.takeException() is null), and — going one step further than "doesn't crash" — reads Theme.of(context).colorScheme.primary off the actually-rendered screen and confirms it matches AppTheme.theme.colorScheme.primary, proving the theme genuinely reached the router's screens rather than the tree silently falling back to Flutter's own default ThemeData because of some wiring conflict.
 Error reporting under a real widget-test error. Temporarily takes over FlutterError.onError (the same hook main.dart wires to reportError in P-008), pumps a widget whose build() genuinely throws, captures the real FlutterErrorDetails.exception/.stack the framework produces, and asserts reportError(capturedError, capturedStack) returnsNormally — a real thrown error, not a synthetic Exception('boom') constructed by hand the way P-008's own unit tests do it.
-What now exists (confirmed, real-machine run)
-test/core/integration_test.dart — three groups (four tests total), described in detail above under "What now exists" — unchanged from what was authored against the cloned repo; the real-machine run confirmed it needed zero edits.
+What now exists (confirmed, real-machine run + fresh-clone re-verification)
+test/core/integration_test.dart — three groups (four tests total), described in detail above under "What now exists" — unchanged from what was authored against the cloned repo; the real-machine run confirmed it needed zero edits, and the fresh clone confirmed it's live on main.
 No lib/ files changed — this part added tests only.
 Still open before this part is 100% closed
- Push test/core/integration_test.dart to github.com/Ahmed2132003/cavallo-mobile and confirm via a fresh git clone that it's present on main — the same closing check every prior part in this file has used. Once that's confirmed, flip this section's status from "VALIDATED (pending push confirmation)" to COMPLETE, and Phase 1 (P-004–P-009) can be considered genuinely done.
+
+Nothing — every Definition of Done item is confirmed:
+
+ All three integration checks pass (four tests total — see table above)
+ Full existing test suite (P-004 through P-009) passes together, not just individually — +54: All tests passed!
+ No integration bug found between P-004–P-008 (none needed fixing/documenting)
+ flutter analyze clean
+ Pushed to github.com/Ahmed2132003/cavallo-mobile and confirmed present on main via a fresh git clone
+
+Phase 1 (P-004 through P-009) is genuinely complete.
+
+Note: an unrelated backend commit landed alongside this
+
+The same session that pushed this part also pushed a separate commit (01839fd, "update", 1 file / 58 insertions) to github.com/Ahmed2132003/cavallo-app (the backend repo). That commit is outside this part's scope (P-009 is Flutter-only, Phase 1) and wasn't authored or reviewed as part of this part — if it's meant to be tracked here, send over what it contains and it'll get its own entry under the backend/Phase 2 section rather than folded into this one.
+
 What Phase 3 (auth, both sides) can assume once this part is actually closed
 Phase 1 (Flutter core: network, storage, theme/widgets, routing, bootstrap) and Phase 2 (backend core, independent — see P-000) are the only two prerequisites Phase 3 needs, per the master plan's phase dependency graph. Phase 3 is the first part that should replace P-004's authTokenGetterProvider placeholder and P-007's _sessionPlaceholderProvider with real values — both integration points are already proven to accept an override cleanly by this part's own first test group, so Phase 3 has a working example to copy the wiring pattern from directly.
 No new pattern was introduced by this part that Phase 3 needs to learn — it reuses exactly the ProviderContainer(overrides: [...]) pattern every prior part's own tests already established.
@@ -645,4 +661,3 @@ PASTED
 
 flutter test 00:02 +0: D:/Cavallo/social_commerce_app/test/core/error_reporting_test.dart: reportError does not throw for a normal error/stack pair [reportError] Exception: boom #0 main.<anonymous closure>.<anonymous closure> (file:///D:/Cavallo/social_commerce_app/test/core/error_reporting
 
-PASTED
