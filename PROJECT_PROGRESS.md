@@ -202,45 +202,188 @@ Every one of these already has a named, documented placeholder — nothing here 
 * No code anywhere in either repo reads an environment variable or `String.fromEnvironment` key that isn't listed in its repo's `.env.example`/`CONFIG.md`.
 * Flutter feature code should call `AppConfig.apiBaseUrl` (once the Dio client exists, from P-010 onward) rather than hardcoding a URL or reading `String.fromEnvironment` directly.
 
-## Part P-004 — Core Network Layer (Dio Client, Interceptors, Error Mapping)
+Part P-004 — Core Network Layer (Dio Client, Interceptors, Error Mapping)
 
-**Status: VALIDATED**
+Status: VALIDATED
 
-Actually run on the real machine (Flutter 3.29.3 / Dart 3.7.2, Windows, `D:\Cavallo\social_commerce_app`):
+Actually run on the real machine (Flutter 3.29.3 / Dart 3.7.2, Windows, D:\Cavallo\social_commerce_app):
 
-| Check | Result |
-| --- | --- |
-| `flutter pub get` | ✅ `Changed 2 dependencies!` — `http_mock_adapter 0.6.1` resolved cleanly against `flutter_riverpod 3.3.2`, no conflict |
-| `flutter test test/core/network/` | ✅ `+14: All tests passed!` (after two fixes below) |
-| `flutter analyze` | ✅ `No issues found!` |
+Check	Result
+flutter pub get	✅ Changed 2 dependencies! — http_mock_adapter 0.6.1 resolved cleanly against flutter_riverpod 3.3.2, no conflict
+flutter test test/core/network/	✅ +14: All tests passed! (after two fixes below)
+flutter analyze	✅ No issues found!
 
-**Two fixes made during real-machine validation:**
+Two fixes made during real-machine validation:
 
-1. **`lib/core/network/interceptors/error_interceptor.dart`** — `dio 5.11.1` (resolved version) adds a `DioExceptionType.transformTimeout` enum value that didn't exist when this part was authored, so the `switch` in `_mapToFailure` wasn't exhaustive and failed to compile. Fixed by adding `case DioExceptionType.transformTimeout:` to the same case group as `connectionTimeout`/`sendTimeout`/`receiveTimeout`/`connectionError` (all map to `NetworkFailure`, since a transform failure is a connection-layer problem from the caller's point of view).
-2. **`test/core/network/dio_client_test.dart`** — the "3 interceptors in order" test asserted `dio.interceptors.length == 3`, but `Dio()` itself prepends an internal `ImplyContentTypeInterceptor` on construction, making the real count 4. Fixed by checking that `LoggingInterceptor`/`AuthInterceptor`/`ErrorInterceptor` are present (via `indexWhere`) and appear in that relative order, instead of asserting an exact total count.
+lib/core/network/interceptors/error_interceptor.dart — dio 5.11.1 (resolved version) adds a DioExceptionType.transformTimeout enum value that didn't exist when this part was authored, so the switch in _mapToFailure wasn't exhaustive and failed to compile. Fixed by adding case DioExceptionType.transformTimeout: to the same case group as connectionTimeout/sendTimeout/receiveTimeout/connectionError (all map to NetworkFailure, since a transform failure is a connection-layer problem from the caller's point of view).
+test/core/network/dio_client_test.dart — the "3 interceptors in order" test asserted dio.interceptors.length == 3, but Dio() itself prepends an internal ImplyContentTypeInterceptor on construction, making the real count 4. Fixed by checking that LoggingInterceptor/AuthInterceptor/ErrorInterceptor are present (via indexWhere) and appear in that relative order, instead of asserting an exact total count.
 
-Confirmed present and correct on disk during validation: `lib/core/network/{api_failure.dart, dio_client.dart}`, `lib/core/network/interceptors/{auth_interceptor.dart, error_interceptor.dart, logging_interceptor.dart}`, `test/core/network/{auth_interceptor_test.dart, dio_client_test.dart, error_interceptor_test.dart}`, and the `http_mock_adapter: ^0.6.1` dev dependency line in `pubspec.yaml`.
+Confirmed present and correct on disk during validation: lib/core/network/{api_failure.dart, dio_client.dart}, lib/core/network/interceptors/{auth_interceptor.dart, error_interceptor.dart, logging_interceptor.dart}, test/core/network/{auth_interceptor_test.dart, dio_client_test.dart, error_interceptor_test.dart}, and the http_mock_adapter: ^0.6.1 dev dependency line in pubspec.yaml.
+
+What now exists
+lib/core/network/api_failure.dart — sealed ApiFailure with final class variants ValidationFailure(message, fields), AuthFailure(message), NetworkFailure(message), ServerFailure(message), UnknownFailure(message).
+lib/core/network/interceptors/logging_interceptor.dart — LoggingInterceptor (a real Interceptor subclass, not a bare LogInterceptor() instance) that checks AppConfig.environment == AppEnvironment.dev itself on every request/response/error, so it's always safe to attach unconditionally — staging/prod builds silently no-op instead of ever leaking a request/response body (which can contain tokens) into a release log.
+lib/core/network/interceptors/auth_interceptor.dart — AuthInterceptor takes Future<String?> Function() getToken in its constructor, attaches Authorization: Bearer <token> only when the token is non-null and non-empty.
+lib/core/network/interceptors/error_interceptor.dart — ErrorInterceptor catches every DioException, parses the backend's {"error": {"code","message","fields"}} envelope (Section 10), maps by status/type (400→Validation, 401/403→Auth, timeout/connection error/connection-error-adjacent (incl. transformTimeout)/no-response→Network, 5xx→Server, else→Unknown), and rethrows a DioException carrying the mapped ApiFailure in .error. An empty/missing error.message in the envelope falls back to a sane default string rather than surfacing an empty string.
+lib/core/network/dio_client.dart — dioClientProvider (Provider<Dio>), baseUrl from AppConfig.apiBaseUrl, interceptors attached in order logging → auth → error exactly as specified. authTokenGetterProvider (Provider<AuthTokenGetter>, where typedef AuthTokenGetter = Future<String?> Function()) currently resolves to a no-op () async => null placeholder — this is the exact signature P-005 must override, e.g. authTokenGetterProvider.overrideWithValue(secureStorage.readAuthToken), no changes to this file needed.
+test/core/network/error_interceptor_test.dart — 8 tests covering the acceptance criteria plus two extra edge cases: 400+fields→ValidationFailure(fields correct), 401→AuthFailure, 403→AuthFailure, 5xx→ServerFailure, connection timeout→NetworkFailure, connection error→NetworkFailure, unparseable body→UnknownFailure, 400 with a non-envelope-shaped body→ValidationFailure with empty fields (doesn't crash parsing).
+test/core/network/auth_interceptor_test.dart — 3 tests: header attached with a token, header omitted when token is null, header omitted when token is empty string.
+test/core/network/dio_client_test.dart — 3 tests: the default provider wires LoggingInterceptor → AuthInterceptor → ErrorInterceptor in that relative order (checked via indexWhere, not an exact .length, since Dio() itself prepends an internal ImplyContentTypeInterceptor that isn't ours); dioClientProvider is overridable with a fake Dio in a bare ProviderContainer() (proves it's usable with zero feature code, per the Definition of Done); authTokenGetterProvider defaults to a null-returning getter.
+pubspec.yaml — added http_mock_adapter: ^0.6.1 as a dev dependency (mocks Dio's HTTP adapter for the tests above; this is the package the part's own execution prompt named as an acceptable option alongside raw Dio test utilities).
+Still open before this part is 100% closed
+ flutter pub get — resolved cleanly, no conflicts.
+ flutter test test/core/network/ — all 14 tests green.
+ flutter analyze — clean, no issues.
+ Pushed to github.com/Ahmed2132003/cavallo-mobile — commit 2751e02 on main. Independently verified via a fresh git clone after push: all 9 files present at the correct paths, http_mock_adapter in pubspec.yaml, and both real-machine fixes (transformTimeout case, indexWhere-based interceptor-order test) confirmed in the pushed content. This part is fully closed.
+Auth-token-getter interface (for P-005 and P-022 to match exactly)
+dart
+typedef AuthTokenGetter = Future<String?> Function();
+
+P-005's secure-storage wrapper should expose a method with this exact shape (e.g. Future<String?> readAuthToken()), and the app's composition root should override authTokenGetterProvider with it:
+
+dart
+ProviderScope(
+  overrides: [
+    authTokenGetterProvider.overrideWithValue(secureStorage.readAuthToken),
+  ],
+  child: const SocialCommerceApp(),
+)
+
+P-022 (token refresh) should implement its retry-on-401 logic as a separate interceptor added after AuthInterceptor (or as a wrapper around the same getToken function passed in) — nothing in P-004 needs to change to accommodate it, per the original scope note.
+
+What the next parts can assume is available
+Every feature's repository implementation should depend on dioClientProvider (never construct its own Dio) and catch DioException from it, reading .error as ApiFailure for a typed, pattern-matchable failure — never re-parse a raw response body for errors.
+ApiFailure is a sealed class, so a switch over it in Dart 3 is exhaustiveness-checked by the analyzer — feature code should switch on it rather than using is chains.
+P-005 only needs to provide a Future<String?> Function() and override authTokenGetterProvider — it does not need to touch dio_client.dart or any interceptor.
+No feature-specific logic exists anywhere in lib/core/network/ — it stays feature-agnostic per the architecture rule; feature-specific error handling (e.g. "this 400 means the product is out of stock") belongs in the feature's own repository/use-case layer, built on top of the generic ValidationFailure this layer already produces.
+Content
+PROJECT IMPLEMENTATION MASTER PLAN.docx
+
+DOCX
+
+PDF
+
+PROJECT_PROGRESS.md
+
+MD
+
+PART P-004 — Core Network Layer (Dio Client, Interceptors, Error Mapping) Part Metadata: Phase 1 | Priority: Critical | Complexity: Medium | Dependencies: P-001, P-003 | Parallelizable: No | Backend dependency: No | External input required: No Objective: A single, reusable Dio client in lib/core/n
+
+PASTED
+
+## Part P-005 — Core Storage (Secure Storage + Cache Abstraction)
+
+**Status: VALIDATED (pending push confirmation)**
+
+Actually run on the real machine (Flutter, Windows, D:\Cavallo\social_commerce_app):
+
+| Check                                | Result                                                                 |
+| ------------------------------------- | ------------------------------------------------------------------------ |
+| `flutter pub get`                     | ✅ Changed 7 dependencies! — `shared_preferences 2.5.3` (+ its 6 platform/interface packages) resolved cleanly alongside the existing `flutter_riverpod 3.3.2` / `flutter_secure_storage 10.3.2` pins |
+| `flutter test test/core/storage/`     | ✅ +16: All tests passed! (first run, no fixes needed)                    |
+| `flutter analyze`                     | ✅ No issues found! (after one fix below)                                 |
+
+### One fix made during real-machine validation
+
+`lib/core/storage/secure_token_storage.dart` — the doc comment on `getAccessToken()`
+had an inline code span (`` `Future<String?> Function()` ``) split across two comment
+lines. The doc-comment parser doesn't treat a code span as closed until it sees the
+closing backtick, so the unclosed `<String?>` on the first line was read as literal
+HTML, tripping the `unintended_html_in_doc_comment` info-level lint. Fixed by
+reflowing the comment so the whole code span (opening and closing backtick) sits on
+one line:
+
+```dart
+/// Matches the `AuthTokenGetter` typedef (`Future<String?> Function()`)
+/// from `lib/core/network/dio_client.dart` exactly — see the P-020
+/// wiring note on this class.
+```
+
+**Lesson for future parts:** any doc comment containing a generic type in backticks
+(`` `Future<T>` ``, `` `List<T>` ``, `` `Map<K, V>` ``, etc.) must keep the opening and
+closing backtick on the same line — never let the type expression wrap onto the next
+line, even if a formatter or IDE tries to.
+
+### Real-version issue caught before it could even reach `flutter analyze`
+
+The part spec (and the master plan) call for `AndroidOptions(encryptedSharedPreferences:
+true)`. Checked against the actual `flutter_secure_storage` source at the version this
+project's pubspec.yaml pins (`^10.3.1`, resolved `10.3.2`): that parameter is
+**deprecated and ignored** as of 10.x — "EncryptedSharedPreferences is deprecated and
+will be removed in v11 ... Remove this parameter - it will be ignored." Using it would
+have compiled fine but thrown a second `deprecated_member_use` warning on `flutter
+analyze` for zero actual effect. Used `AndroidOptions.defaultOptions` instead, which
+already gets KeyStore-backed AES-GCM + RSA-OAEP encryption by default on 10.x — a
+stronger, non-deprecated equivalent — so the architecture rule (KeyStore, never
+plaintext SharedPreferences) is still fully satisfied.
+
+### `shared_preferences` version pin
+
+Not previously a dependency. Added `shared_preferences: ^2.5.3` — checked against this
+project's pinned Flutter (3.29.3): `shared_preferences` 2.5.4+ requires Flutter
+`>=3.35.0`, so pinning below that avoids the same class of resolution mismatch P-001
+hit with `flutter_riverpod`. Confirmed live: `flutter pub get` resolved exactly `2.5.3`
+(the newest version compatible with this SDK), not a newer incompatible release.
+`^2.5.3` will still let `flutter pub get` pick up a newer compatible release
+automatically once the project's Flutter SDK is upgraded past 3.35.
 
 ### What now exists
 
-* `lib/core/network/api_failure.dart` — sealed `ApiFailure` with `final class` variants `ValidationFailure(message, fields)`, `AuthFailure(message)`, `NetworkFailure(message)`, `ServerFailure(message)`, `UnknownFailure(message)`.
-* `lib/core/network/interceptors/logging_interceptor.dart` — `LoggingInterceptor` checks `AppConfig.environment == AppEnvironment.dev` itself on every request/response/error, so it's always safe to attach unconditionally.
-* `lib/core/network/interceptors/auth_interceptor.dart` — `AuthInterceptor` takes `Future<String?> Function() getToken`, attaches `Authorization: Bearer <token>` only when non-null **and non-empty**.
-* `lib/core/network/interceptors/error_interceptor.dart` — maps every `DioException` (incl. `transformTimeout`) to the right `ApiFailure` variant, parsing the backend's `{"error": {"code","message","fields"}}` envelope.
-* `lib/core/network/dio_client.dart` — `dioClientProvider`, interceptors in order **logging → auth → error**. `authTokenGetterProvider` is the exact override point for P-005.
-* `test/core/network/{error_interceptor_test.dart, auth_interceptor_test.dart, dio_client_test.dart}` — 14 tests total, all green.
-* `pubspec.yaml` — added `http_mock_adapter: ^0.6.1` (dev dependency).
+* `lib/core/storage/secure_token_storage.dart` — `SecureTokenStorage` class:
+  `saveTokens({required String access, required String refresh})`,
+  `getAccessToken()`, `getRefreshToken()`, `clear()`. Backed by
+  `FlutterSecureStorage(aOptions: AndroidOptions.defaultOptions)`. Exposed as
+  `secureTokenStorageProvider` (`Provider<SecureTokenStorage>`).
+  `getAccessToken()`'s signature (`Future<String?> Function()`) matches P-004's
+  `AuthTokenGetter` typedef exactly — confirmed directly against the real
+  `dio_client.dart` in the repo, no adapter method needed.
+* `lib/core/storage/cache_storage.dart` — abstract `CacheStorage` interface
+  (`get<T>`, `set<T>`, `remove`, `clear`) plus `SharedPreferencesCacheStorage`
+  implementation (JSON encode/decode via `dart:convert`). Exposed as
+  `cacheStorageProvider` (`FutureProvider<CacheStorage>`, since
+  `SharedPreferences.getInstance()` is itself async). Class-level doc comment
+  states the "tokens never go through here" rule explicitly, plus the
+  architectural reasoning (this file doesn't import `flutter_secure_storage`,
+  and `secure_token_storage.dart` doesn't import `shared_preferences`).
+* `test/core/storage/secure_token_storage_test.dart` — 8 tests: save→read
+  round-trip, both null before anything saved, `clear()` wipes both, `clear()`
+  is a no-op on empty storage, `saveTokens` overwrites a previous pair,
+  `getAccessToken` is directly assignable to `AuthTokenGetter`, provider
+  resolves a `SecureTokenStorage`, provider is overridable. Uses
+  `FlutterSecureStorage.setMockInitialValues({})` per the part spec.
+* `test/core/storage/cache_storage_test.dart` — 8 tests: Map round-trip, List
+  round-trip, primitive round-trip, missing key returns null, `remove` deletes
+  only the given key, `clear` wipes everything, `set` overwrites, provider
+  resolves a `SharedPreferencesCacheStorage`. Uses
+  `SharedPreferences.setMockInitialValues({})` per the part spec.
+* `pubspec.yaml` — added `shared_preferences: ^2.5.3` (see version-pin note
+  above).
+* `lib/core/storage/.gitkeep` removed (folder is no longer empty).
 
 ### Still open before this part is 100% closed
 
-* [x] `flutter pub get`
-* [x] `flutter test test/core/network/`
-* [x] `flutter analyze`
-* [ ] Not yet pushed to `github.com/Ahmed2132003/cavallo-mobile` — آخر خطوة باقية.
+* [ ] Push to `github.com/Ahmed2132003/cavallo-mobile` and confirm via a fresh
+      `git clone` that all 4 files (2 lib + 2 test) and the `pubspec.yaml`
+      change are present on `main` — same closing check every prior part in
+      this file has used.
 
-### Auth-token-getter interface (for P-005 and P-022)
+### What the next parts can assume is available
 
-```dart
-typedef AuthTokenGetter = Future<String?> Function();
-```
-
+* `SecureTokenStorage.getAccessToken` can be handed straight to
+  `authTokenGetterProvider.overrideWithValue(...)` in Part P-020 with zero
+  adapter code — its signature already matches `AuthTokenGetter` from
+  `dio_client.dart` exactly.
+* `SecureTokenStorage.clear()` is what Part P-022 (refresh-token
+  reuse/theft-detection) and the logout flow should call — no other part
+  should touch `flutter_secure_storage` directly.
+* `CacheStorage`/`SharedPreferencesCacheStorage` is ready for any
+  non-sensitive cached data (e.g. the category tree). No feature-specific
+  cache keys exist yet — each feature that uses it should namespace its own
+  keys (e.g. `'categories_tree'`), since `CacheStorage` itself has no
+  built-in namespacing.
+* Nothing in `lib/core/network/` needed to change — P-004's
+  `authTokenGetterProvider` placeholder is untouched until P-020 explicitly
+  overrides it, exactly as P-004's own handoff note specified.
+* `shared_preferences: ^2.5.3` is now a real dependency of this project —
+  future parts needing it should not re-add it or bump it past `^2.5.3`
+  without first upgrading the project's Flutter SDK to ≥3.35.0.
