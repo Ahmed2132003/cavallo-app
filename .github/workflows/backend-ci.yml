@@ -59,7 +59,7 @@ jobs:
           pip install -r requirements.txt
           # Lint/test tooling isn't part of the app's runtime requirements.txt,
           # so it's installed here rather than added to it.
-          pip install flake8 black pytest
+          pip install flake8 black pytest pytest-django
 
       - name: flake8
         run: flake8 .
@@ -71,9 +71,4 @@ jobs:
         run: python manage.py check
 
       - name: pytest
-        run: |
-          # No test suite exists yet (Phase 0). Exit code 5 = "no tests
-          # collected", which pytest treats as failure by default but is
-          # expected and fine at this stage — everything else still fails
-          # the job normally.
-          pytest || [ "$?" -eq 5 ]
+        run: pytest

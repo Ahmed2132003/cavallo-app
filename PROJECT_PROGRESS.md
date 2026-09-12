@@ -723,3 +723,134 @@ Part P-010 is genuinely complete.
 * Staging and prod are intentionally strict: forgetting to set `ALLOWED_HOSTS` (or `CORS_ALLOWED_ORIGINS`, which just defaults to empty rather than failing) on either will make the app refuse to boot with a clear `ImproperlyConfigured` error, not a silently-insecure default.
 
 ---
+
+## Part P-011 — Core App: Base Models/Mixins + Pagination Classes
+
+Status: COMPLETE
+
+Authored and initially validated in an environment with no Docker daemon (same constraint as P-000/P-010): PostgreSQL 16 was installed and run locally (not via Docker) so every check below ran against a real Postgres instance, not sqlite or mocks. Ahmed then ran docker compose exec web pytest on the real Windows machine, per the "still needs running on the real machine" note this section originally carried — and it caught a real bug that the authoring environment's setup had masked (see the pytest.ini entry under "What now exists" for the full root cause: pytest-django's --ds/env-var/ini precedence, and P-010's docker-compose.yml already exporting DJANGO_SETTINGS_MODULE as a real env var). Fixed, reproduced against the exact failing condition locally, and re-confirmed 11/11 passing before this file was updated. This is exactly the kind of gap the "still run it on the real machine" step exists to catch — it did its job.
+
+Validation results (real Postgres 16, local — no Docker daemon available)
+
+CheckResult
+
+
+
+python manage.py check
+
+✅ 0 issues
+
+python manage.py makemigrations core --check --dry-run
+
+✅ "No changes detected" — confirms the two mixins stay abstract-only, no migration is generated for core itself
+
+python manage.py makemigrations --check --dry-run (whole project)
+
+✅ "No changes detected" — confirms adding core to INSTALLED_APPS didn't accidentally pull in anything concrete
+
+python manage.py migrate against real Postgres 16
+
+✅ Applied cleanly, core contributes zero migrations
+
+pytest (11 tests, real Postgres test DB via pytest-django)
+
+✅ 11 passed
+
+flake8 on all new P-011 files (core/, config/settings/test.py)
+
+✅ Clean, 0 violations
+
+black --check on all new P-011 files
+
+✅ Clean, no changes needed
+
+Validation results (real machine, docker compose exec web ...)
+
+CheckResult
+
+
+
+docker compose exec web python manage.py check
+
+✅ 0 issues
+
+docker compose exec web python manage.py makemigrations core --check --dry-run
+
+✅ "No changes detected"
+
+docker compose exec web python manage.py migrate
+
+✅ "No migrations to apply" beyond core contributing none
+
+docker compose exec web pytest — first attempt
+
+❌ 9 of 11 failed: relation "core_testapp_widget" does not exist (see bug/fix writeup under pytest.ini, above)
+
+docker compose exec web pytest — after the pytest.ini fix
+
+✅ 11 passed
+
+Pre-existing issue found, not part of this part's scope: running flake8 . / black --check . across the whole repo (not just the new P-011 files) currently fails on 9 pre-existing files from P-000/P-010 (manage.py, config/asgi.py, config/wsgi.py, config/celery.py, and all four config/settings/*.py files) — every one is missing a trailing newline at EOF (flake8 W292; black wants to add the newline back). This is unrelated to anything P-011 touched (P-011's own files are all clean, confirmed by running the tools scoped to just the new files, above) and was already present in the exact commit pulled from github.com/Ahmed2132003/cavallo-app before any P-011 work started. It will make the CI flake8/black --check steps fail red on the next push regardless of P-011, since CI runs those tools against the whole repo. Flagging per the "flag any deviation" convention rather than silently fixing files outside this part's scope — worth a 1-line-per-file fix (just add the trailing newline) whenever convenient, but Ahmed should decide since it touches files from prior, already-closed parts.
+
+What now exists
+
+core/ — new top-level Django app (not nested under an apps/ package). Per the execution prompt's own instruction ("if apps aren't yet under an apps/ package, create core as a top-level app and note the convention for future apps to follow consistently"): P-000 never created an apps/ package (repo root only has config/), so core sits at the repo root, and every future app should follow the same top-level convention (e.g. posts/, products/, not apps/posts/) unless a later part deliberately introduces an apps/ package and migrates everything at once.
+
+core/__init__.py
+
+core/apps.py — CoreConfig.
+
+core/models.py — TimestampedModel (abstract; created_at auto_now_add, updated_at auto_now), SoftDeleteManager (filters is_deleted=False), SoftDeleteModel (abstract; is_deleted/deleted_at, objects/all_objects, delete() override that soft-deletes via a full save() — deliberately not save(update_fields=...), since restricting fields would silently stop updated_at's auto_now from refreshing — and a separate hard_delete() that calls the real Model.delete()).
+
+core/pagination.py — StandardCursorPagination(CursorPagination): page_size = 20, ordering = "-created_at", page_size_query_param = "page_size", max_page_size = 100. This is the required pagination class for the Feed and any other feed-like/list endpoint per architecture Section 9 point 7 — future parts should import and set this as pagination_class, not define a per-app cursor paginator.
+
+core/permissions.py — module docstring only, per spec; real permission classes land in P-019.
+
+core/migrations/__init__.py — empty; both mixins are abstract = True so there is nothing to migrate for core itself (confirmed above).
+
+core/tests/ — test package:
+
+core/tests/testapp/ — a throwaway Django app (core.tests.testapp, app label core_testapp) whose only model, Widget, combines TimestampedModel + SoftDeleteModel, existing solely to give the test suite a real table. It is never added to INSTALLED_APPS in base.py/dev.py/staging.py/prod.py — only config/settings/test.py (below) adds it — so it never ships and never needs a real migrations module (pytest-django creates its table directly, equivalent to migrate --run-syncdb, precisely because it has no migrations/ package).
+
+core/tests/test_models.py — 8 tests covering: created_at/updated_at set on create, updated_at changes on save while created_at doesn't, default manager excludes soft-deleted rows, all_objects includes them, delete() sets is_deleted/deleted_at without removing the row, delete() also bumps updated_at, hard_delete() actually removes the row, and delete()/hard_delete() are independent (one soft-deletes, the other hard-deletes, verified side by side).
+
+core/tests/test_pagination.py — 3 tests covering: StandardCursorPagination is a real CursorPagination subclass, its config matches architecture Section 9 point 7, and it actually paginates a real queryset of Widget rows in -created_at order.
+
+config/settings/test.py — new, test-only settings module. from .dev import * plus INSTALLED_APPS = INSTALLED_APPS + ["core.tests.testapp"]. Never referenced by manage.py, Docker Compose, or any deployed environment — only by pytest.ini.
+
+pytest.ini — new, repo root. Sets addopts = --ds=config.settings.test (not the plain DJANGO_SETTINGS_MODULE = ... ini option) so pytest (run bare, from anywhere) always resolves Django settings to the test module. Also sets python_files explicitly (matches pytest's own default, made explicit for clarity going forward).
+
+Real bug found and fixed on the real machine, not caught in the authoring environment: the first version of this file used the plain DJANGO_SETTINGS_MODULE = config.settings.test ini option. On Ahmed's real machine, docker compose exec web pytest failed 9 of 11 tests with relation "core_testapp_widget" does not exist — pytest-django reported settings: config.settings.dev (from env), not .test. Root cause: pytest-django's precedence is --ds CLI flag > DJANGO_SETTINGS_MODULE environment variable > DJANGO_SETTINGS_MODULE ini option — and P-010's docker-compose.yml already sets DJANGO_SETTINGS_MODULE: config.settings.dev as a real env var on the web service (for manage.py's sake), which silently outranked the plain ini setting. core.tests.testapp never made it into INSTALLED_APPS, so its table was never created. Fixed by switching to addopts = --ds=config.settings.test, since --ds is the one thing that outranks that env var. Reproduced the exact failure locally (DJANGO_SETTINGS_MODULE=config.settings.dev pytest → same 9 errors) and confirmed the fix resolves it (settings: config.settings.test (from option), 11/11 pass) before re-issuing this file. This is the version to use — if you already copied the earlier pytest.ini****, replace it with this one.
+
+config/settings/base.py — "core" added to INSTALLED_APPS (first project app ever added, replacing the old "no project apps yet" comment). No other changes.
+
+.github/workflows/backend-ci.yml — pytest-django added to the ad-hoc lint/test tooling install line (same convention as flake8/black/pytest — not added to requirements.txt, since it's test tooling, not a runtime dependency). The pytest step's old "exit code 5 is OK, no tests exist yet" workaround from P-002 was removed now that a real test suite exists — a real test failure now genuinely fails the job.
+
+requirements.txt — unchanged. pytest/pytest-django deliberately follow the same P-002 convention as flake8/black: installed ad hoc in CI, not added to the app's runtime requirements. Handoff note for local/Windows-machine use: anyone running pytest outside CI (e.g. docker compose exec web pytest, or directly on the Windows machine) needs pip install pytest pytest-django in that environment first — neither is in requirements.txt or the Docker image yet.
+
+Definition of Done — confirmed
+
+core app created and installed
+
+TimestampedModel, SoftDeleteModel, SoftDeleteManager, CursorPagination (subclass) implemented
+
+Tests pass (11/11, against a real Postgres test database)
+
+No concrete business model created in this part (Widget is test-only, confined to core/tests/testapp/, never installed outside config/settings/test.py)
+
+What the next backend part can assume is available
+
+from core.models import TimestampedModel, SoftDeleteModel — every future content model (Post, Reel, Story, Product, Comment, ...) should inherit both, per architecture Section 9, unless there's an explicit, documented reason not to (e.g. the append-only ModerationLog in P-060/061 — call that exception out explicitly when it comes up).
+
+.objects on any such model already excludes soft-deleted rows everywhere (views, serializers, admin querysets built off the default manager) with zero extra code; reach past that only via .all_objects, deliberately, for admin/cleanup.
+
+Calling .delete() on any such model is already safe/non-destructive (it soft-deletes); only .hard_delete() is genuinely destructive — treat it the same way you'd treat a raw SQL DELETE.
+
+from core.pagination import StandardCursorPagination — set this as pagination_class on any feed-like/list ViewSet/APIView (the Feed itself, product listings, comment lists, etc.) rather than writing a new cursor paginator per app.
+
+core/permissions.py exists and is importable, but is empty until P-019 — don't import permission classes from it yet.
+
+New project-wide app-layout convention, not just for core****: apps live at the repo root (core/, and every future app the same way) — there is no apps/ package, and no future part should introduce one without an explicit, dedicated migration part that moves everything at once.
+
+New project-wide testing convention: pytest (bare) is the standard way to run the backend test suite — it resolves config.settings.test automatically via pytest.ini, which is dev.py plus whatever throwaway test-only apps/models a given app's own tests/ package needs (see core/tests/testapp/ as the pattern to copy: a same-shaped throwaway app under <app>/tests/testapp/, added to INSTALLED_APPS only inside config/settings/test.py, for any future part that needs a real table to test mixin/manager behavior against). Remember to pip install pytest pytest-django locally before running it outside CI.
+

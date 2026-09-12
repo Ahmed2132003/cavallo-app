@@ -7,8 +7,9 @@ does `from .base import *` and overrides only what differs for that
 environment (DEBUG, ALLOWED_HOSTS, CORS, and prod's security headers).
 
 Architecture rule: no app-specific business settings here — this file is
-pure Django/DRF/Channels/Celery framework wiring. No project apps are in
-INSTALLED_APPS yet (added starting with the part that creates them).
+pure Django/DRF/Channels/Celery framework wiring. Project apps are added
+to INSTALLED_APPS starting with the part that creates them (the first is
+`core`, added in Part P-011).
 
 For more information on this file, see
 https://docs.djangoproject.com/en/5.2/topics/settings/
@@ -54,7 +55,8 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt",
     "corsheaders",
     "channels",
-    # Local apps are added starting with the part that creates them.
+    # Local apps
+    "core",
 ]
 
 MIDDLEWARE = [
