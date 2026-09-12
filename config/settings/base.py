@@ -141,6 +141,11 @@ REST_FRAMEWORK = {
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
+    # Part P-012: every DRF error response is reshaped into the
+    # {"error": {"code", "message", "fields"}} envelope Flutter's P-004
+    # error interceptor expects. This shape is a locked contract — see
+    # core/exceptions.py's module docstring before changing it.
+    "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
 }
 
 
