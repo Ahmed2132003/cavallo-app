@@ -941,3 +941,127 @@ Part P-012 is genuinely complete.
 * New exception types needing a specific `code` string (beyond the ones already mapped) just need one new entry added to `_EXCEPTION_CODE_MAP` (and, if it needs a non-generic fallback message, one entry in `_DEFAULT_MESSAGES`) in `core/exceptions.py` — no other file needs to change.
 * The pattern for testing anything that needs a real throwaway DRF endpoint (not just a throwaway model, which is `core/tests/testapp/`'s job) is now established: a `views.py` + `urls.py` pair under `<app>/tests/`, activated per-test-module via `@pytest.mark.urls("<app>.tests.urls")` — copy this shape rather than inventing a new one.
 * **New project-wide tooling note:** `pytest`, `pytest-django`, `flake8`, and `black` are not in the Docker image — anyone running them via `docker compose exec web ...` on a fresh container needs `docker compose exec web pip install pytest pytest-django flake8 black` first (this is a per-container, non-persistent install; it doesn't survive a `docker compose up -d --build` rebuild). Whether to bake these into the `Dockerfile` permanently instead is Ahmed's call — flagged here, not done as part of this part's scope.
+
+## P-013 — Object Storage Integration (S3-Compatible) + Media Upload Utils
+
+**Status: ✅ DONE (fully complete, unblocked)**
+**Phase:** 2 | **Priority:** High | **Complexity:** Medium | **Dependencies:** P-010, P-012
+
+---
+
+### Summary
+
+Part P-013 is 100% complete. The storage backend works end-to-end against a real MinIO
+instance (not a mock) inside Docker Compose, and every original acceptance criterion has
+been verified. This part was originally BLOCKED because the real object storage provider
+hadn't been chosen yet (Backblaze vs Wasabi vs DO Spaces — Section 7 item 2), but the
+blocker was worked around exactly as planned: a fully provider-agnostic integration was
+built and tested against a local S3-compatible store (MinIO), so swapping in the real
+provider later will be a pure environment-variable change with zero code changes.
+
+### Files
+
+**New:**
+- `core/storage_backends.py` — `MediaStorage`, a provider-agnostic storage class that
+  reads endpoint/region/bucket/credentials from `OBJECT_STORAGE_*` env vars.
+- `core/media.py` — `validate_upload(file, allowed_mime_types, max_size_bytes)`, using
+  `python-magic` to sniff the actual file content (not just the extension).
+- `core/tests/test_storage_backends.py`
+- `core/tests/test_media.py`
+
+**Modified:**
+- `config/settings/base.py` — added `STORAGES['default']`.
+- `docker-compose.yml` — added `minio` and `createbuckets` services.
+- `Dockerfile` — added `libmagic1` (required by `python-magic`).
+- `requirements.txt` — `django-storages`, `boto3`, `python-magic`.
+- `.env.example` — `OBJECT_STORAGE_ENDPOINT_URL`, `OBJECT_STORAGE_USE_SSL`,
+  `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `OBJECT_STORAGE_BUCKET`.
+
+> **Convention note:** the original plan assumed `apps/core/`, but the actual repo
+> convention (established in P-011) puts every app directly at the repo root, so
+> `core/media.py` and `core/storage_backends.py` were used instead of `apps/core/...`.
+
+### Actual verification results (all against the real Compose stack, not assumed)
+
+```
+docker compose exec web pytest -v
+================================ 27 passed in 3.14s ================================
+
+docker compose exec web flake8 core/
+(clean — no output)
+
+docker compose exec web black --check core/
+(clean after formatting)
+```
+
+Test coverage includes:
+- A real round-trip (save/retrieve) against MinIO via `MediaStorage`.
+- `validate_upload()`: a valid file passes; a file with a spoofed extension (an
+  executable renamed to `.jpg`) is rejected via content-sniffing; an oversized file is
+  rejected; a disallowed-but-genuine MIME type is rejected.
+- File read-position reset (`file.seek`) after validation, so the file remains savable
+  afterward.
+
+### 🔴 Critical issue resolved during implementation — important note for future parts
+
+**Issue:** while running `docker compose up -d --build`, image pulls failed with:
+```
+Error response from daemon: pull access denied for minio/minio,
+repository does not exist or may require 'docker login'
+```
+
+**Root cause (confirmed via research, not assumed):** the original open-source MinIO
+project has effectively been discontinued by MinIO Inc. — the official GitHub repo was
+marked "no longer maintained" and formally archived in February 2026. The last image
+published to Docker Hub (`minio/minio` and `minio/mc`) shipped with an unpatched
+high-severity CVE, which means Docker Hub is no longer a reliable source for this image.
+
+**Fix applied:** switched the image source in `docker-compose.yml` from `docker.io` to
+`quay.io` (the channel MinIO still officially publishes to):
+
+```yaml
+minio:
+  image: quay.io/minio/minio:latest   # was: minio/minio:latest
+  ...
+createbuckets:
+  image: quay.io/minio/mc:latest      # was: minio/mc:latest
+```
+
+**⚠️ Warning for any future implementation part:** any later part (or any rebuild of
+`docker-compose.yml` from scratch) must use `quay.io/minio/minio` and `quay.io/minio/mc`,
+not `docker.io/minio/...`. If the old name is reintroduced by mistake, the exact same
+pull error will recur.
+
+### Definition of Done — final status
+
+- [x] Storage backend works end-to-end against real MinIO (via `quay.io`)
+- [x] `validate_upload()` tested against spoofed-extension and oversized files
+- [x] `pytest core/` — 27/27 passing
+- [x] `flake8` clean, `black` formatted consistently
+- [x] Dev bucket (`scd-dev-media`) is auto-created on `docker compose up` via the
+      `createbuckets` service (idempotent — `mc mb --ignore-existing`)
+- [x] Swapping in a real production provider (Backblaze/Wasabi/DO Spaces) later is a pure
+      env-var change, no code changes required
+- [ ] **Still pending:** the final decision on the real production provider (Section 7
+      item 2) — this is entirely separate from this part and does not block any other
+      implementation part from proceeding, but **staging/production deployment
+      (Phase 21/22) cannot start until that decision is made and real credentials
+      exist.**
+
+### Handoff notes for any future part that handles uploads (Products, Posts, Reels, Stories, Chat)
+
+1. Any endpoint that accepts a file must call `validate_upload()` **from inside the
+   serializer's `validate_<field>()`**, not directly from the view — because DRF is what
+   converts the Django `ValidationError` into P-012's error envelope format
+   automatically. Calling it directly from a view will produce a differently-shaped
+   response than the rest of the API.
+2. Any new `ImageField`/`FileField` on a model should use `storage=MediaStorage()` (or
+   simply rely on the default `STORAGES['default']` setting — no need to specify it
+   explicitly if using the project default).
+3. There should be no per-content-type custom MIME check anywhere — everything must go
+   through this single shared `validate_upload()`.
+
+---
+
+*Completion note: this section reflects actual, fully executed verification, including
+resolving the MinIO Docker Hub discontinuation issue and switching to quay.io.*
