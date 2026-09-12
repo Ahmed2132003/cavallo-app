@@ -525,3 +525,66 @@ PowerShell — `New-Item -ItemType File ... -Force` does), not a code issue.
   not need to change when that happens, only the `builder:` callback's
   constructor call if the real screen's constructor differs from the
   placeholder's.
+
+Part P-008 — Riverpod DI Baseline + App Bootstrap
+
+Status: COMPLETE
+
+Actually run on the real machine (Flutter, Windows, D:\Cavallo\social_commerce_app):
+
+Check	Result
+flutter pub get	✅ Got dependencies! — no new dependency, no conflict (40 packages have newer versions available, unrelated/pre-existing)
+flutter analyze	✅ No issues found! (40.7s)
+flutter test	✅ +50: All tests passed! (48 from before P-008 + the 2 new error_reporting_test.dart tests)
+flutter run on Android emulator (sdk gphone64 x86 64)	✅ Built, installed, and launched successfully — no exceptions. Only standard emulator-only noise (libEGL called unimplemented OpenGL ES API, a couple of dropped-frame Choreographer/Davey! warnings from the emulator's own renderer, WindowLayoutComponentImpl/ImeTracker framework chatter) — none of it related to this part. Lost connection to device at the end was the user detaching the session, not a crash.
+Push to github.com/Ahmed2132003/cavallo-mobile	✅ Commit f9b8a8d on main (3 files changed, 69 insertions(+), 6 deletions(-))
+Fresh-clone re-verification	✅ Independently re-cloned main after push: lib/main.dart, lib/core/error_reporting.dart, and test/core/error_reporting_test.dart all present with the exact expected content
+
+No real-machine fixes were needed this time — everything matched on the first try.
+
+P-007's router was already present and wired
+
+Per the execution prompt's instruction to check PROJECT_PROGRESS.md and inspect lib/routing/app_router.dart: P-007 is COMPLETE and already fully wired — main.dart already had SocialCommerceApp as a ConsumerWidget using MaterialApp.router(routerConfig: ref.watch(appRouterProvider)). No placeholder MaterialApp was needed; this part only had to finalize the bootstrap sequence around the existing router wiring, not build or swap in the router itself.
+
+What changed
+Created lib/core/error_reporting.dart: void reportError(Object error, StackTrace stack) — the exact stable signature from the spec. Body is a trivial debugPrint, with the required // TODO(Phase 21): replace with Sentry.captureException — signature must not change. comment.
+Modified lib/main.dart: main() now runs, in order —
+WidgetsFlutterBinding.ensureInitialized()
+FlutterError.onError = (details) => reportError(details.exception, details.stack ?? StackTrace.empty);
+PlatformDispatcher.instance.onError = (error, stack) { reportError(error, stack); return true; };
+runApp(const ProviderScope(child: SocialCommerceApp()));
+SocialCommerceApp's body (the MaterialApp.router + appRouterProvider wiring from P-007, AppTheme from P-006) is untouched — only the bootstrap sequence above it changed.
+Added test/core/error_reporting_test.dart: 2 unit tests — reportError returns normally for a normal Exception/StackTrace.current pair, and for a non-Exception error object with StackTrace.empty.
+test/widget_test.dart needed no changes — it already pumps ProviderScope(child: SocialCommerceApp()) and asserts on 'Route: splash' (from P-007), which already satisfies this part's acceptance criteria ("app boots to the router's initial route" / "a basic widget test that pumps the app and confirms it builds without throwing").
+No debug-only throw-button was added to the shipped code — the spec's own Definition of Done says to remove any such temporary trigger before finishing, so it was never added to the committed files in the first place; verifying the reportError funnel is instead covered by the two unit tests above (calling reportError directly, mirroring what a manual debug-button test would confirm) plus the two main.dart assignments compiling and matching the required signatures exactly.
+Still open before this part is 100% closed
+
+Nothing — all Definition of Done items are confirmed:
+
+ main.dart matches the bootstrap sequence (ensureInitialized → FlutterError.onError → PlatformDispatcher.instance.onError → runApp)
+ reportError has the exact stable signature specified (void reportError(Object     error, StackTrace stack))
+ Widget test passes (test/widget_test.dart, unchanged from P-007, still asserts 'Route: splash') — plus the 2 new unit tests for reportError itself
+ No debug-only trigger code left in the final commit (f9b8a8d's diff is exactly the 3 files listed above — main.dart, error_reporting.dart, error_reporting_test.dart — no throw-button scaffolding was ever committed)
+ flutter analyze clean
+ Pushed to github.com/Ahmed2132003/cavallo-mobile and confirmed present on main via a fresh git clone
+What the next parts can assume is available
+reportError(Object error, StackTrace stack) in lib/core/error_reporting.dart is the only place any future error/crash should be routed through — no part should call print/debugPrint directly for an error, or wire a second FlutterError.onError / PlatformDispatcher.instance.onError assignment (only one of each should ever exist, both already set in main.dart).
+Part P-021 (Sentry / monitoring, Phase 21) touches only error_reporting.dart's function body — swap the debugPrint for Sentry.captureException(error, stackTrace: stack) — no changes needed to main.dart or any call site.
+main()'s bootstrap order (ensureInitialized → error hooks → runApp) is now final; any future cross-cutting concern that needs to run at app startup (remote config, feature flags, etc.) should be added as an additional step inside this same main() function, not via a second main.dart rewrite.
+Content
+PROJECT_PROGRESS.md
+
+MD
+
+PROJECT IMPLEMENTATION MASTER PLAN.docx
+
+DOCX
+
+PDF
+
+PART P-008 — Riverpod DI Baseline + App Bootstrap Part Metadata: Phase 1 | Priority: Critical | Complexity: Low | Dependencies: P-001, P-004, P-005 | Parallelizable: No | Backend dependency: No | External input required: No Objective: Wire main.dart into a proper bootstrap sequence: ProviderScope
+
+PASTED
+
+flutter pub get ┌─────────────────────────────────────────────────────────┐ │ A new version of Flutter is available! │ │ │ │ To update to the latest version, run "flutter upgrade". │ └────────────────────────────────────
+
