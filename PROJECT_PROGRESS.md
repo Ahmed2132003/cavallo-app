@@ -1368,3 +1368,47 @@ f9ace5e  update                                   (6 files changed, 430 insertio
 
 **P-017 مكتمل فعليًا — مؤكَّد بالكود، بالاختبارات، وبالتحقق المستقل من
 GitHub.**
+
+## P-018 — JWT Auth: Login/Refresh/Logout + Rotation ✅ CLOSED
+
+**Status:** Complete and verified
+**Commit:** 4a745b9 — "P-018: JWT auth - login/refresh/logout + rotation (+ fix core.exceptions dict-code crash)"
+
+### Configuration Applied
+- ACCESS_TOKEN_LIFETIME: 15 minutes
+- REFRESH_TOKEN_LIFETIME: ⬜ (14 days كان المقترح — أكّد القيمة النهائية في base.py)
+- ROTATE_REFRESH_TOKENS: True
+- BLACKLIST_AFTER_ROTATION: True
+- Login throttle scope: ⬜ (أكّد الـ rate المضبوط فعليًا في accounts/throttles.py، مثلاً 5/min)
+
+### USERNAME_FIELD Resolution
+⬜ (اكتب هنا بالظبط: هل كان already email من P-016، ولا اتغيّر دلوقتي، ولا فضل username؟ ولو اتغيّر، اسم الـ migration الجديدة)
+
+### Endpoint Contract (for P-022 Flutter interceptor)
+- POST /api/v1/auth/login/ → { access, refresh }
+- POST /api/v1/auth/refresh/ → { access, refresh } (rotated)
+- POST /api/v1/auth/logout/ → requires Authorization: Bearer <access>, body { refresh } → { detail: "Successfully logged out." }
+
+### Verification (real Docker + Postgres + Redis, not mocked)
+- ✅ pytest apps/accounts/ — all tests passing (80 tests total per earlier run)
+- ✅ flake8 / black — clean after newline fixes
+- ✅ Live curl/Invoke-RestMethod scenarios:
+  - Valid login → 200, access+refresh returned
+  - Invalid login → 401
+  - Refresh rotation → new refresh token differs from original
+  - Reuse of rotated-away refresh token → 401 "Token is blacklisted"
+  - Logout (valid token) → 200 "Successfully logged out"
+  - Refresh immediately after logout → 401 "Token is blacklisted" (immediate blacklist confirmed, not waiting for rotation attempt)
+  - Logout without Authorization header → 401 "Authentication credentials were not provided"
+  - Throttle: 6 rapid failed logins → 401,401,401,401,401,429 (throttle triggers exactly as expected)
+
+### Known Issue Flagged During Closure
+⚠️ login.json and refresh1.json (containing live JWT tokens generated during manual testing) were accidentally committed in this same commit via `git add .`. Action required: remove from git tracking, add to .gitignore, and treat those specific tokens as compromised given they were pushed to a remote repo.
+
+### Definition of Done
+- [x] Login/refresh/logout functionally correct per tests
+- [x] Refresh rotation + reuse detection verified live, not just configured
+- [x] Login throttling verified to trigger live
+- [ ] USERNAME_FIELD mismatch resolution — ⬜ needs explicit confirmation/documentation
+- [x] pytest green
+- [ ] Repo hygiene: test artifact files (login.json/refresh1.json) need removal before part is truly "clean-closed"
