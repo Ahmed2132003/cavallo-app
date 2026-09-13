@@ -54,6 +54,9 @@ INSTALLED_APPS = [
     # Third-party
     "rest_framework",
     "rest_framework_simplejwt",
+    # Part P-018: required for BLACKLIST_AFTER_ROTATION=True below, and
+    # for LogoutView's explicit RefreshToken(...).blacklist() call.
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     "channels",
     # Local apps
@@ -204,6 +207,45 @@ REST_FRAMEWORK = {
     # error interceptor expects. This shape is a locked contract — see
     # core/exceptions.py's module docstring before changing it.
     "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
+    # Part P-018: architecture Section 10 — login endpoint needs strict,
+    # dedicated throttling against brute force. This "login" scope is
+    # applied ONLY to accounts.views.LoginView via its own
+    # throttle_classes (accounts/throttles.py) — it deliberately is NOT
+    # added to DEFAULT_THROTTLE_CLASSES, so no other endpoint is
+    # affected. General API-wide throttling (all other endpoints) is a
+    # separate, later, Phase-wide concern per this part's own scope note.
+    "DEFAULT_THROTTLE_RATES": {
+        "login": "5/min",
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Simple JWT — Part P-018. Architecture Section 14: refresh-token
+# ROTATION with reuse detection (a rotated-away refresh token being
+# reused is the theft signal). ROTATE_REFRESH_TOKENS + BLACKLIST_AFTER_
+# ROTATION together give exactly that: every successful /auth/refresh/
+# call issues a brand-new refresh token AND blacklists the one that was
+# just used, so presenting that same old token again fails.
+#
+# Lifetimes: read from env (JWT_ACCESS_TTL_MINUTES / JWT_REFRESH_TTL_DAYS
+# — both already reserved in .env.example since Part P-003). Access
+# defaults to 15 minutes; refresh defaults to 14 days, the midpoint of
+# architecture Section 14's specified 7-30 day range — a reasonable
+# default, not the only valid choice, so it's env-overridable rather
+# than hardcoded.
+# ---------------------------------------------------------------------------
+from datetime import timedelta  # noqa: E402
+
+JWT_ACCESS_TTL_MINUTES = env.int("JWT_ACCESS_TTL_MINUTES", default=15)
+JWT_REFRESH_TTL_DAYS = env.int("JWT_REFRESH_TTL_DAYS", default=14)
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=JWT_ACCESS_TTL_MINUTES),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=JWT_REFRESH_TTL_DAYS),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": True,
+    "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
 

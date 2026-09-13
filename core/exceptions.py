@@ -39,6 +39,12 @@ _EXCEPTION_CODE_MAP = {
     "unsupported_media_type": "UNSUPPORTED_MEDIA_TYPE",
     "throttled": "THROTTLED",
     "parse_error": "PARSE_ERROR",
+    # Part P-018: rest_framework_simplejwt's InvalidToken/TokenError
+    # (raised by RefreshView for an expired/garbage/blacklisted refresh
+    # token) carries this code — see _flatten_code()'s docstring below
+    # for why it needs its own entry rather than falling through to a
+    # dict lookup crash.
+    "token_not_valid": "AUTHENTICATION_FAILED",
 }
 
 # Human-readable fallback messages, used only when the exception itself
@@ -112,6 +118,43 @@ def _extract_fields(exc):
     return fields
 
 
+def _flatten_code(raw_code):
+    """
+    Reduce a DRF get_codes() result to a single leaf code string.
+
+    Bug found and fixed during Part P-018 (surfaced by real API tests
+    against RefreshView, not assumed): get_codes() mirrors the *shape*
+    of exc.detail, not just its content. For a plain APIException,
+    detail is a string and get_codes() returns a string — the only case
+    this function originally handled. But rest_framework_simplejwt's
+    InvalidToken (raised by TokenRefreshView for an expired, malformed,
+    or blacklisted refresh token — exactly what Part P-018's rotation/
+    reuse-detection deliberately triggers) has a *dict*-shaped detail
+    (``{"detail": ..., "code": "token_not_valid"}``), so get_codes()
+    returns a dict too. Passing that dict straight into
+    ``_EXCEPTION_CODE_MAP.get(raw_code, ...)`` crashed with
+    ``TypeError: unhashable type: 'dict'`` — a real 500 on every
+    invalid-refresh-token request, which would have made P-018's own
+    "reused refresh token -> 401" acceptance criterion impossible to
+    satisfy correctly.
+
+    This walks the (possibly nested) structure down to one
+    representative leaf string: prefers an explicit "code" key when the
+    dict has one (simplejwt's own shape), otherwise takes the first
+    value found; unwraps a non-empty list/tuple to its first element the
+    same way. `message`/`fields` already carry the full detail
+    elsewhere in this module — this function only needs one string for
+    the top-level `code`.
+    """
+    if isinstance(raw_code, dict):
+        if "code" in raw_code:
+            return _flatten_code(raw_code["code"])
+        return _flatten_code(next(iter(raw_code.values()), None))
+    if isinstance(raw_code, (list, tuple)):
+        return _flatten_code(raw_code[0]) if raw_code else None
+    return raw_code
+
+
 def custom_exception_handler(exc, context):
     """
     DRF EXCEPTION_HANDLER entry point.
@@ -165,6 +208,7 @@ def custom_exception_handler(exc, context):
         raw_code = get_codes() if callable(get_codes) else None
         if raw_code is None:
             raw_code = getattr(exc, "default_code", None)
+        raw_code = _flatten_code(raw_code)
         code = _EXCEPTION_CODE_MAP.get(raw_code, "ERROR")
 
     message = _extract_message(exc, code)

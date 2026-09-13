@@ -16,6 +16,9 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers
+from rest_framework.exceptions import AuthenticationFailed
+
+from accounts.services import authenticate_user
 
 User = get_user_model()
 
@@ -77,3 +80,54 @@ class RegisterSerializer(serializers.Serializer):
                 {"password_confirm": "Passwords do not match."}
             )
         return attrs
+
+
+class LoginSerializer(serializers.Serializer):
+    """
+    Validates POST /api/v1/auth/login/ (Part P-018).
+
+    Public field is `email`, not `username` — even though
+    accounts.models.User (P-016) never overrode USERNAME_FIELD, so
+    Django's real auth machinery still authenticates on `username`
+    under the hood. accounts.services.authenticate_user() bridges the
+    two: it looks the user up by case-insensitive email (mirroring
+    RegisterSerializer.validate_email's own case-insensitive check
+    above) and then calls Django's authenticate() with that user's
+    real `username` (== the exact email string stored at registration
+    time by accounts.services.register_user()). Callers of this
+    serializer never need to know `username` exists at all.
+
+    Deliberately does NOT reveal whether the failure was "no such
+    email" vs "wrong password" — both collapse into the same generic
+    401, which is standard practice against user-enumeration.
+    """
+
+    email = serializers.EmailField()
+    password = serializers.CharField(
+        write_only=True, style={"input_type": "password"}, trim_whitespace=False
+    )
+
+    def validate(self, attrs):
+        user = authenticate_user(email=attrs["email"], password=attrs["password"])
+        if user is None:
+            raise AuthenticationFailed(
+                "Unable to log in with the provided credentials."
+            )
+        if not user.is_active:
+            raise AuthenticationFailed("This account is inactive.")
+        attrs["user"] = user
+        return attrs
+
+
+class LogoutSerializer(serializers.Serializer):
+    """
+    Validates POST /api/v1/auth/logout/ (Part P-018).
+
+    Just the refresh token to blacklist — accounts.views.LogoutView
+    does the actual blacklisting via accounts.services.
+    blacklist_refresh_token(), converting a simplejwt TokenError into
+    the standard validation-error envelope (Part P-012) rather than
+    letting it surface as an unhandled 500.
+    """
+
+    refresh = serializers.CharField()

@@ -11,6 +11,8 @@ import pytest
 from django.test import override_settings
 from rest_framework.test import APIClient
 
+from core.exceptions import _flatten_code
+
 # pytest.mark.urls is pytest-django's own mechanism for pointing a test
 # module at a different ROOT_URLCONF for the duration of its tests —
 # the documented way to do exactly what core/tests/urls.py's docstring
@@ -116,3 +118,47 @@ def test_unhandled_exception_propagates_in_debug_true(client):
     """
     with pytest.raises(RuntimeError, match="Deliberately unhandled"):
         client.get("/unhandled/")
+
+
+class _DictCodeError(Exception):
+    """
+    Minimal stand-in for rest_framework_simplejwt's InvalidToken: a DRF
+    APIException whose get_codes() returns a dict rather than a plain
+    string, because its `detail` is dict-shaped
+    (``{"detail": ..., "code": "some_code"}``). Used to unit-test
+    `_flatten_code` directly, without needing a real expired/blacklisted
+    JWT (that end-to-end path is covered by accounts/tests/test_auth.py
+    instead).
+    """
+
+
+def test_flatten_code_handles_plain_string():
+    assert _flatten_code("authentication_failed") == "authentication_failed"
+
+
+def test_flatten_code_handles_none():
+    assert _flatten_code(None) is None
+
+
+def test_flatten_code_handles_dict_shaped_code_like_simplejwt_invalidtoken():
+    """
+    Regression test for the real bug found while validating Part P-018
+    (accounts/tests/test_auth.py's refresh-rotation tests): simplejwt's
+    InvalidToken has a dict-shaped `detail`
+    (``{"detail": "...", "code": "token_not_valid"}``), so
+    `exc.get_codes()` returns a dict, not a string. Before this fix,
+    `custom_exception_handler` crashed with
+    `TypeError: unhashable type: 'dict'` trying to use that dict as a
+    lookup key — this confirms `_flatten_code` reduces it to the
+    expected leaf string instead.
+    """
+    raw_code = {"detail": "Token is blacklisted", "code": "token_not_valid"}
+    assert _flatten_code(raw_code) == "token_not_valid"
+
+
+def test_flatten_code_handles_nested_list():
+    assert _flatten_code(["outer_code"]) == "outer_code"
+
+
+def test_flatten_code_handles_empty_list():
+    assert _flatten_code([]) is None

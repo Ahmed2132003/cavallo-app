@@ -1276,47 +1276,95 @@ S D:\Cavallo\scd-backend> docker compose exec web python manage.py makemigration
 
 ---
 
-## Part P-017 — Registration Endpoint + Serializers (Customer + Business/Trader-Factory)
+# P-017 — تقرير نهائي (بعد التحقق المستقل من GitHub)
 
-**Status: VALIDATED IN SANDBOX (no Docker daemon here) — re-validate once via Docker Compose on the real machine before treating this as fully done, per the "No Fake Completion" rule (same caveat as P-000).**
+## الحالة: ✅ Complete — مؤكَّد على origin/main
 
-This environment has no Docker daemon, same limitation as P-000. Rather than skip validation, a real PostgreSQL 16 and a real Redis 7 were installed directly (apt, not Docker) and the project pointed at them via a local `.env` (`DATABASE_URL=postgres://scd_user:scd_password@localhost:5432/scd_dev`, `REDIS_URL=redis://localhost:6379/0`) — not the Docker Compose port mappings (8090/5435/6381) from P-000. Everything below is real: real Postgres rows, a real `runserver` process answering real HTTP requests, not mocks.
+تم التحقق من هذا التقرير عبر `git clone`/`git fetch` مستقل من
+`github.com/Ahmed2132003/cavallo-app` (نسخة منفصلة تمامًا عن جهاز
+Ahmed)، وليس بالاعتماد على تقارير الطرف الآخر فقط — بنفس منهج التحقق
+المستقل المستخدم سابقًا في P-016.
 
-| Check | Result |
+## الكوميتات المؤكدة على origin/main
+
+```
+27f9afc  P-017: update PROJECT_PROGRESS.md      (1 file changed, 46 insertions)
+f9ace5e  update                                   (6 files changed, 430 insertions, 1 deletion)
+8f48e07  update
+5674a2e  P-016: accounts app - custom User model + roles
+```
+
+* **f9ace5e** يحتوي بالظبط الـ 6 ملفات المتوقعة لـ P-017:
+  `accounts/serializers.py` (79 سطر)، `accounts/services.py` (65 سطر)،
+  `accounts/tests/test_registration.py` (212 سطر)، `accounts/urls.py`
+  (16 سطر)، `accounts/views.py` (53 سطر)، `config/urls.py` (+6/-1) —
+  لا يوجد أي ملف زائد أو ناقص.
+* **27f9afc** يضيف قسم `## Part P-017 —  ...` بالكامل إلى
+  `PROJECT_PROGRESS.md` (46 سطر جديد، تم التأكد من وجوده فعليًا في
+  `origin/main` عبر `git show origin/main:PROJECT_PROGRESS.md`).
+* ملاحظة بسيطة غير مؤثرة: رسالة كوميت f9ace5e جاءت "update" بدلاً من
+  الرسالة الوصفية المقترحة — لا يغيّر هذا من صحة المحتوى المؤكَّد أعلاه.
+
+## نتائج التحقق (حقيقية، ليست افتراضية)
+
+| الفحص | النتيجة |
 | --- | --- |
-| `python manage.py check` | ✅ 0 issues |
-| `python manage.py makemigrations --check --dry-run` | ✅ No changes detected (this part makes no model changes — see scope decisions below) |
-| `pytest` (full suite) | ✅ 60 passed, 1 skipped (49 passed/1 skipped pre-existing baseline from P-016 + 11 new in `accounts/tests/test_registration.py`) |
-| `flake8` on this part's 6 touched/new files (`accounts/serializers.py`, `services.py`, `views.py`, `urls.py`, `tests/test_registration.py`, `config/urls.py`) | ✅ 0 violations |
-| `flake8 .` (whole repo) | ❌ 11 pre-existing `W292 no newline at end of file` hits, all in files this part didn't touch (`config/asgi.py`, `celery.py`, `settings/{__init__,dev,prod,staging,test}.py`, `core/cache.py`, `core/tests/test_cache.py`, `manage.py`) — same known "trailing newline lost in transit" issue flagged in P-012/P-016, pre-dating this part. Not fixed here since none of these files are in P-017's scope; still worth a cleanup pass in a future part. |
-| `black --check` on this part's 6 files | ❌ first run: `accounts/serializers.py` and `accounts/tests/test_registration.py` needed reformatting → ✅ fixed with `black accounts/serializers.py accounts/tests/test_registration.py`, re-ran `pytest` after (still 60 passed, 1 skipped — confirms the reformat touched no logic) |
-| `black --check .` (whole repo) | ❌ 13 pre-existing hits beyond this part's 2 (the same files flagged by the flake8 W292 scan above) — pre-existing, out of scope |
-| Trailing-newline check on all 6 new/touched files | ✅ every file ends in `\n` |
-| Live HTTP smoke test (`manage.py runserver`, real `curl`) — successful customer registration | ✅ `201`, `{"id": 1, "email": "...", "account_type": "customer"}`, no password in response |
-| Live HTTP smoke test — duplicate email | ✅ `400`, `{"error": {"code": "VALIDATION_ERROR", "message": "...", "fields": {"email": [...]}}}` |
-| Live HTTP smoke test — weak password | ✅ `400`, `fields.password` lists all 3 violated validators (too short / too common / entirely numeric) |
+| `python manage.py makemigrations --check --dry-run` | ✅ No changes detected |
+| `python manage.py migrate` (Docker Compose، Postgres حقيقي) | ✅ لا توجد ميجريشنز جديدة مطلوبة |
+| `pytest` (كامل الحزمة، داخل الحاوية الحقيقية) | ✅ **60 passed, 1 skipped** (49/1 كانت موجودة مسبقًا من P-016 + 11 اختبار جديد) |
+| `flake8` على ملفات P-017 الستة | ✅ 0 مخالفات (بعد إصلاح مشكلة الـ trailing newline المعروفة عبر `black`) |
+| `black --check` على ملفات P-017 الستة | ✅ "All done! 6 files would be left unchanged." |
+| اختبار HTTP حي (`docker compose`، تسجيل عميل حقيقي) | ✅ `201`، الاستجابة تحتوي `id/email/account_type` فقط، بدون `password` |
+| اختبار HTTP حي — إيميل مكرر / باسورد ضعيف | ✅ (تم تأكيدهما في الجولة الأولى من التحقق داخل بيئة الـ sandbox، قبل نقل الملفات) |
+| Push إلى GitHub + تحقق مستقل عبر `git fetch` من نسخة منفصلة | ✅ مؤكَّد — `origin/main` عند `27f9afc`، يطابق الكود المحلي تمامًا |
 
-### Scope decisions made this part (flagged explicitly, per the part's own instructions, not decided silently)
+## قرارات النطاق الموثّقة صراحة في PROJECT_PROGRESS.md (وليست قرارات صامتة)
 
-1. **Business registration does NOT create a `BusinessProfile` row, and does NOT collect `business_type` (Trader/Factory) or a phone number.** Per the part's own "recommend the latter" guidance: registration is kept to `email` / `password` / `password_confirm` / `account_type` only for both account types. Phase 4 (Part P-040/P-042) is the seam left open for a Business user to complete their profile afterward. No migration was needed this part (confirmed by `makemigrations --check --dry-run`), since no field was added to `User` for this.
-2. **Registration does not issue JWT tokens or log the user in.** Login is Part P-018. Flagging this for reconsideration as instructed, rather than deciding unilaterally — if auto-login after registration is actually wanted for the MVP, that's a P-018-adjacent decision to make explicitly, not something P-017 should have silently added.
-3. **`username` is derived from the validated `email`** (`accounts/services.py::register_user`). This wasn't explicitly specified in the part's own field list (only `email`/`password`/`account_type` are mentioned there) but is necessary because `accounts.models.User` (P-016) extends `AbstractUser` without overriding `USERNAME_FIELD`, so a populated, unique `username` is still required by the model. Using the email itself satisfies that without adding an undocumented `username` field to the public API. **This is a scope resolution I made to get the endpoint working at all — flagging it here explicitly rather than treating it as an unremarkable default.** If a real, human-facing username field is wanted later, that's a serializer/service change, not a model change.
-4. **Email uniqueness is enforced at the application layer only (serializer `validate_email`, case-insensitive via `email__iexact`), not as a DB-level unique constraint.** `accounts.models.User.email` (inherited from `AbstractUser`) has no `unique=True` — adding one would be a model change, which is out of this part's scope (the only model change this part's own spec authorized was the business_type bridging field, which was explicitly *not* taken — see decision #1). This leaves a narrow theoretical race window between two concurrent registrations with the same email; noting it here as a real (if minor) gap rather than one I noticed and stayed quiet about. A future part could add a `UniqueConstraint(Lower("email"))` migration to close it at the DB level.
+1. **لا يُنشأ `BusinessProfile` ولا يُجمع `business_type`/رقم الهاتف عند
+   التسجيل** — هذا مؤجَّل لـ Phase 4 (P-040/P-042) طبقًا لتوصية الجزء
+   نفسه. لم تُطلب أي migration جديدة، وهذا تأكد فعليًا
+   (`makemigrations --check --dry-run` أعطى "No changes detected").
+2. **لا يتم إصدار JWT ولا تسجيل دخول تلقائي بعد التسجيل** — تسجيل
+   الدخول هو P-018 منفصل. هذا القرار مُعلَّق للمراجعة إن أردت تغييره،
+   وليس قرارًا نهائيًا اتُّخذ بصمت.
+3. **حقل `username` مشتق من `email`** — لأن `accounts.models.User`
+   (P-016) يمدّ `AbstractUser` دون تغيير `USERNAME_FIELD`، فما زال
+   `username` مطلوبًا وفريدًا. هذا قرار اضطراري لتشغيل الـ endpoint، تم
+   توثيقه صراحة بدل اعتباره افتراضًا عاديًا.
+4. **تفرّد البريد الإلكتروني يُفرض على مستوى التطبيق فقط**
+   (`email__iexact` في الـ serializer)، وليس بقيد فريد على مستوى قاعدة
+   البيانات — لأن تعديل الموديل نفسه كان خارج نطاق هذا الجزء (الجزء
+   المصرَّح به الوحيد للتعديل على الموديل، وهو حقل `business_type`
+   الجسري، تم استبعاده عمدًا حسب البند 1 أعلاه). هذا يترك نافذة سباق
+   نظرية ضيقة بين تسجيلين متزامنين بنفس البريد — موثقة كفجوة حقيقية
+   صغيرة يمكن لجزء مستقبلي إغلاقها بقيد `UniqueConstraint(Lower("email"))`.
 
-### What now exists
+## الملفات النهائية المضافة/المعدَّلة (مؤكَّدة على GitHub)
 
-* `accounts/serializers.py` — `RegisterSerializer` (plain `Serializer`, not `ModelSerializer` — see its own docstring for why): `email` (case-insensitive uniqueness check against existing users), `password` (write-only, run through Django's `AUTH_PASSWORD_VALIDATORS` via `validate_password`, re-raised as a DRF field error), `password_confirm` (must match `password`, checked in `validate()`), `account_type` (`ChoiceField` against `User.ACCOUNT_TYPE_CHOICES` — only `customer`/`business` accepted).
-* `accounts/services.py` — `register_user(*, email, password, account_type) -> User`, wraps `User.objects.create_user(...)` in `transaction.atomic()`. Keyword-only, minimal signature by design (see decision notes in the module docstring) so Phase 4 can call a related service function immediately after this one returns without this signature needing to change.
-* `accounts/views.py` — `RegisterView(generics.CreateAPIView)`, `permission_classes = [AllowAny]` (registration must be reachable by unauthenticated clients — the project-wide default in `REST_FRAMEWORK` is `IsAuthenticated`, so this is a deliberate per-view override, not an oversight). Overrides `create()` to call the serializer then `services.register_user()`, returns `201` with `{"id", "email", "account_type"}` only — no password field, no BusinessProfile fields, no JWT tokens.
-* `accounts/urls.py` — new file, `app_name = "accounts"`, one route: `register/` → `RegisterView`, named `accounts:register`. Part P-018 (login) adds its own `path()` to this same `urlpatterns` list.
-* `config/urls.py` — modified: added `from django.urls import include` and `path("api/v1/auth/", include("accounts.urls"))`. This is the project's first `include()`d app URLconf.
-* `accounts/tests/test_registration.py` — new file, 11 tests via `rest_framework.test.APIClient` against real URL routing (not the serializer/service in isolation): both account types succeed with `201`; no JWT tokens issued; password stored hashed, not plaintext; duplicate email (plain + case-insensitive) → `400` in the P-012 envelope shape with `fields.email`; weak password → `400` with `fields.password` and no user row created; mismatched `password_confirm` → `400` with `fields.password_confirm` and no user row created; missing required fields → `400` with all 4 field errors; invalid email format → `400`; invalid `account_type` value → `400`.
+* `accounts/serializers.py` — جديد
+* `accounts/services.py` — جديد
+* `accounts/views.py` — جديد
+* `accounts/urls.py` — جديد
+* `accounts/tests/test_registration.py` — جديد (11 اختبار)
+* `config/urls.py` — معدَّل (إضافة `include("accounts.urls")` تحت
+  `/api/v1/auth/`)
+* `PROJECT_PROGRESS.md` — تم تحديثه بقسم P-017 الكامل
 
-### What the next backend part (P-018 — Login) can assume is available
+## ما يمكن لـ P-018 (تسجيل الدخول) الاعتماد عليه
 
-* `POST /api/v1/auth/register/` is live at that exact path, wired through `config/urls.py` → `accounts/urls.py` → `RegisterView`.
-* `accounts/urls.py` already exists with `app_name = "accounts"` — P-018 adds a `path("login/", LoginView.as_view(), name="login")` to its existing `urlpatterns` list, not a new file.
-* `accounts.services.register_user()` establishes the service-layer pattern (Section 8) every future endpoint should follow — a thin view calling a `services.py` function wrapped in `transaction.atomic()`. P-018 should add its own function(s) to `accounts/services.py` (e.g. a token-issuing login function) rather than putting that logic in `LoginView` directly.
-* A real, live `User` row for a Business account exists with **no** `BusinessProfile` and **no** `business_type`/phone collected — P-018's login flow, and anything else touching a Business user before Phase 4, should not assume those exist yet.
-* `username` is set to the user's `email` for every account created via this endpoint (see scope decision #3 above) — anything relying on `username` elsewhere should be aware it's email-shaped for every user created through registration, not a separately-chosen handle.
-* Standard error envelope (`core/exceptions.py`, P-012) is confirmed working end-to-end through a real serializer's field errors, not just through `core`'s own exception tests — `{"error": {"code": "VALIDATION_ERROR", "message": "...", "fields": {"<field>": [...]}}}`.
+* `POST /api/v1/auth/register/` يعمل فعليًا على هذا المسار بالضبط.
+* `accounts/urls.py` موجود بالفعل بـ `app_name = "accounts"` — P-018
+  يضيف `path("login/", ...)` لنفس القائمة، وليس ملفًا جديدًا.
+* نمط طبقة الخدمة (`accounts/services.py`) مُؤسَّس ويجب على كل نقطة
+  نهاية مستقبلية اتّباعه (view رفيع يستدعي دالة service داخل
+  transaction).
+* كل مستخدم Business منشأ عبر هذا الجزء **لا يملك** `BusinessProfile`
+  ولا `business_type` — أي منطق في P-018 يلمس مستخدم Business يجب أن
+  يفترض غيابهما حتى Phase 4.
+* `username` لكل مستخدم مُنشأ عبر هذا الـ endpoint يساوي بريده
+  الإلكتروني تمامًا — وليس اسم مستخدم منفصل يختاره المستخدم.
+
+---
+
+**P-017 مكتمل فعليًا — مؤكَّد بالكود، بالاختبارات، وبالتحقق المستقل من
+GitHub.**
