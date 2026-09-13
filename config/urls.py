@@ -16,7 +16,7 @@ Including another URLconf
 """
 
 from django.contrib import admin
-from django.urls import path
+from django.urls import include, path
 
 from core.views import health_check
 
@@ -25,4 +25,8 @@ urlpatterns = [
     # Part P-015: unauthenticated liveness/readiness probe for load
     # balancers and uptime monitors. See core/views.py.
     path("health/", health_check),
+    # Part P-017: first real API endpoint (registration). Part P-018
+    # (login) and every later auth endpoint are added to
+    # accounts/urls.py's own urlpatterns, not here.
+    path("api/v1/auth/", include("accounts.urls")),
 ]
