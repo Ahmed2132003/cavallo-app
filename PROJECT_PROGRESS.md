@@ -1412,3 +1412,57 @@ GitHub.**
 - [ ] USERNAME_FIELD mismatch resolution — ⬜ needs explicit confirmation/documentation
 - [x] pytest green
 - [ ] Repo hygiene: test artifact files (login.json/refresh1.json) need removal before part is truly "clean-closed"
+
+## PART P-019 — Permission-Based Authorization Framework ✅ COMPLETE
+
+Phase: 3 | Priority: Critical | Complexity: Medium | Dependencies: P-016, P-018 | Status: DONE
+
+ما تم تنفيذه
+
+Custom Permissions — عُرّفت عبر Meta.permissions على User model في accounts/models.py:
+
+accounts.can_moderate_content
+accounts.can_manage_categories
+accounts.can_ban_users
+accounts.can_manage_notifications
+accounts.can_manage_monetization
+
+موثّق فيها إن Phase 6 هتضيف permissions خاصة بـ ModerationQueue لما الموديل يتعمل، والاتنين هيتعايشوا مع بعض.
+
+Groups Seeded (data migration accounts/migrations/0003_seed_authorization_groups.py):
+
+Group	Permissions
+Moderator	can_moderate_content
+Admin	can_moderate_content, can_manage_categories, can_ban_users, can_manage_notifications, can_manage_monetization
+SuperAdmin	نفس صلاحيات Admin (+ متوقع يكون is_superuser=True معمول عليه مباشرة، مش permission إضافية)
+
+HasCapability — في core/permissions.py: factory function بترجع DRF permission class بتتحقق من request.user.is_authenticated وrequest.user.has_perm(f"accounts.{codename}").
+
+Migrations:
+
+accounts/migrations/0002_alter_user_options.py
+accounts/migrations/0003_seed_authorization_groups.py
+
+Validation:
+
+Test-only view (accounts/tests/views.py + accounts/tests/urls.py) بتستخدم HasCapability('can_moderate_content')
+accounts/tests/test_permissions.py: يوزر في Moderator group → 200، Customer عادي → 403 (error envelope من P-012)، شيل اليوزر من الـ group → رجع 403 من غير أي تعديل كود
+pytest: 90 passed, 1 skipped ✅
+flake8: نضيف بالكامل بعد black reformat ✅
+black --check: All done! 5 files would be left unchanged. ✅
+
+Git:
+
+git commit -m "P-019: permission-based authorization framework (HasCapability + seeded groups)"
+git push
+
+Confirmed مستقلًا مقابل origin/main — commit 21fbad3، git diff HEAD origin/main طلع فاضي (مطابقة تامة).
+
+Definition of Done
+ Three Groups seeded with correct permission sets via data migration
+ HasCapability permission class implemented and genuinely tested
+ No concrete Admin/Moderator endpoint was needed to validate this (test-only view)
+ Documented seam for Phase 6 to add moderation-app-specific permissions later
+Handoff Notes لـ Phase 6
+
+أي endpoint حقيقي للـ moderation لازم يستخدم HasCapability('can_moderate_content') (أو أي codename موثّق فوق) — ممنوع أي role == check يدوي أو صلاحية جديدة من غير ما تتضاف هنا في القايمة الرسمية.
