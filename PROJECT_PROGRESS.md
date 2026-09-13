@@ -1134,3 +1134,26 @@ MD
 
 PART P-014 — Redis Cache Framework Config Part Metadata: Phase 2 | Priority: Medium | Complexity: Low | Dependencies: P-010 | Parallelizable: Yes | Backend dependency: Yes | External input required: No Objective: Wire Django's cache framework to the existing Redis instance (from P-000) using a dis
 
+## P-015 — Health Check Endpoint + Structured Logging — ✅ COMPLETE
+
+**Files added/modified:**
+- core/middleware.py — RequestIdMiddleware (contextvars-based, honors incoming X-Request-ID, echoes it back in response header)
+- core/logging_utils.py — request_id ContextVar + RequestIdFilter
+- core/views.py — health_check (unauthenticated, DB via connection.ensure_connection(), Redis via cache set/get roundtrip, no exception detail leaked in response body)
+- config/settings/base.py — MIDDLEWARE + JSON LOGGING config (python-json-logger)
+- config/urls.py — registered /health/
+- requirements.txt — added python-json-logger==4.1.*; also added pytest==8.* and pytest-django==4.* (deviation — see below)
+- core/tests/test_health.py, test_middleware.py, test_logging.py — 11 new tests
+
+**Validation (run inside Docker, not just local venv):**
+- `docker compose exec web pytest` → 38 passed, 1 skipped (pre-existing, MinIO-related, unrelated to P-015)
+- `docker compose exec web python manage.py check` → no issues
+- Manual curl against real Postgres+Redis: healthy → 200; DB killed → 503; Redis killed → 503; both restored → 200
+- Confirmed request_id present and matching X-Request-ID response header in emitted log lines
+
+**Deviations documented:**
+- Path convention: core/ at repo root, not apps/core/ (established since P-011, per existing convention — not new to this part).
+- requirements.txt was missing pytest and pytest-django entirely — they existed only in a local dev venv, not tracked anywhere, which meant `docker compose exec web pytest` failed with "executable file not found" on a fresh build. Added both to requirements.txt so the test suite is reproducible for anyone building the image from scratch.
+- django.request / django.server log lines legitimately show request_id: "no-request" — these are emitted by Django's BaseHandler after the middleware chain returns, so they fall outside our middleware's context. Only app-level logs (views, our own middleware, custom loggers) carry the real request_id. Documented as expected behavior, not a bug.
+
+**Phase 2 status:** COMPLETE — P-010 through P-015 all passing under the same standard (verified inside Docker, real Postgres+Redis, not mocks/local-only). Phase 3 may begin.
