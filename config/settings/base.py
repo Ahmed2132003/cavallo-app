@@ -58,7 +58,19 @@ INSTALLED_APPS = [
     "channels",
     # Local apps
     "core",
+    "accounts",
 ]
+
+# ---------------------------------------------------------------------------
+# Custom user model — Part P-016. MUST be set before the first `migrate`
+# ever runs against a database: swapping AUTH_USER_MODEL after real
+# migrations/data exist is extremely painful, which is why accounts is
+# the very first Phase 3 part, before anything else references User.
+# See accounts/models.py's module docstring for the full field-to-role
+# mapping (account_type, is_staff, is_superuser, is_moderator,
+# is_business_verified) that Part P-019's permission system builds on.
+# ---------------------------------------------------------------------------
+AUTH_USER_MODEL = "accounts.User"
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
