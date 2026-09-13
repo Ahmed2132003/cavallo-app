@@ -1157,3 +1157,120 @@ PART P-014 — Redis Cache Framework Config Part Metadata: Phase 2 | Priority: M
 - django.request / django.server log lines legitimately show request_id: "no-request" — these are emitted by Django's BaseHandler after the middleware chain returns, so they fall outside our middleware's context. Only app-level logs (views, our own middleware, custom loggers) carry the real request_id. Documented as expected behavior, not a bug.
 
 **Phase 2 status:** COMPLETE — P-010 through P-015 all passing under the same standard (verified inside Docker, real Postgres+Redis, not mocks/local-only). Phase 3 may begin.
+
+P-016 — accounts App: User Model + Roles — ✅ COMPLETE
+
+Phase: 3 | Priority: Critical | Complexity: Medium | Dependencies: P-011, P-012 | Parallelizable: No
+
+First part of Phase 3. Authored and first validated in a Docker-less sandbox (Python venv + SQLite, since no Postgres/Docker daemon was available in that environment) — same constraint every earlier part has documented. Ahmed then ran the real Docker Compose stack end-to-end on the real Windows machine (D:\Cavallo\scd-backend), against real Postgres — everything passed, with one small formatting hiccup along the way (documented below, same class of issue as P-012's).
+
+Naming/convention followed
+
+Per P-011's locked convention, the app lives at accounts/ (repo root), not apps/accounts/ — matches every other app in this repo (core/, and now accounts/).
+
+What now exists
+accounts/__init__.py, accounts/apps.py — AccountsConfig, name = "accounts".
+accounts/models.py — User(AbstractUser, TimestampedModel):
+Does not inherit core.models.SoftDeleteModel (per spec — accounts don't need soft-delete; is_active=False already covers "deactivate, don't destroy").
+Reuses is_staff/is_superuser (from AbstractUser) for Admin/Super Admin — no redundant new fields for those two.
+New fields: account_type (CharField, choices customer/business, default "customer"), is_moderator (BooleanField, default False), is_business_verified (BooleanField, default False).
+Decision on "account_type is required" (spec asked to decide and document, not leave ambiguous): account_type is never null/blank — every row has a real value — but it defaults to "customer" rather than raising a validation error when omitted. Reasoning: manage.py createsuperuser has no prompt for custom fields unless added to REQUIRED_FIELDS, and forcing that prompt would be a strange UX for an Admin/Super Admin account whose real capabilities come from is_staff/is_superuser, not account_type. So Admin/Super Admin accounts silently get account_type="customer" (semantically inert for them), while ordinary registration flows (Part P-017 onward) are expected to always pass account_type explicitly.
+Full field-to-role mapping documented in the class docstring: is_superuser→Super Admin, is_staff→Admin, is_moderator→Moderator, account_type→Customer/Business.
+Meta.db_table = "accounts_user" (explicit, so a future apps/ restructuring — if it ever happens — can't accidentally rename the underlying table out from under existing data).
+accounts/admin.py — UserAdmin(DjangoUserAdmin): extends Django's own UserAdmin (not a from-scratch ModelAdmin) so the existing password-change/permissions screens keep working unchanged; adds account_type, is_moderator, is_business_verified to list_display, list_filter, fieldsets, and add_fieldsets.
+accounts/migrations/0001_initial.py — real, machine-generated via manage.py makemigrations accounts (not hand-written), depends on auth.0012_alter_user_first_name_max_length.
+accounts/tests/test_models.py — 11 tests: customer/business creation with correct account_type, the account_type default-to-"customer" behavior, is_moderator/is_business_verified default-False and settable-True, createsuperuser → is_superuser=True/is_staff=True and still gets a valid account_type, created_at/updated_at behavior (mirrors P-011's own mixin tests).
+config/settings/base.py — "accounts" added to INSTALLED_APPS (right after "core"); AUTH_USER_MODEL = "accounts.User" added, set before any migration ever ran against a real DB in this repo (repo had zero concrete migrations before this part — core's mixins are abstract-only, per P-011).
+Deviation flagged: .flake8 needed a migrations exclude
+
+accounts/migrations/0001_initial.py is the first concrete (non-abstract) migration file this repo has ever had — core (P-011) deliberately produces zero migrations since both its mixins are abstract = True. The existing .flake8 (max-line-length = 88, no exclude) had therefore never actually been tested against a real Django-generated migration file, and it failed on several of Django's own auto-generated lines (e.g. AbstractUser's built-in is_superuser/username help_text/verbose_name strings) that are >88 characters and cannot reasonably be hand-wrapped — black won't split string literals, and hand-editing Django's own boilerplate inside a generated migration is not something any future part should do.
+
+Fix applied: added exclude = */migrations/* to .flake8. This is a repo-wide convention change (every future app's migrations are now exempt from flake8, not just this one) — flagged explicitly per the project's "flag any deviation" convention, since it changes CI behavior for every future part, not just this one.
+
+Issue hit on the real machine, and the fix (same class of issue as P-012's)
+
+First docker compose exec web flake8 . / black --check . pass on the real machine flagged all 5 files this part touched (accounts/admin.py, accounts/apps.py, accounts/models.py, accounts/tests/test_models.py, config/settings/base.py) with W292 no newline at end of file — the same Windows-transfer trailing-newline artifact P-012 (and P-009 before it, with CRLF) already hit and documented. The other 11 flagged files (manage.py, config/asgi.py, config/wsgi.py, config/celery.py, 4× config/settings/*.py, core/cache.py, core/tests/test_cache.py) are pre-existing from earlier parts, already flagged in P-011/P-012/P-014's own notes, and were deliberately left untouched here — still Ahmed's call, per those parts' own note.
+
+Fixed by appending a trailing newline to the 5 P-016 files directly inside the container (writes back through the mounted volume to the real files on D:\Cavallo\scd-backend):
+
+powershell
+docker compose exec web python -c "
+files = [
+    'accounts/admin.py',
+    'accounts/apps.py',
+    'accounts/models.py',
+    'accounts/tests/test_models.py',
+    'config/settings/base.py',
+]
+for f in files:
+    with open(f, 'rb') as fh:
+        data = fh.read()
+    if not data.endswith(b'\n'):
+        with open(f, 'ab') as fh:
+            fh.write(b'\n')
+"
+
+Separately, black --check . also wanted to reformat accounts/migrations/0001_initial.py — expected and harmless for an auto-generated migration file (no logic change, purely black's own formatting of the generated CreateModel call). Fixed with:
+
+powershell
+docker compose exec web black accounts/migrations/0001_initial.py
+
+Re-ran flake8 accounts/ config/settings/base.py and black --check accounts/ config/settings/base.py after both fixes — both clean, confirming these were purely formatting/newline issues, not real content problems.
+
+Lesson reconfirmed for future parts (same as P-012's): when files are authored in a non-Docker environment and handed to the Windows machine, run a flake8/black --check pass scoped to just the new files right after installing the tooling, before assuming trailing-newline hygiene carried over correctly.
+
+Validation results (real machine, Docker Compose, real Postgres — D:\Cavallo\scd-backend)
+Check	Result
+docker compose exec web python manage.py makemigrations --check --dry-run	✅ No changes detected
+docker compose exec web python manage.py migrate	✅ all migrations applied cleanly, including accounts.0001_initial, against real Postgres
+docker compose exec web python manage.py createsuperuser	✅ superuser created interactively
+docker compose exec web pip install pytest pytest-django flake8 black	✅ (pytest/pytest-django already present from P-011/P-012; flake8/black freshly installed — not baked into the image, per that established convention)
+docker compose exec web pytest — first run	✅ 49 passed, 1 skipped (11 new from accounts/, 38 pre-existing)
+docker compose exec web flake8 . — first run	❌ 16 files flagged W292 (5 from this part, 11 pre-existing — see fix above)
+docker compose exec web black --check . — first run	❌ 17 files flagged, incl. the 5 P-016 files + the generated migration + pre-existing ones
+Trailing-newline fix + black reformat of the migration	✅ applied
+docker compose exec web flake8 accounts/ config/settings/base.py — after fix	✅ 0 violations
+docker compose exec web black --check accounts/ config/settings/base.py — after fix	✅ All done! 9 files would be left unchanged.
+docker compose exec web pytest — after fix	✅ 49 passed, 1 skipped, confirming the formatting fixes touched no logic
+Pushed and confirmed on GitHub
+
+Commit 5674a2e on main (message: P-016: accounts app - custom User model + roles) — 10 files changed, 467 insertions(+), 2 deletions(-): .flake8, accounts/__init__.py, accounts/admin.py, accounts/apps.py, accounts/migrations/0001_initial.py, accounts/migrations/__init__.py, accounts/models.py, accounts/tests/__init__.py, accounts/tests/test_models.py, config/settings/base.py.
+
+Pushed to github.com/Ahmed2132003/cavallo-app and independently re-verified via git fetch from a separate clone: main at 5674a2e, all 10 files present at the correct paths.
+
+Definition of Done — confirmed, on the real machine
+ Custom User model is AUTH_USER_MODEL, migrated cleanly on a fresh/real Postgres DB
+ Both account types (customer/business) creatable and distinguishable
+ Django Admin registration functional (login + changelist + add page all confirmed working, in the sandbox pass — not re-checked separately on the real machine, but no code path differs from what already ran green there via pytest)
+ Field-to-role mapping documented in the model docstring
+ pytest — 49/49 passed (1 pre-existing skip, unrelated), against real Postgres via real Docker Compose
+ flake8/black --check clean on every file this part touched
+ Pushed to github.com/Ahmed2132003/cavallo-app (commit 5674a2e on main) and confirmed present via git fetch
+
+## Part P-016 is genuinely complete.
+
+What the next backend part can assume is available
+from accounts.models import User — or, preferably, from django.contrib.auth import get_user_model — is now the real, swapped-in user model for the whole project.
+user.account_type ("customer"/"business"), user.is_staff, user.is_superuser, user.is_moderator, user.is_business_verified are the five attributes P-019's permission-flag system (and every future admin-action part) should read — no future part should invent a parallel role/permission representation.
+account_type defaults to "customer" when not explicitly supplied — Part P-017 (registration) must explicitly pass account_type for real signups; don't rely on the model default there, since a real registration flow always knows which type the user is registering as.
+BusinessProfile/CustomerProfile (Phase 4, Part P-040) are not built yet — this part is the User row only, exactly per its own scope.
+The permission-flag enforcement mechanism (reading these fields inside DRF permission classes) is not built yet — that's Part P-019; core/permissions.py is still just a docstring.
+New repo-wide convention: .flake8 now excludes */migrations/* — no future part needs to hand-fix long lines inside an auto-generated migration file; just don't hand-edit migration files' generated content in general.
+New reminder, reconfirmed from P-012: files authored off the Windows machine and handed over often lose their trailing newline in transit — run a scoped flake8/black --check pass on just the new files right after installing the tooling in a fresh container.
+Content
+PROJECT IMPLEMENTATION MASTER PLAN.docx
+
+DOCX
+
+PDF
+
+PROJECT_PROGRESS.md
+
+MD
+
+PART P-016 — accounts App: User Model + Roles Part Metadata: Phase 3 | Priority: Critical | Complexity: Medium | Dependencies: P-011, P-012 | Parallelizable: No | Backend dependency: Yes | External input required: No Objective: The accounts Django app with a custom User model supporting both Custo
+
+PASTED
+
+S D:\Cavallo\scd-backend> docker compose exec web python manage.py makemigrations --check --dry-run No changes detected PS D:\Cavallo\scd-backend> docker compose exec web python manage.py migrate Operations to perform: Apply all migrations: accounts, admin, auth, contenttypes, sessions Runnin
+
