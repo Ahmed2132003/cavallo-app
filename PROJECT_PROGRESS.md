@@ -1658,3 +1658,203 @@ manual run already succeeded end-to-end.
       points
 - [x] `flutter analyze` clean
 - [x] `flutter test test/features/auth/` — 14/14 passing
+
+## Part P-021a — Flutter: SessionNotifier (Session State Core) — PART 1 OF 3 ⚠️ VALIDATED LOCALLY — PENDING PUSH + FRESH-CLONE CONFIRMATION
+
+**Status:** Code + tests authored against the real, already-closed P-020
+source (`auth_repository.dart`, `user_entity.dart`,
+`auth_repository_impl.dart`, `secure_token_storage.dart` — read directly,
+not guessed) and against the real `pubspec.yaml` (confirmed
+`flutter_riverpod: 3.3.2` pinned exact, no `riverpod_generator`/
+`riverpod_annotation` dependency — so this part uses plain, non-code-gen
+Riverpod, not `@riverpod`).
+
+Authoring happened in a sandbox with no Flutter SDK/network (same
+documented gap as Parts P-001/P-008/P-009), so `flutter analyze`/
+`flutter test` could not be run there. Ahmed then ran all validation
+commands on the real machine (`D:\Cavallo\social_commerce_app`) — see
+results below. One real issue turned up and was fixed (see "Real-machine
+finding" below); everything is green after that fix. **The only thing
+left before this part is fully ✅ CLOSED is pushing to
+`cavallo-mobile` and confirming via a fresh `git clone`**, matching every
+prior Flutter part's own closure convention.
+
+### ⚠️ Known simplification — flagged for review, not silent
+
+The original part spec allowed `restoreSession()`/`login()` to
+"optimistically set state to an authenticated `User`," with an explicit
+fallback to "reconstruct a minimal User from what's available" if no
+lightweight profile endpoint exists. Reading the real `AuthRepository`
+(P-020) instead of guessing confirmed there is *no* profile data
+available at all after `login()`/`refresh()` — both return
+`Future<void>`, and the backend's `/login/`/`/refresh/` responses are
+`{access, refresh}` only (no user fields, no `/me/` endpoint, no JWT
+decoding infra anywhere in the app yet — all already flagged as open
+items in `AuthRepository`'s own docstring from P-020).
+
+Since `User` has three required, non-nullable fields (`id`, `email`,
+`accountType`) with no "unknown yet" representation, and this part isn't
+scoped to change `user_entity.dart`, `SessionNotifier` uses a clearly
+named, clearly documented placeholder (`_placeholderAuthenticatedUser`,
+`id: -1`, `accountType: AccountType.customer`) whenever it must produce a
+non-null `User` without real profile data behind it:
+
+- `restoreSession()` (i.e. `build()`): token exists → placeholder User
+  with `email: ''` (nothing at all is known at cold-start beyond "a
+  token exists").
+- `login(email, password)`: placeholder User with the **real** `email`
+  the caller passed in (that much is genuinely known — it's what was
+  just typed into a login form). `id`/`accountType` are still fabricated.
+
+**Nothing anywhere in the app should ever branch on the placeholder
+`id`/`accountType` values** (e.g. no `if (accountType == business)`
+feature-gating) until a real fix lands — most likely a backend `/me/`
+endpoint. This needs an explicit decision from Ahmed, not a silent
+workaround; flagging it here exactly as `AuthRepository`'s own docstring
+already does.
+
+### `register()` does not authenticate — a related, separate deviation
+
+`AuthRepository.register()` returns a real `User`, but the register
+endpoint issues no tokens (per P-020) — registering does not, by itself,
+log anyone in. `SessionNotifier.register(...)` therefore does **not**
+touch `state`; it only forwards to `AuthRepository.register` and returns
+the real `User` it gets back. Whether "register and land signed in"
+should chain a `login()` call afterward is the same open UX decision
+P-020's own handoff notes already left to Part P-021c's RegisterScreen —
+not decided here either.
+
+### Confirmed SessionNotifier API (exact method signatures)
+
+```dart
+class SessionNotifier extends AsyncNotifier<User?> {
+  @override
+  Future<User?> build(); // = restoreSession()
+
+  Future<void> login({required String email, required String password});
+
+  Future<User> register({
+    required String email,
+    required String password,
+    required String passwordConfirm,
+    required AccountType accountType,
+  });
+
+  Future<void> logout();
+}
+
+final sessionProvider = AsyncNotifierProvider<SessionNotifier, User?>(
+  SessionNotifier.new,
+);
+```
+
+- `sessionProvider` state: `AsyncValue<User?>` — `null` = unauthenticated,
+  non-null `User` = authenticated (real for `register()`'s return value
+  only; a documented placeholder everywhere `state` itself holds a
+  non-null `User`, per the simplification above).
+- `login`/`logout` update `state` directly, wrapped in `AsyncLoading` /
+  `AsyncData` / `AsyncError` per normal Riverpod convention.
+- `register` returns its `User` directly and does **not** touch `state`.
+- **This is NOT yet wired to the router or any screen.** Part P-021b (a
+  separate execution) will wire `sessionProvider` into the router's
+  Phase-3 redirect guard and build LoginScreen; Part P-021c will build
+  RegisterScreen.
+
+### Files created
+
+- `lib/features/auth/presentation/session_provider.dart` —
+  `SessionNotifier` + `sessionProvider`, as above. Depends on
+  `authRepositoryProvider` (P-020) and `secureTokenStorageProvider`
+  (P-005) directly; no router or screen code touched.
+- `test/features/auth/presentation/session_provider_test.dart` — 8 unit
+  tests against a hand-rolled `FakeAuthRepository` (this project doesn't
+  use mockito/mocktail anywhere — confirmed by searching
+  `PROJECT_PROGRESS.md` — so this follows the existing hand-rolled-fake /
+  `ProviderContainer(overrides: [...])` convention instead of introducing
+  a new dependency) plus a real `SecureTokenStorage` backed by
+  `FlutterSecureStorage.setMockInitialValues({})`, matching P-005's/
+  P-009's own test convention:
+  - `build()`/`restoreSession()` → `null` with no stored token; →
+    placeholder authenticated `User` with a stored token.
+  - `login()` → placeholder `User` with the real email on success;
+    `AsyncError` + rethrow on failure.
+  - `register()` → returns the repository's real `User`; leaves `state`
+    untouched either way.
+  - `logout()` → `state` becomes `null` on success; also becomes `null`
+    (and rethrows) on backend failure, matching
+    `AuthRepositoryImpl.logout()`'s own "always clear locally" contract.
+
+### Real-machine finding: `AsyncValue.copyWithPrevious` is `@internal`
+
+The first authored version of `login()`/`logout()` used
+`AsyncValue<User?>.loading().copyWithPrevious(state)` (to keep the
+previous value visible while a login/logout call is in flight — a common
+Riverpod UX pattern). On `flutter_riverpod: 3.3.2` this produced two
+`invalid_use_of_internal_member` warnings from `flutter analyze` —
+`copyWithPrevious` was made `@internal` (package-private to `riverpod`
+itself) in this major version, not something app code is meant to call
+directly. Fixed by using plain `const AsyncValue<User?>.loading()`
+instead in both methods — no previous-value retention during the loading
+state, no logic or test changes needed (no test asserted on
+loading-with-previous-value). Confirmed via a live `flutter analyze` run
+on the real machine.
+
+### Validation — real-machine results
+
+- [x] `flutter pub get` — ✅ `Got dependencies!` (40 packages have newer
+      versions incompatible with current constraints — informational
+      only, not a resolution failure; no pubspec changes made or needed
+      by this part).
+- [x] `flutter analyze` — ✅ **No issues found!** (after the
+      `copyWithPrevious` fix above; the first run surfaced exactly the 2
+      warnings documented, both now fixed).
+- [x] `flutter test test/features/auth/presentation/session_provider_test.dart`
+      — ✅ **8/8 passing** (`00:02 +8: All tests passed!`).
+- [x] `flutter test test/features/auth/` (full auth suite, P-020 + P-021a
+      together) — ✅ **22/22 passing** (`00:04 +22: All tests passed!` —
+      the 14 pre-existing P-020 tests plus this part's 8, no regressions).
+- [x] `dart format lib/features/auth/presentation/session_provider.dart
+      test/features/auth/presentation/session_provider_test.dart` — ✅ 2
+      files reformatted (whitespace/line-wrap only, no logic changes),
+      committed already formatted.
+
+### Definition of Done
+
+- [x] `SessionNotifier` implemented with `login`/`register`/`logout`/
+      `build()`-restore, against the real P-020 `AuthRepository` contract
+      (not the original spec's assumed one — deviation documented above)
+- [x] All four methods covered by unit tests against a mocked/faked
+      `AuthRepository` + a real `SecureTokenStorage`
+- [x] `flutter analyze` clean — ✅ confirmed on the real machine (after
+      the `copyWithPrevious` fix above)
+- [x] `flutter test` 8/8 passing (22/22 across the whole `test/features/auth/`
+      suite, no regressions) — ✅ confirmed on the real machine
+- [ ] Pushed to `github.com/Ahmed2132003/cavallo-mobile` and confirmed via
+      a fresh `git clone` — ⬜ **still needed before this part is fully
+      closed**, per this project's own convention (every prior Flutter
+      part — P-008, P-009, P-019, P-020 — required this same
+      independent re-verification step, not just a local green test run)
+
+### Handoff notes for Part P-021b / P-021c
+
+- `sessionProvider` is the single global source of truth to read from
+  the router's redirect callback and from LoginScreen (P-021b), and from
+  RegisterScreen (P-021c) — do not create a second/feature-local session
+  state anywhere (architecture Section 13).
+- **Open decision for P-021c:** should RegisterScreen call
+  `sessionNotifier.login(...)` right after a successful
+  `sessionNotifier.register(...)` (so registering also signs the user
+  in), or send them to LoginScreen instead? Not decided in this part —
+  see the deviation note above and `AuthRepository`'s own P-020
+  docstring, which already flagged the same open item.
+- **Open decision for whoever picks up the `/me/` endpoint (backend) or
+  JWT-decoding (mobile):** once real profile data is available after
+  login/refresh, `_placeholderAuthenticatedUser`/`_placeholderUserId`/
+  `_placeholderAccountType` in `session_provider.dart` should be replaced
+  with the real fetch — search for those three names to find every place
+  that needs to change. Nothing in P-021b/P-021c should be built to
+  *depend* on the placeholder's `id`/`accountType` values being real.
+- Nothing in `session_provider.dart` should need to change once P-021b/
+  P-021c run — if either discovers a bug here, flag it explicitly rather
+  than silently reworking this class (this part's own execution prompt's
+  convention).
