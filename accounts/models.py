@@ -22,6 +22,19 @@ Deliberately NOT done here, and left to later parts:
       Part P-040) — this part is the User row only.
     - Permission-flag enforcement (e.g. custom DRF permission classes
       reading these fields) — Part P-019.
+
+Part P-019 update: ``Meta.permissions`` on the ``User`` model below
+defines the initial capability set (``can_moderate_content``,
+``can_manage_categories``, ``can_ban_users``,
+``can_manage_notifications``, ``can_manage_monetization``) on THIS
+model, because the real moderation-specific models
+(``ModerationQueue``, etc.) don't exist until Phase 6. These live
+under the ``accounts`` app label, so a check looks like
+``request.user.has_perm("accounts.can_moderate_content")`` (see
+``core.permissions.HasCapability``). Phase 6 will additionally
+define moderation-app-specific permissions once ``ModerationQueue``
+exists — both sets can coexist; nothing here needs to change when
+that happens.
 """
 
 from django.contrib.auth.models import AbstractUser
@@ -108,6 +121,21 @@ class User(AbstractUser, TimestampedModel):
 
     class Meta:
         db_table = "accounts_user"
+        # Part P-019: initial capability set, defined here (on User)
+        # rather than on a moderation-specific model, since
+        # ModerationQueue/etc. don't exist until Phase 6. Do not
+        # rename/remove these codenames silently — every future
+        # Admin/Moderator-facing endpoint checks one of these exact
+        # strings via core.permissions.HasCapability(). Phase 6 may
+        # ADD moderation-app-specific permissions alongside these;
+        # it should not need to change this list.
+        permissions = [
+            ("can_moderate_content", "Can moderate content"),
+            ("can_manage_categories", "Can manage categories"),
+            ("can_ban_users", "Can ban users"),
+            ("can_manage_notifications", "Can manage notifications"),
+            ("can_manage_monetization", "Can manage monetization"),
+        ]
 
     def __str__(self):
         return self.username
