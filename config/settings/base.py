@@ -62,6 +62,10 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Part P-015: assigns/propagates request_id. Placed this early so
+    # it's available for as much of the request/response cycle (and as
+    # many other middlewares' own log lines) as possible.
+    "core.middleware.RequestIdMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -116,7 +120,10 @@ def _redis_url_with_db(base_url, db_index):
     already ends in "/N" or has no path/auth/query component at all.
     """
     parts = urlsplit(base_url)
-    return urlunsplit((parts.scheme, parts.netloc, f"/{db_index}", parts.query, parts.fragment))
+    new_path = f"/{db_index}"
+    return urlunsplit(
+        (parts.scheme, parts.netloc, new_path, parts.query, parts.fragment)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +192,57 @@ REST_FRAMEWORK = {
     # error interceptor expects. This shape is a locked contract — see
     # core/exceptions.py's module docstring before changing it.
     "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
+}
+
+
+# ---------------------------------------------------------------------------
+# Logging — Part P-015. Every log line is JSON, and every line emitted
+# while a request is in flight carries that request's request_id (set
+# by core.middleware.RequestIdMiddleware, injected into the record by
+# core.logging_utils.RequestIdFilter). Outside of a request (a Celery
+# task, a management command) request_id falls back to "no-request"
+# rather than crashing — see RequestIdFilter's docstring.
+# LOG_LEVEL is read from env, not hardcoded, so it can be turned up in
+# a specific environment without a code change.
+# ---------------------------------------------------------------------------
+LOG_LEVEL = env("LOG_LEVEL", default="INFO")
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "filters": {
+        "request_id": {
+            "()": "core.logging_utils.RequestIdFilter",
+        },
+    },
+    "formatters": {
+        "json": {
+            "()": "pythonjsonlogger.json.JsonFormatter",
+            "format": "%(asctime)s %(levelname)s %(name)s %(request_id)s %(message)s",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "json",
+            "filters": ["request_id"],
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": LOG_LEVEL,
+    },
+    "loggers": {
+        # Django's own request/error logging (500s, security warnings,
+        # etc.) — routed through the same JSON console handler instead
+        # of Django's default plain-text/mail-admins config, so it's
+        # request_id-tagged and machine-parseable like everything else.
+        "django": {
+            "handlers": ["console"],
+            "level": LOG_LEVEL,
+            "propagate": False,
+        },
+    },
 }
 
 

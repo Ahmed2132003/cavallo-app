@@ -27,3 +27,7 @@ python-magic==0.4.*
 
 # Ops / observability
 sentry-sdk==2.69.*
+python-json-logger==4.1.*  # Part P-015: structured JSON request loggingو
+
+pytest==8.*
+pytest-django==4.*

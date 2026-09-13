@@ -18,6 +18,11 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 
+from core.views import health_check
+
 urlpatterns = [
     path("admin/", admin.site.urls),
+    # Part P-015: unauthenticated liveness/readiness probe for load
+    # balancers and uptime monitors. See core/views.py.
+    path("health/", health_check),
 ]
