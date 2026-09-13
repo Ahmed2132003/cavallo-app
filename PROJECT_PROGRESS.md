@@ -1466,3 +1466,195 @@ Definition of Done
 Handoff Notes لـ Phase 6
 
 أي endpoint حقيقي للـ moderation لازم يستخدم HasCapability('can_moderate_content') (أو أي codename موثّق فوق) — ممنوع أي role == check يدوي أو صلاحية جديدة من غير ما تتضاف هنا في القايمة الرسمية.
+
+## Part P-020 — Flutter: Auth Data Layer (DTOs, Repository, Secure Token Storage Wiring)
+
+**Status:** ✅ Complete — confirmed against the real backend contract by
+reading source (not guessed), and fully validated on the real machine:
+`flutter analyze` clean, `flutter test test/features/auth/` 14/14
+passing, and a live end-to-end run against the real running backend
+(`docker compose up`, real Postgres) confirming the full
+register → login → refresh → logout cycle, including refresh-token
+blacklisting.
+
+### BEFORE CODING step — what was actually confirmed, and what it corrected
+
+The part spec (this file's own P-020 entry) said to inspect the real
+request/response JSON shapes before writing any DTO, rather than assume
+them. Doing that — reading `accounts/serializers.py`,
+`accounts/views.py`, `accounts/models.py`, and the real captured
+`login.json` — found the spec's own assumption about the response shapes
+was wrong in two ways:
+
+1. **`POST /api/v1/auth/register/` returns no tokens at all.**
+   Response is exactly `{"id": ..., "email": ..., "account_type": ...}`
+   (`RegisterView.create`). This matches P-017's own documented decision
+   ("لا يتم إصدار JWT ولا تسجيل دخول تلقائي بعد التسجيل — تسجيل الدخول
+   هو P-018 منفصل") — registration and login are deliberately separate
+   endpoints, and registration was never going to start returning tokens.
+2. **`POST /api/v1/auth/login/` and `POST /api/v1/auth/refresh/` return
+   *only* `{"access": ..., "refresh": ...}` — no user fields whatsoever.**
+   Confirmed against `LoginView.post` (returns exactly
+   `services.issue_token_pair(user)`'s dict) and the real `login.json`
+   capture from P-018's manual testing.
+
+The part spec's `AuthResponseDto` assumed one combined shape carrying
+both tokens and "whatever minimal user fields the backend returns," and
+asked for `Future<User> login(...)`. That contract doesn't exist on the
+wire — there is no user data returned by login/refresh to build a `User`
+from, and fabricating one from decoding the JWT's bare `user_id` claim
+(the only claim in the token) would mean guessing `email`/`account_type`,
+which the spec explicitly says not to do.
+
+**Resulting design decision (flagged here for review, not silent):**
+- `AuthRepository.register()` is the *only* method that returns a
+  `User` — it's the only endpoint that actually returns user fields. It
+  does **not** call `SecureTokenStorage.saveTokens()`, since none are
+  issued.
+- `AuthRepository.login()` and `AuthRepository.refresh()` return
+  `Future<void>` — they only persist the returned token pair. A future
+  part (P-021, or a dedicated `/me/` endpoint added to the backend) is
+  the right place to fetch/display the logged-in user's profile after
+  login, not this data layer.
+- If this should instead auto-chain register → login on the client so
+  Part P-021's UI can treat registration as "sign up and land logged
+  in," that's an available option for a future part to add explicitly —
+  not assumed here.
+
+### Confirmed endpoint contract (exact field names, from source)
+
+| Endpoint | Request body | Response body |
+| --- | --- | --- |
+| `POST /api/v1/auth/register/` | `{email, password, password_confirm, account_type}` (`account_type` ∈ `"customer"` / `"business"`, from `User.ACCOUNT_TYPE_CHOICES`) | 201 → `{id, email, account_type}` |
+| `POST /api/v1/auth/login/` | `{email, password}` | 200 → `{access, refresh}` |
+| `POST /api/v1/auth/refresh/` | `{refresh}` | 200 → `{access, refresh}` (rotated — old refresh token is blacklisted server-side per `ROTATE_REFRESH_TOKENS`/`BLACKLIST_AFTER_ROTATION`) |
+| `POST /api/v1/auth/logout/` | `{refresh}` + `Authorization: Bearer <access>` header | 200 → `{detail: "Successfully logged out."}` |
+
+### Files created
+
+- `lib/features/auth/domain/user_entity.dart` — `AccountType` enum
+  (`customer`/`business`, with `fromWire`/`toWire`) + `User` entity
+  (`id`, `email`, `accountType`).
+- `lib/features/auth/domain/auth_repository.dart` — `AuthRepository`
+  abstract interface (`register` → `Future<User>`; `login`, `refresh`,
+  `logout` → `Future<void>`), with the deviation above documented in its
+  module docstring.
+- `lib/features/auth/data/dtos/register_request_dto.dart`
+- `lib/features/auth/data/dtos/register_response_dto.dart`
+- `lib/features/auth/data/dtos/login_request_dto.dart`
+- `lib/features/auth/data/dtos/token_pair_dto.dart` — shared by both the
+  login and refresh responses (identical shape); named `TokenPairDto`
+  rather than the spec's `AuthResponseDto` since it deliberately carries
+  no user fields.
+- `lib/features/auth/data/dtos/logout_request_dto.dart`
+- `lib/features/auth/data/auth_repository_impl.dart` — `AuthRepositoryImpl`
+  + `authRepositoryProvider` (Riverpod `Provider<AuthRepository>`,
+  matching the `dioClientProvider`/`secureTokenStorageProvider`
+  pattern). Uses `dioClientProvider` (P-004) and `secureTokenStorageProvider`
+  (P-005) directly — no new core-layer dependency introduced.
+- Tests: `test/features/auth/data/dtos/*_test.dart` (one per DTO,
+  fromJson/toJson round-trip or exact-shape assertions) and
+  `test/features/auth/data/auth_repository_impl_test.dart` (register/
+  login/refresh/logout against a mocked `Dio` adapter shaped exactly
+  like the confirmed contract above, using `http_mock_adapter` — the
+  same package/pattern P-004's own `error_interceptor_test.dart` uses —
+  plus the real `SecureTokenStorage` backed by
+  `FlutterSecureStorage.setMockInitialValues({})`, per P-005's own test
+  convention).
+
+### `logout()` behavior (per spec, confirmed in code)
+
+Reads the stored refresh token; if none is stored, clears local storage
+defensively and returns without any network call (nothing to
+blacklist). Otherwise calls the backend logout endpoint, and — inside a
+`finally` block — always calls `SecureTokenStorage.clear()` regardless
+of whether that call succeeded, so a network failure during logout never
+leaves stale tokens on the device. If the backend call itself failed,
+that failure still propagates to the caller *after* local cleanup has
+already happened, since server-side blacklisting matters for security
+even though local cleanup always happens regardless — this matches the
+part spec's explicit instruction verbatim.
+
+### `refresh()` precondition
+
+Throws a plain `StateError` synchronously (before any network call) if
+`SecureTokenStorage.getRefreshToken()` returns null — there is nothing
+to refresh. Not wired into `DioClient`'s error-interceptor
+automatic-retry-on-401 flow — that is still Part P-022, unchanged from
+the original scope split.
+
+### Validation — done on the real machine
+
+Real machine: Windows, mobile repo checked out at
+`D:\Cavallo\social_commerce_app` (package name `social_commerce_app`),
+backend at `D:\Cavallo\scd-backend`.
+
+- [x] `flutter analyze` — **No issues found!**
+- [x] `dart format` on the new files — 14 files reformatted to the
+      project's standard style (whitespace/line-wrap only, no logic
+      changes); committed already formatted.
+- [x] `flutter test test/features/auth/` — **14/14 passing.** (Two
+      rounds: the first found 3 failing failure-path tests because
+      their `http_mock_adapter` stubs were missing a body matcher,
+      which made the mock fail to match the real outgoing request and
+      surfaced as `NetworkFailure` instead of the expected
+      `ValidationFailure`/`AuthFailure`/`ServerFailure`. Fixed by adding
+      an explicit `data:` matcher to those three stubs, mirroring what
+      the passing tests already did — no production-code changes were
+      needed, only the test file.)
+- [x] Live end-to-end run against the real backend
+      (`docker compose up -d` + `manage.py migrate`, no pending
+      migrations), via PowerShell `Invoke-RestMethod`, using a fresh
+      test account (`p020test1@example.com`):
+  - `register` → `{id: 4, email: "p020test1@example.com", account_type: "customer"}` — no tokens, as expected.
+  - `login` → returned `access`/`refresh`.
+  - `refresh` (using the login's refresh token) → returned a new
+    `access`/`refresh` pair.
+  - `logout` (`Authorization: Bearer <access>` + `{refresh}` body) →
+    `{detail: "Successfully logged out."}`.
+  - Re-using the same (now-rotated-and-logged-out) refresh token against
+    `refresh/` again → **401 Unauthorized**, confirming
+    `BLACKLIST_AFTER_ROTATION`/logout blacklisting is actually enforced,
+    not just configured.
+
+No `flutter integration_test` file was written for this — the manual
+PowerShell run above exercises the exact same real-backend cycle the
+part's acceptance criteria calls for, and passed. A future part is free
+to codify this as an automated `integration_test/auth_flow_test.dart` if
+that's wanted, but it wasn't required to close this part out given the
+manual run already succeeded end-to-end.
+
+### What Part P-021 (UI) and Part P-022 (refresh interceptor) can assume
+
+- `authRepositoryProvider` is the entry point — override it in tests,
+  read it via `ref.watch(authRepositoryProvider)` in real widgets/
+  providers.
+- `register()` gives you a `User`, but the user is **not** logged in
+  afterward (no tokens saved) — P-021's registration screen must call
+  `login()` itself afterward (or explicitly decide to send the user to
+  a login screen instead) if "register and land signed-in" is the
+  desired UX. This was not decided here.
+- `login()`/`refresh()` give you nothing but `void` — if a future screen
+  needs the logged-in user's `id`/`email`/`account_type` right after
+  login, that requires either a new backend `/me/` endpoint or decoding
+  the JWT (only `user_id` is available in the token payload, confirmed
+  against a real captured token) — neither exists yet.
+- `AuthRepository.refresh()` is only a standalone callable method in
+  this part, per its own scope — P-022 wires it into `DioClient`'s
+  error-interceptor automatic-retry-on-401 flow; nothing in this part's
+  files needs to change for that.
+
+### Definition of Done
+
+- [x] Full register→login→refresh→logout cycle verified end-to-end
+      against the real running backend
+- [x] DTOs match backend field names exactly (confirmed via source
+      reading, not assumed — and this confirmation corrected two
+      wrong assumptions in the original part spec, documented above)
+- [x] No DTO type leaks past the repository into domain/presentation
+      (`AuthRepository`'s interface only exposes `User`/`void`)
+- [x] Tokens correctly persisted (login, refresh) and cleared (logout,
+      always, regardless of the backend call's outcome) at the right
+      points
+- [x] `flutter analyze` clean
+- [x] `flutter test test/features/auth/` — 14/14 passing
