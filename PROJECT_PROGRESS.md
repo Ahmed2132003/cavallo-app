@@ -1881,3 +1881,169 @@ Open items:
 
 Port 8095 should remain free going forward, but if Wondershare (or any other background service) ever collides with a port again, the same diagnostic flow applies: netstat -ano | findstr :<port> → Get-Process -Id <pid>.
 
+## Part P-021c — Flutter: RegisterScreen + Full Auth End-to-End Validation (3 of 3) — ✅ DONE
+
+Confirmed decision (Ahmed): after a successful register(), RegisterScreen chains sessionNotifier.login(email:, password:) automatically with the same credentials, landing the user authenticated on /home — registering does NOT send the user to LoginScreen. If the chained login call fails after a successful register, RegisterScreen shows an error and routes to /login instead (the account already exists at that point).
+
+Files created/modified:
+
+lib/features/auth/presentation/register_screen.dart (new real screen, replacing P-007's placeholder) — email/password/password-confirm + Customer/Business SegmentedButton, client-side password-match check, maps ValidationFailure fields (email, password, password_confirm, account_type) onto the correct fields, single local _isSubmitting flag spanning both the register and chained-login calls (mirrors LoginScreen's own convention — P-021b).
+lib/features/feed/presentation/home_screen.dart — added one temporary, clearly-commented "Logout (debug)" AppButton calling sessionProvider's logout(), since no real Home/Profile screen with logout exists yet. Must be removed once a real Home/Profile screen is built.
+test/features/auth/presentation/register_screen_test.dart (new) — 10 widget tests: empty-submit validation, invalid-email format, client-side password-mismatch, successful register→chained-login call sequence, account-type selection, each ValidationFailure field mapping (email/password_confirm/account_type/non-field), a ServerFailure general-error case, and the chained-login-fails-after-successful-register → routes to /login case.
+No app_router.dart change needed — P-021b already wired RouteNames.register to RegisterScreen.
+Two pre-existing tests fixed (stale from P-021b, surfaced by this part)
+
+Both flutter test failures found here predate P-021c's own changes — they were written against P-007's placeholder world and never updated when P-021b turned the router's redirect from a no-op stub into a real auth guard. Fixed, not weakened:
+
+test/core/integration_test.dart — the P-009 combined-theme-and-router test asserted Route: splash. Since P-021b, / always redirects onward (to /login when signed out); landing on LoginScreen now IS the router resolving correctly. Updated the assertion to find.byType(LoginScreen), and added a setUp seeding FlutterSecureStorage.setMockInitialValues({}) so the test's signed-out session is deterministic rather than incidentally borrowed from a preceding group.
+test/routing/app_router_test.dart — register route still resolves to its P-007 placeholder asserted Route: register text that no longer exists anywhere now that P-021c replaced that placeholder. Renamed to register route resolves to the real RegisterScreen (signed out) and updated to assert find.byType(RegisterScreen) plus the Create account button, mirroring the existing LoginScreen assertion in the same file.
+
+Validation (real machine):
+
+flutter analyze — clean, no issues.
+flutter test — all 103 tests passing (0 failures), including the two fixed pre-existing tests above and the 10 new register_screen_test.dart tests.
+Manual run against the real backend (docker compose up): registering a new account lands directly on /home — auto-login-after-register confirmed working end-to-end on the real device.
+Pushed to github.com/Ahmed2132003/cavallo-mobile as commit bb6871f (plus follow-up 730baa5 removing a stray .bak file) and confirmed via a fresh git clone — both fixed test files are present on main.
+
+Definition of Done:
+
+ RegisterScreen functional against the live backend, auto-login-after-register working
+ Temporary debug logout button in place on HomeScreen, clearly marked temporary
+ Full register → home → logout → login → relaunch cycle verified manually
+ flutter analyze clean; full flutter test suite green, no regressions
+ Pushed to github.com/Ahmed2132003/cavallo-mobile and confirmed via a fresh git clone
+
+ ---
+
+## Part P-022A — Flutter: Token Refresh Interceptor Core (Single-Request Silent Refresh + Retry, Happy Path Only)
+
+**Status:** ✅ Complete (happy path only) — pushed to `main` (`730baa5..a394577`).
+**⚠️ Not shippable on its own.** A failed refresh currently has no defined
+handling (see "Out of scope" below). Do not consider the token-lifecycle
+fix "closed" until **P-022B** and **P-022C** both land.
+
+### What was built
+
+- **New:** `lib/core/network/interceptors/refresh_interceptor.dart`
+  `RefreshInterceptor` — on a 401 from any request other than the refresh
+  endpoint itself:
+  1. reads the refresh token from `SecureTokenStorage`;
+  2. calls `POST /api/v1/auth/refresh/` through a **separate,
+     interceptor-free `Dio()` instance** (never the app's main client —
+     avoids infinite-recursion);
+  3. on success, saves the new token pair and retries the original failed
+     request with the new access token, resolving the caller with that
+     result — the caller never sees the intermediate 401.
+- **Modified:** `lib/core/network/dio_client.dart` — `RefreshInterceptor`
+  appended **last** in `dioClientProvider`'s interceptor chain (after
+  `LoggingInterceptor` → `AuthInterceptor` → `ErrorInterceptor`). Dio runs
+  `onError` in reverse-add order, so this interceptor sees a raw 401
+  *before* `ErrorInterceptor` maps it — letting it silently resolve the
+  chain on success, or `handler.next(err)` to fall through to
+  `ErrorInterceptor`'s normal mapping on failure.
+- **New:** `test/core/network/refresh_interceptor_test.dart` — Test A
+  (expired access token → silent refresh → retried request succeeds,
+  caller never sees the 401) and Test C (a 401 on the refresh path itself
+  does not recurse into another refresh attempt).
+- **Modified:** `test/core/network/dio_client_test.dart` — one test added
+  confirming `RefreshInterceptor` is wired in after `ErrorInterceptor`;
+  existing tests untouched.
+
+### Real-machine findings (things worth knowing before touching this code)
+
+1. **Refresh path differs from the master plan.** The plan says
+   `/auth/refresh/`; the actual deployed/expected route (confirmed against
+   `AuthRepositoryImpl`'s own path in P-020) is **`/api/v1/auth/refresh/`**
+   — that's the value hardcoded in `RefreshInterceptor.refreshPath`, kept
+   local to `core/network` (not imported from the `auth` feature) to avoid
+   a circular dependency, since `dioClientProvider` is itself a dependency
+   of `AuthRepositoryImpl`.
+2. **Test C's mock adapter needs a matching `data:` matcher.** The first
+   version of the test registered the refresh route without one; since the
+   real POST body is `{'refresh': 'old-refresh'}`, `DioAdapter` couldn't
+   match the route and threw an "unmocked route" error (`response == null`)
+   instead of the 401 the test asserts on. `RefreshInterceptor` itself was
+   correct the whole time — the test's mock registration was the bug. Fix:
+   register the route with the same `data:` matcher used in Test A and in
+   `auth_repository_impl_test.dart`.
+3. **Recursion guard is two-part, not one.** Besides excluding the
+   `/api/v1/auth/refresh/` path itself, a request that has *already* been
+   retried once (tagged via `requestOptions.extra['p022a_refresh_retried']`)
+   is never retried again — since `_dio.fetch()` on a retry re-enters the
+   full interceptor chain. This guard is a **recursion guard**, not a
+   single-flight lock — concurrent 401s each still trigger their own
+   independent refresh call. That concurrency handling is entirely
+   P-022C's job.
+
+### Bug found and fixed in the same session (adjacent, not in P-022A's file scope)
+
+**`authTokenGetterProvider` was never actually wired to real storage in the
+running app** — only in tests. `dio_client.dart`'s own default
+(`() async => null`) is intentionally kept as-is (asserted directly by
+`dio_client_test.dart`); the fix was applied in `lib/main.dart` instead, via
+a `ProviderScope` override in the composition root:
+
+```dart
+overrides: [
+  authTokenGetterProvider.overrideWith((ref) {
+    final tokenStorage = ref.watch(secureTokenStorageProvider);
+    return () => tokenStorage.getAccessToken();
+  }),
+],
+```
+
+Before this fix, `AuthInterceptor` sent no `Authorization` header on any
+real request — meaning even a successful P-022A refresh+retry would have
+retried without a token. Pushed as a separate commit
+(`fix(main): wire real authTokenGetterProvider (was no-op since
+P-005/P-021)`), deliberately kept out of the P-022A commit so either can be
+reverted independently.
+
+### Out of scope for P-022A (by design — see part spec)
+
+- Refresh-call failure → session invalidation. Currently a bare
+  `handler.next(err)` (the original 401 propagates untouched, no token
+  cleared, `sessionProvider` untouched), marked with
+  `// TODO(P-022B): handle refresh failure / session invalidation here`
+  at every exit point. **This is P-022B's entire job.**
+- Concurrency / single-flight locking for simultaneous 401s. **This is
+  P-022C's entire job.**
+- Any UI change.
+
+### Validation (real machine, Windows, `D:\Cavallo\social_commerce_app`)
+
+```
+flutter analyze                                                  → No issues found
+flutter test --concurrency=1 test/core/network/                  → 17/17 passing
+flutter test --concurrency=1 test/core/network/ test/features/auth/  → 57/57 passing
+```
+
+**Known pre-existing flakiness (unrelated to P-022A, not fixed here):**
+running the *full* `flutter test` suite (no path filter) crashes the Dart
+VM with `Out of Memory` inside `test/core/integration_test.dart` /
+`test/core/error_reporting_test.dart` — a widget test builds an unusually
+deep widget tree and the VM's profiler runs out of memory building it.
+`test/core/network/auth_interceptor_test.dart` then fails to load
+("Connection closed before test suite loaded") purely as a knock-on effect
+of that VM process dying, not a real failure of its own. Confirmed
+unrelated to this part: scoping `flutter test` to
+`test/core/network/ test/features/auth/` (as above) passes clean. Flagging
+here for whoever picks this up later — not something P-022A should fix.
+
+### What the next part (P-022B) can assume
+
+- `RefreshInterceptor` exists, is wired in last in `dioClientProvider`'s
+  chain, and successfully performs a silent refresh + retry on the happy
+  path.
+- Every point where a failed/invalid refresh currently just propagates the
+  original error is marked with a `// TODO(P-022B)` comment — that's
+  exactly where session-invalidation logic needs to be added.
+- `authTokenGetterProvider` is now correctly wired to real secure storage
+  in the running app (fixed in `main.dart`, not part of P-022A's own file
+  scope) — P-022B does not need to touch this.
+- Do not touch the single-flight/concurrency behavior — that's P-022C's
+  job, layered on top of whatever P-022B adds.
+
+**Validation still required before this feature is production-ready:**
+P-022B (refresh-failure/session-invalidation path) and P-022C (concurrency
+hardening).
