@@ -127,9 +127,19 @@ class TestHasCapabilityAgainstRealEndpoint:
         assert body["error"]["code"] == "PERMISSION_DENIED"
 
     def test_unauthenticated_request_cannot_access(self, client):
+        # P-023: this was previously asserted as "401 or 403" (left
+        # ambiguous). Confirmed directly against the real view-dispatch
+        # path: DRF's BasePermission.permission_denied() checks whether
+        # any configured authenticator advertises an `authenticate_header`
+        # (JWTAuthentication does) before falling back to a bare 403 — so
+        # an anonymous request here is a real NotAuthenticated, i.e. 401,
+        # not 403. Tightened to the one correct status, in the standard
+        # P-012 error envelope, not a 500 or an accidental 200.
         response = client.get("/moderation-test/")
 
-        assert response.status_code in (401, 403)
+        assert response.status_code == 401
+        body = response.json()
+        assert body["error"]["code"] == "AUTHENTICATION_FAILED"
 
     def test_removing_user_from_group_immediately_revokes_access(self, client):
         """

@@ -244,8 +244,16 @@ class TestLogout:
         return response.data["access"], response.data["refresh"]
 
     def test_logout_requires_authentication(self, api_client, logout_url):
+        # P-023: explicit auth-failure-path coverage, not just a bare
+        # status-code check — confirms an unauthenticated call to this
+        # IsAuthenticated-gated endpoint comes back as a real 401 in the
+        # standard P-012 {"error": {...}} envelope, not a 500 or an
+        # accidental 200.
         response = api_client.post(logout_url, {"refresh": "anything"}, format="json")
+
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert "error" in response.data
+        assert response.data["error"]["code"] == "AUTHENTICATION_FAILED"
 
     def test_logout_blacklists_refresh_token_immediately(
         self, api_client, login_url, logout_url, refresh_url, user
