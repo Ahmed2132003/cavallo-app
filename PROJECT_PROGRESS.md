@@ -2346,3 +2346,117 @@ every authenticated feature can assume:
 
 The only remaining prerequisite is the real-machine validation checklist
 above.
+
+## Part P-023 — Backend + Flutter: Auth Test Suite Completion (IDOR & Permission Coverage)
+
+**Status: ✅ COMPLETE** — both sides verified on the real machine, both pushed.
+
+Authored first in a Docker-less/Flutter-SDK-less sandbox (same documented
+constraint as every earlier part) — but against the real cloned source, not
+a guess: `github.com/Ahmed2132003/cavallo-app` at commit `016b265`
+("docs(progress): close out P-022C") and `github.com/Ahmed2132003/cavallo-mobile`
+at `main` were both cloned and read directly before a single test was
+touched. Every real-machine validation step below was then run and confirmed
+by Ahmed on `D:\Cavallo\scd-backend` and `D:\Cavallo\social_commerce_app`.
+
+### Backend
+
+**Baseline first** (before any change): full `pytest` on the untouched
+clone — **90 passed, 1 skipped** (pre-existing, unrelated:
+`core/tests/test_storage_backends.py` skips because `moto` isn't installed —
+outside this part's scope). Confirms the repo genuinely matched what prior
+parts' entries in this file claimed; no discrepancy found.
+
+Read every P-017/P-018/P-019 endpoint (`accounts/views.py`, `accounts/urls.py`,
+`core/permissions.py`, the throwaway `accounts/tests/views.py` +
+`accounts/tests/urls.py` moderation-test view) and every existing test in
+`accounts/tests/test_auth.py`/`test_permissions.py` against this part's
+scope. Two real gaps found — both in test assertions, not application code:
+
+1. `test_logout_requires_authentication` asserted only the 401 status on an
+   unauthenticated call to `LogoutView` (`IsAuthenticated`) — not the P-012
+   `{"error": {...}}` envelope. Added the envelope assertion
+   (`code == "AUTHENTICATION_FAILED"`).
+2. `test_unauthenticated_request_cannot_access` (moderation-test view)
+   asserted `status_code in (401, 403)` — left ambiguous. Confirmed live
+   against the real view-dispatch path: DRF's `permission_denied()` falls
+   back to `NotAuthenticated` (401), not `PermissionDenied` (403), whenever
+   a configured authenticator advertises `authenticate_header` —
+   `JWTAuthentication` does — so an anonymous request here is always 401.
+   Tightened to the one correct status plus the envelope.
+
+"A Customer-role user attempting the permission-gated capability check
+correctly gets 403" was **already correctly covered** by the existing
+`test_plain_customer_cannot_access` — no change needed.
+
+No bug was found in application code; both gaps were test-assertion gaps
+only.
+
+**Files modified:** `accounts/tests/test_auth.py`, `accounts/tests/test_permissions.py`.
+
+**Validation — all green, confirmed on the real machine (`docker compose exec web ...`):**
+
+- [x] `pytest` — full backend suite, before and after: **90 passed, 1
+      skipped** (same pre-existing, unrelated skip), confirmed twice on the
+      real machine
+- [x] Every P-017/P-018/P-019 endpoint has explicit auth/permission-failure
+      coverage, confirmed against the real view-dispatch path
+- [x] Pushed to `github.com/Ahmed2132003/cavallo-app` — commit `3fd1e62`
+      on `main`
+
+### Flutter
+
+Read `session_provider.dart`, `app_router.dart`, `secure_token_storage.dart`,
+and every existing test under `test/features/auth/` and `test/routing/`
+before writing anything. Found the exact gap this part's spec describes:
+every existing router test (`app_router_test.dart`,
+`app_router_redirect_test.dart`) deliberately overrides `sessionProvider`
+with a `_FakeSessionNotifier` that never touches `SecureTokenStorage` — so
+no existing test exercised the real cold-start path
+(`SessionNotifier.build()` → real `SecureTokenStorage.getAccessToken()` →
+real router `redirect`).
+
+**Added:** `test/features/auth/fresh_install_test.dart` (new file) — two
+tests, with the real `SessionNotifier` and real `SecureTokenStorage` left
+completely unmocked/unfaked (only `FlutterSecureStorage.setMockInitialValues({})`
+used, the same plugin-mock call `session_provider_test.dart` already
+established):
+
+1. `sessionProvider` resolves to `null` with an empty mock secure-storage
+   backing (no `auth_access_token` key at all).
+2. The real, un-overridden `appRouterProvider` lands on `/login` on cold
+   start under that same empty-storage condition.
+
+One real-machine finding during this part's own validation: the first draft
+left an unused `go_router` import (flagged by `flutter analyze`, not
+assumed) — removed; `GoRouter`'s type is inferred throughout the file, never
+referenced explicitly.
+
+Also reviewed `test/features/auth/` and `test/core/network/` for shared
+mutable state that could cause interaction issues when run together in one
+`flutter test` invocation — found none (only a `const` fixture in
+`register_screen_test.dart`, no mutable state carried between tests).
+
+**Validation — all green, confirmed on the real machine:**
+
+- [x] `flutter analyze` — clean, **No issues found!**
+- [x] `flutter test test/features/auth/ test/core/network/` — **65 tests,
+      all passed**, no flakiness/interaction issues observed
+- [x] Fresh-install scenario explicitly tested and correct
+- [x] Pushed to `github.com/Ahmed2132003/cavallo-mobile` — commit `69b2f8d`
+      on `main`
+
+### Definition of Done
+
+- [x] Every Phase 3 endpoint has explicit auth/permission-failure test
+      coverage, not just happy-path and validation coverage
+- [x] Full backend and full Flutter test suites both pass together, not
+      just per-part
+- [x] Fresh-install scenario explicitly tested and correct
+- [x] Any bug found during this pass is fixed and documented (none found —
+      both gaps were test-assertion gaps only)
+
+### ✅ Phase 3 — COMPLETE
+
+Every check above genuinely passed, on the real machine, both sides pushed.
+Phase 4 (Business/Customer Profiles) may begin.
