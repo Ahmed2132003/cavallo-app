@@ -1858,3 +1858,26 @@ on the real machine.
   P-021c run — if either discovers a bug here, flag it explicitly rather
   than silently reworking this class (this part's own execution prompt's
   convention).
+
+
+## P-021b — Flutter: Router Redirect Integration + Login Screen (2 of 3) — ✅ DONE
+
+Definition of Done:
+
+ Router redirect guard fully resolves P-007's TODO — no more stub
+ Real LoginScreen functional against the live backend
+ Session restoration verified end-to-end via real login + relaunch
+ No feature-local duplicate session state introduced
+ flutter analyze clean
+
+Summary:
+P-021b is fully closed. The router now correctly redirects unauthenticated users to /login and redirects authenticated users away from /login to /home. The real LoginScreen is built and talks to the live backend (not mocked), correctly surfacing errors for invalid credentials.
+
+During testing on a real physical device (not an emulator), login consistently failed with no clear cause despite correct credentials. Root cause turned out to be unrelated to both the Flutter code and the Django backend: a host-level port collision on the Windows dev machine. A Wondershare background service (WsToastNotification.exe) was already listening on host port 8090 — the same port the backend's Docker container was mapped to — and was intercepting any LAN-origin request (e.g. from the phone) with a bare, empty 501 response before it ever reached Django. This is why nothing showed up in the container logs.
+
+Fix: changed the web service's host port in docker-compose.yml from 8090 to 8095, and updated app_config.dart (Flutter) to match. Confirmed via netstat that only Docker's process was listening on the new port, then verified login succeeded end-to-end from the physical device, landing on /home.
+
+Open items:
+
+Port 8095 should remain free going forward, but if Wondershare (or any other background service) ever collides with a port again, the same diagnostic flow applies: netstat -ano | findstr :<port> → Get-Process -Id <pid>.
+

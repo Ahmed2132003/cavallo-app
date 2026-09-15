@@ -93,7 +93,12 @@ services:
     volumes:
       - .:/app
     ports:
-      - "8090:8000"
+      # Changed from 8090 → 8095: 8090 collided with a Wondershare
+      # background service (WsToastNotification.exe) already listening
+      # on 0.0.0.0:8090 on the host, which intercepted LAN-origin
+      # requests (real device on Wi-Fi) with a bare HTTP 501 before they
+      # ever reached this container — see PROJECT_PROGRESS.md, P-021b.
+      - "8095:8000"
     depends_on:
       db:
         condition: service_healthy
