@@ -29,4 +29,9 @@ urlpatterns = [
     # (login) and every later auth endpoint are added to
     # accounts/urls.py's own urlpatterns, not here.
     path("api/v1/auth/", include("accounts.urls")),
+    # Part P-025: public, read-only, cached category tree. Only one
+    # route exists inside categories/urls.py (GET tree/) — category
+    # write access stays Admin-only via Django Admin ("admin/" above),
+    # on purpose, per this part's explicit scope.
+    path("api/v1/categories/", include("categories.urls")),
 ]

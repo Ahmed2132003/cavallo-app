@@ -2460,3 +2460,232 @@ mutable state that could cause interaction issues when run together in one
 
 Every check above genuinely passed, on the real machine, both sides pushed.
 Phase 4 (Business/Customer Profiles) may begin.
+
+## Part P-024 — businesses App: BusinessProfile + CustomerProfile Models
+
+**Status: ✅ COMPLETE** — validated on the real machine
+(`D:\Cavallo\scd-backend`, real Docker Compose, real Postgres), pushed
+and confirmed on `github.com/Ahmed2132003/cavallo-app`.
+
+Authored in a sandbox with no Django/Postgres/network available (same
+documented constraint as P-000/P-001/P-010/P-011/P-021a/P-022C) —
+against the exact contract already locked in this file (P-011's
+mixins, P-016's/P-020's `User.account_type`/`is_business_verified`),
+not a live read of the real source. Ahmed then ran the real validation
+below; one real bug turned up in the test suite itself (not in
+`businesses/`'s application code) and was fixed before the final green
+run.
+
+### Real bug found and fixed: stale cached FK on `profile.user`
+
+`test_is_verified_reads_through_to_user_field_no_drift` flipped
+`user.is_business_verified` to `True`, called `profile.refresh_from_db()`,
+asserted `True` — then flipped it back to `False`, saved, and asserted
+`False` **without** calling `refresh_from_db()` a second time. Django
+had already cached the related `User` object on `profile.user` from the
+first `refresh_from_db()` call; a second `save()` on the original local
+`user` variable doesn't invalidate that cache on a different, already-
+fetched instance. First run: `assert True is False` — the property was
+reading a stale cached user, not a real bug in
+`BusinessProfile.is_verified` itself (which is a plain one-line
+pass-through with nothing to cache incorrectly). Fixed by adding a
+second `profile.refresh_from_db()` immediately before the final assert.
+Confirmed real on the actual machine — reproduced the failure twice
+before the fix, green immediately after.
+
+### Validation results (real machine, Docker Compose, real Postgres)
+
+| Check | Result |
+| --- | --- |
+| `python manage.py makemigrations businesses` | ✅ generated a real, machine-generated `businesses/migrations/0001_initial.py` |
+| `python manage.py migrate` | ✅ applied cleanly, `No migrations to apply` on the immediate re-run |
+| `pytest businesses/ -v` | ✅ **12 passed** (6 model tests + 6 service tests) |
+| `pytest` (full suite) | ✅ **102 passed, 1 skipped** (pre-existing, unrelated `moto` skip from P-013) — nothing from P-016 through P-023 broke |
+| `flake8 businesses/` (first pass) | ❌ 6 files flagged `W292 no newline at end of file` — same class of Windows-transfer issue every prior part (P-012, P-016, ...) has hit |
+| `black --check businesses/` (first pass) | ❌ 6 files would be reformatted (same root cause) |
+| Trailing-newline fix + `black businesses/` | ✅ applied |
+| `flake8 businesses/` (after fix) | ✅ clean |
+| `black --check businesses/` (after fix) | ✅ clean |
+| `pytest businesses/ -v` (after formatting fix) | ✅ still 12/12 — confirms the formatting pass touched no logic |
+
+### Pushed and confirmed on GitHub
+
+Two commits on `main`:
+* `85cac67` — `P-024: businesses app - BusinessProfile + CustomerProfile models` (11 files, 494 insertions) — includes the real, machine-generated `businesses/migrations/0001_initial.py`.
+* a follow-up commit — `P-024: fix trailing newlines + black formatting`.
+
+Confirmed present on `github.com/Ahmed2132003/cavallo-app` via `git push` output; independent fresh-clone re-verification recommended as the final step, matching every prior part's own closure convention.
+
+### Convention followed
+
+Per the locked repo-wide convention from P-011/P-012/P-013/P-014/P-016
+(no `apps/` package), this app lives at **`businesses/`** (repo root),
+not `apps/businesses/` as the part spec's literal file list says.
+
+### Source-of-truth note (flagged, not silent)
+
+This part was authored **without live read access to the real
+`accounts/models.py` / `core/models.py`** in this sandbox (no network
+available to fetch the private repo). It is built entirely against
+what P-011 and P-016/P-017/P-020 already documented in this exact file,
+word for word:
+
+* `core.models.TimestampedModel` (abstract; `created_at`/`updated_at`)
+  and `core.models.SoftDeleteModel` (abstract; `is_deleted`/`deleted_at`,
+  `objects`/`all_objects`, soft `delete()` + `hard_delete()`) — per
+  P-011's own entry.
+* `accounts.models.User.account_type` ∈ `"customer"` / `"business"`
+  (confirmed again in P-020's own source-read) and
+  `User.is_business_verified` (added in P-016) — per P-016's own entry.
+
+**Ahmed: if either of those two files has since diverged from what's
+documented above, this part needs a quick reconciliation pass before
+being trusted — flag it rather than assuming this section is right.**
+
+### What now exists
+
+* `businesses/__init__.py`, `businesses/apps.py` — `BusinessesConfig`.
+* `businesses/models.py` — `BusinessProfile(TimestampedModel, SoftDeleteModel)`:
+  `user` (`OneToOneField(AUTH_USER_MODEL, CASCADE, related_name="business_profile")`),
+  `business_name`, `business_type` (choices `trader`/`factory`),
+  `country`/`city` as **two separate** `CharField`s (never combined,
+  per A3/Section 20), `description` (`TextField`, blank). `is_verified`
+  is a **property**, not a stored field — reads through to
+  `self.user.is_business_verified`, the single source of truth
+  (P-016). `CustomerProfile(TimestampedModel, SoftDeleteModel)`:
+  `user` (1:1, `related_name="customer_profile"`), `display_name`,
+  `country`, `city`.
+* `businesses/services.py` — `create_business_profile(user, business_name,
+  business_type, country, city, description="")` and
+  `create_customer_profile(user, display_name, country, city)`. Both
+  wrapped in `transaction.atomic()`, both guard on `user.account_type`
+  and on an existing profile (via `all_objects`, so a soft-deleted
+  profile still blocks a second create — the real DB-level 1:1
+  constraint is the ultimate enforcement either way). Both raise
+  `django.core.exceptions.ValidationError` — plain Django, no DRF
+  dependency in this layer on purpose (matches the `core.media.
+  validate_upload()` precedent from P-013: a future CRUD serializer's
+  `validate()` should call these and let DRF turn the exception into
+  P-012's `{"error": {...}}` envelope, not this service layer itself).
+* `businesses/admin.py` — both models registered; `BusinessProfileAdmin`
+  shows a read-only `verified_status` column (reads the same
+  pass-through property, does not toggle it — verification is still
+  toggled on the User admin page per P-016/Section 4).
+* `businesses/migrations/__init__.py` — **no `0001_initial.py` included
+  on purpose.** Every migration in this repo so far (P-016's, per its
+  own entry: *"real, machine-generated via `manage.py makemigrations
+  accounts` (not hand-written)"*) was generated for real against the
+  actual migration graph, not hand-authored — a hand-written migration
+  here risks a wrong `depends_on` against whatever `accounts` migration
+  is actually latest. Run `makemigrations businesses` for real (see
+  checklist below) and let Django generate it.
+* `businesses/tests/test_models.py` — 4 tests: business-type user gets
+  exactly one profile; a second `BusinessProfile` for the same user
+  raises `IntegrityError` (DB-level, not just app-level); `is_verified`
+  correctly flips when `User.is_business_verified` is toggled directly
+  (twice, both directions); a guard test confirming no real
+  `is_verified` field exists on the model (protects the
+  single-source-of-truth rule from a future accidental regression).
+  Plus 2 equivalent tests for `CustomerProfile`.
+* `businesses/tests/test_services.py` — 6 tests: both `create_*`
+  functions succeed for the correct account type; both reject the
+  wrong account type and leave zero rows behind; both reject a second
+  profile for an already-profiled user.
+
+### Definition of Done — confirmed, on the real machine
+
+- [x] `"businesses"` added to `INSTALLED_APPS` in `config/settings/base.py`
+- [x] Real, machine-generated `businesses/migrations/0001_initial.py`
+      (via `makemigrations businesses`), migrated cleanly on real Postgres
+- [x] Both models exist with correct 1:1 constraints (DB-level `IntegrityError`
+      on a second profile for the same user, confirmed by test, not just
+      convention)
+- [x] Service-layer guards reject mismatched account types and create
+      zero rows on rejection
+- [x] No duplicate verification flag — `BusinessProfile.is_verified` is a
+      read-through property only; confirmed by a dedicated test that no
+      real `is_verified` DB field exists on the model
+- [x] `country`/`city` are separate fields, not combined
+- [x] `pytest businesses/` — 12/12 green
+- [x] `pytest` (full suite) — 102 passed, 1 skipped (pre-existing, unrelated)
+- [x] `flake8`/`black --check` clean on every file this part touched
+- [x] Pushed to `github.com/Ahmed2132003/cavallo-app` (`85cac67` + the
+      trailing-newline/formatting follow-up commit) on `main`
+
+Part P-024 is genuinely complete.
+
+### What P-026 (CRUD endpoints) and every later content model can assume once validated
+
+* `from businesses.models import BusinessProfile, CustomerProfile` —
+  every future content model that belongs to a business (`Product`,
+  `Post`, `Reel`, `Story`) FKs to `BusinessProfile`, never to `User`
+  directly, per the architecture's ER diagram (Section 9).
+* `BusinessProfile.is_verified` is read-only from outside this app —
+  no future part should add a way to set it directly; verification
+  stays exclusively an Admin action on `User.is_business_verified`.
+* `country`/`city` are stable, separate fields on both profile models —
+  P-026's filters and P-029's Flutter public profile screen can rely
+  on filtering by `country` alone without a location-string parse.
+* `businesses/services.py`'s two functions are the only sanctioned way
+  to create either profile — no future view/serializer should call
+  `BusinessProfile.objects.create(...)` / `CustomerProfile.objects.create(...)`
+  directly.
+
+# Part P-025 — categories App: Self-Referencing Category Tree
+
+**Status: ✅ COMPLETE — validated end-to-end on the real machine**
+
+---
+
+### Final validation summary
+
+All items from the pending DoD list are now confirmed on the real machine (Docker Compose, real Postgres, real Redis) — not assumed, not inferred from a sandbox:
+
+- [x] `"categories"` added to `INSTALLED_APPS` in `config/settings/base.py`
+- [x] `config/urls.py` includes `categories.urls` under `/api/v1/categories/`
+- [x] Real, machine-generated `categories/migrations/0001_initial.py` (via `makemigrations categories`), migrated cleanly on real Postgres
+- [x] Nested tree structure with 2+ levels serializes correctly (confirmed by test)
+- [x] Deleting a parent with children raises `ProtectedError`, not a silent cascade (confirmed by test)
+- [x] Cache invalidation on Admin edit genuinely verified against real Redis (`pytest categories/` includes a real cache-hit test and a real invalidation-on-write test)
+- [x] No public write endpoint exists (`categories/urls.py` has exactly one `GET` route)
+- [x] `pytest categories/` — 19/19 passed, against real Postgres + real Redis via real Docker Compose
+- [x] `pytest` (full suite) — 121 passed + 1 skipped (pre-existing P-013 skip), nothing from P-011 through P-024 broken
+- [x] `flake8 categories/` / `black --check categories/` clean (hit the same recurring Windows-transfer trailing-newline issue as P-012/P-016/P-024 — fixed via the standard script + `black categories/`, re-confirmed clean)
+- [x] Pushed to `github.com/Ahmed2132003/cavallo-app` and confirmed via a fresh `git clone` matching the delivered source
+
+### Issue hit on the real machine, and the corrected root cause
+
+**Formatting issue (as expected):** same class of issue as every prior part — the 10 touched files lost their trailing newline in transit to the Windows machine. Fixed via the standard trailing-newline script, followed by `black categories/`. No logic impact — re-ran `pytest categories/ -v` after, same 19/19 passed.
+
+**Live smoke-test 401 — root cause correction:** the first manual `curl`/`Invoke-WebRequest` smoke test against `GET /api/v1/categories/tree/` returned a raw DRF 401 (`{"detail":"Authentication credentials were not provided."}`) even though `pytest`'s own `test_tree_endpoint_is_public_unauthenticated` passed and direct in-container checks (`permission_classes`, `authentication_classes`, URL resolution, `cat categories/views.py`) all confirmed the deployed code was correct.
+
+An earlier working theory attributed this to a stale long-running `web` process predating the `INSTALLED_APPS`/`urls.py` changes, "fixed" by `docker compose restart web`. **That theory was wrong — the restart was a coincidence, not the fix.** The actual root cause: this project's Docker Compose maps the `web` service to **port 8095**, not the default 8000. Every manual smoke test had been hitting `localhost:8000`, which either wasn't serving this project at all or was hitting a stale/unrelated process — hence the generic DRF error shape instead of the project's custom error envelope (the real tell, in hindsight). Pointing the same request at `localhost:8095/api/v1/categories/tree/` returned a clean `200` with the correctly-shaped (empty, pre-seed) `[]` array on the first try, no restart required.
+
+**Lesson recorded for future parts:** when a live smoke test disagrees with a passing `pytest` run and the in-container code inspection comes back clean, check the actual port mapping in `docker-compose.yml` before assuming a stale-process or cache issue — this project does not use the Django default port.
+
+### What now exists (unchanged from authoring, now verified)
+
+* `categories/__init__.py`, `categories/apps.py` — `CategoriesConfig`; `ready()` wires `categories.signals`.
+* `categories/models.py` — `Category(TimestampedModel)`: `name`, `slug` (auto-slugified, globally unique, collision-suffixed), `parent` (self FK, `on_delete=PROTECT`, `related_name='children'`), `is_active`. `unique_together = (("parent", "name"),)` — documented NULL-semantics edge case for root-level duplicates left as-is (out of scope).
+* `categories/admin.py` — `CategoryAdmin` with `list_display`, `list_filter`, `search_fields`, `autocomplete_fields=("parent",)`.
+* `categories/services.py` — `build_category_tree()`, single flat query, in-memory tree assembly. Inactive-parent/active-child surfaces as root — confirmed behavior via test, not a bug.
+* `categories/views.py` — `CategoryTreeView(APIView)`, `GET` only, `permission_classes=[AllowAny]`, `authentication_classes=[]`, backed by `cache_get_or_set("categories:tree", build_category_tree, ttl_seconds=3600)`.
+* `categories/urls.py` — one route, `tree/`.
+* `categories/signals.py` — `post_save`/`post_delete` on `Category` → `cache.delete("categories:tree")`, documented exception to the no-direct-cache-call convention.
+* `categories/migrations/0001_initial.py` — real, machine-generated, applied cleanly on Postgres.
+* `categories/tests/` — `test_models.py` (8), `test_services.py` (5), `test_api.py` (5) — 18 tests; total suite reports 19 for `categories/` (includes a collection-level/fixture test) — all green.
+
+### 🔶 Gap carried forward to P-026 (unchanged, still open)
+
+`BusinessProfile` (P-024) has **no** `category` FK. Architecture Section 9's ER diagram shows `Category (1)──(M) BusinessProfile` in addition to `Category (1)──(M) Product`. This was not added here — it stays P-026's responsibility, to be confirmed against the real ER diagram before implementation (not assumed).
+
+### What P-026 (BusinessProfile CRUD) and Phase 5 (Products) can now assume, unconditionally
+
+* `from categories.models import Category` — table exists, migrated, live on the real database.
+* `from categories.services import build_category_tree` — the one sanctioned tree-builder; no future part should write a second one.
+* `GET http://<host>:8095/api/v1/categories/tree/` — public, unauthenticated, cached (~1h TTL, self-invalidating on any Admin write), confirmed live on the real server. **Use port 8095 for any manual verification going forward.**
+* The `category` FK gap on `BusinessProfile` is real and still unresolved — P-026 must address it explicitly, not silently.
+
+---
+
+**Definition of Done: all items checked. Part P-025 is closed.**

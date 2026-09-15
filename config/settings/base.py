@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     "core",
     "accounts",
     "businesses",
+    "categories",  # Part P-025: self-referencing category tree.
 ]
 
 # ---------------------------------------------------------------------------
