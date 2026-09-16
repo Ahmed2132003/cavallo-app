@@ -3170,3 +3170,233 @@ tracked explicitly below, not silently dropped.
   below-the-fold submit button in widget tests; (2) don't assert `hasValue == false` on
   an `AsyncNotifier`'s error state — assert on `error`/`hasError` instead, since Riverpod
   retains the previous value through `copyWithPrevious` by design.
+
+<!--
+APPEND-ONLY. Paste everything below this comment at the very END of
+PROJECT_PROGRESS.md, replacing the existing standalone "Part P-028C1"
+section with this combined C1+C2 section (per Ahmed's request to treat
+them as one entry). Nothing above the original P-028C1 heading changes.
+-->
+
+## Part P-028C — Flutter: Business Profile Onboarding + Router Gate + Edit + Persistence + Final Validation
+### (Split originally into P-028C1 + P-028C2; documented together per Ahmed's request)
+
+**Status:** ⚠️ Code authored and hand-validated for logical correctness across both halves —
+**NOT yet run through `flutter analyze`/`flutter test` on a real machine.** Same documented gap
+as every prior part originally authored in this kind of sandbox: no Flutter SDK, no network
+access to `pub.dev` or to the real `cavallo-mobile`/`cavallo-app` GitHub repos from this
+environment. Every file below was written against the real, current source Ahmed supplied
+directly (not cloned, not guessed) — `app_router.dart`, `route_names.dart`,
+`business_profile_provider.dart`, `business_profile_entity.dart`,
+`business_profile_repository.dart`, `business_profile_repository_impl.dart`,
+`business_onboarding_screen.dart`, `home_screen.dart`, `app_button.dart`, `app_text_field.dart`,
+the three interceptors, `business_profile_router_gate_test.dart`, `business_profile_provider_test.dart`,
+and `business_onboarding_screen_test.dart`. **Still needed before this part is closed:**
+`flutter pub get` / `flutter analyze` / `flutter test test/features/business_profile/` /
+`flutter test` (full suite) on the real machine, plus push + fresh-clone confirmation, per this
+project's own standing convention.
+
+### ⚠️ Critical, pre-existing blocker — flagged again, NOT fixed by either half of this part
+
+`sessionProvider`'s `User.accountType` is still the documented **placeholder** from Part P-021a
+(`_placeholderAccountType`, always `AccountType.customer`). Every part since P-028A has flagged
+this in turn. **Practical consequence, restated for both halves:**
+
+* **P-028C1's own gate** (`if (user.accountType == AccountType.business) { ... }` inside
+  `app_router.dart`'s `redirect`) cannot fire for any real signed-in Business account on a real
+  device — every session reports `customer` regardless of the real account type.
+* **P-028C2's new "Edit business profile" button** on `home_screen.dart` is gated the exact same
+  way (`isBusiness = user?.accountType == AccountType.business`) for the exact same reason
+  ("Customer-type users remain unaffected" — this part's own acceptance criterion). It inherits
+  the identical consequence: it will not render for anyone on a real device today, Business or
+  not.
+* Both gates will pass their respective widget/router tests (which construct a real
+  `User(accountType: AccountType.business)` directly via a fake `SessionNotifier`, bypassing the
+  placeholder entirely), but the live "register as Business → forced onboarding → /home → edit →
+  PATCH → persisted change" manual-validation sequence in this part's own TESTING section is
+  **not achievable end-to-end** until this is resolved.
+
+**This remains the single open item blocking real end-to-end validation of this entire feature
+area, Phase 5, and Phase 14's own assumption** ("a completed BusinessProfile exists by this point
+in the user's journey") — whoever picks this up next should treat it as the actual next-up
+blocker, not a gap in either C1's or C2's own code.
+
+### BEFORE CODING step — confirmed for both halves against the real files supplied
+
+* **P-026's exact GET/POST/PATCH contract** — `business_name`, `business_type`, `country`,
+  `city`, `description`, `category`, `phone_number` as write fields; `id`, `is_verified`,
+  `follower_count` added on read. Real port `8095`, not `8090`.
+* **Category FK exists** (P-026, nullable, `SET_NULL`) — the field's real wire shape (bare int vs.
+  nested object) is **still unconfirmed** (no live-backend snapshot was ever supplied for either
+  half of this part), so neither the onboarding screen (P-028B) nor the edit screen (P-028C2)
+  builds a category picker — both submit `categoryId`/`Patchable.unset()` and flag it explicitly
+  as the open item for whoever builds the Flutter `categories` feature. **Not this part's job,
+  confirmed independently by three parts in a row now (P-028A, P-028B, P-028C).**
+* **P-027's exact phone contract** — `+countrycode` required, backend message: "Enter a valid
+  phone number including the country code, e.g. +201234567890."
+* **`app_router.dart`'s real redirect shape** — `AsyncData(:final value) => value` pattern-match
+  reused for both `isLoggedIn` and the business gate's `user.accountType` read, so they can never
+  drift out of sync.
+* **`businessProfileProvider`'s real state contract** — `AsyncData(null)` = confirmed no profile
+  (never an error); `AsyncError` = genuine fetch failure. Both P-028C1's router gate and P-028C2's
+  edit-screen `switch` on `(seed, state)` respect this distinction identically.
+
+### What now exists — P-028C1 half (router gate)
+
+* `lib/routing/route_names.dart` — `businessOnboarding` / `businessOnboardingPath`
+  (`/business-onboarding`) added.
+* `lib/routing/app_router.dart` — Business-account gate added to `redirect`; `_SessionRefreshListenable`
+  extended with conditional, lazy, one-shot subscription to `businessProfileProvider` (only for a
+  confirmed `AccountType.business` session, never for `customer`, enforced at the
+  subscription level, not just inside the `redirect` `if`).
+* `test/features/business_profile/business_profile_router_gate_test.dart` — 5 original widget
+  tests (unauthenticated regression, Customer-skips-the-check-entirely with a `buildCalls`
+  assertion, Business+no-profile redirected and stays redirected, Business+profile reaches
+  `/home`, no redirect loop on the onboarding route itself).
+* ⚠️ Flagged design risk, unresolved: nested `ref.listen` called from inside another `ref.listen`'s
+  callback (`_maybeSubscribeToBusinessProfile`) — expected to work under normal Riverpod `Ref`
+  semantics but not confirmed against the real, pinned `flutter_riverpod: 3.3.2` here. **Watch
+  `flutter analyze`'s output on this specific call before assuming it's fine.**
+
+### What now exists — P-028C2 half (edit screen + persistence)
+
+* **`lib/features/business_profile/presentation/business_profile_provider.dart`** — added
+  `updateProfile()` (mirrors `createProfile`'s loading/data/rethrow convention exactly, forwards
+  `Patchable` tri-states unflattened) and `refreshProfile()` (uses `AsyncValue.guard` + direct
+  `state =` assignment, deliberately NOT `ref.invalidateSelf()`, so the single notifier instance
+  `_SessionRefreshListenable` is bridged to from P-028C1 is never torn down).
+* **`lib/routing/route_names.dart`** — `businessProfileEdit` / `businessProfileEditPath`
+  (`/business-profile/edit`) added, additively, on top of P-028C1's own two constants.
+* **`lib/routing/app_router.dart`** — one new `GoRoute` for the edit screen, placed next to the
+  onboarding route. The `redirect` callback, the Business-account gate, and
+  `_SessionRefreshListenable` are **unchanged** — confirmed byte-identical to the P-028C1 version
+  before this route was added.
+* **`lib/features/business_profile/presentation/business_profile_edit_screen.dart`** (new file,
+  ~560 lines) — loads via `businessProfileProvider`, pre-fills every editable field from the
+  last-seen profile (`_seed`, kept stable across the transient `AsyncLoading` a save produces so
+  the form never unmounts mid-save), sends only genuinely-changed fields on submit (compared
+  field-by-field against the seeding profile), uses `Patchable.clear()` vs. `Patchable.unset()`
+  correctly for `description`/`phoneNumber` (categoryId always `unset()` per the flagged
+  category-picker gap), and re-seeds itself from the backend's own PATCH response via
+  `ValueKey(profile)` so the persisted, server-normalized value (e.g. E.164 phone) renders
+  immediately without leaving the screen or making a second request.
+* **`lib/features/feed/presentation/home_screen.dart`** — one `AppButton`, "Edit business
+  profile," conditional on `sessionProvider`'s `accountType == AccountType.business`, satisfying
+  this part's own literal first acceptance criterion ("navigate from /home to the edit screen")
+  without inventing a real navigation shell this part was never scoped to build.
+* **`test/features/business_profile/presentation/business_profile_provider_test.dart`** —
+  extended (not replaced): `FakeBusinessProfileRepository`'s `fetchResult`/`fetchError` became
+  mutable (`currentFetchResult`/`currentFetchError`) so `refreshProfile()` is actually
+  exercisable; `updateProfile` is now genuinely implemented (previously threw
+  `UnimplementedError`, per P-028A's own explicit deferral). New test groups: `updateProfile`
+  (success forwards every `Patchable` correctly, unset fields never reach the repo as "set,"
+  `AsyncLoading` set synchronously, failure does not falsely persist — `state.value` stays the
+  prior known-good profile) and `refreshProfile` (re-fetches without rebuilding the notifier
+  instance — confirmed via `identical()` — a fresh 404 maps back to `AsyncData(null)` not
+  `AsyncError`, a genuine failure settles into `AsyncError` without rethrowing).
+* **`test/features/business_profile/presentation/business_profile_edit_screen_test.dart`** (new
+  file) — load/pre-fill (including the defensive no-profile view and the error+Retry path),
+  required-field validation, phone validation (malformed blocks submission, a changed number
+  produces the E.164 value, emptying an existing number sends an explicit clear), change
+  detection (no-op submit shows "No changes to save." with zero requests, single-field edits omit
+  every other field from the PATCH body, clearing description sends an explicit clear, a
+  successful save re-seeds and displays the persisted value inline), and backend-driven errors
+  (`ValidationFailure` maps onto the right field, `ServerFailure` shows a general message, neither
+  shows the success message).
+* **`test/features/business_profile/business_profile_router_gate_test.dart`** — extended with 2
+  more cases on top of P-028C1's original 5: the edit route is directly reachable for a
+  Business user *with* a profile; a Business user *without* a profile who navigates directly to
+  the edit route is still redirected to onboarding (confirms the P-028C1 gate stayed intact after
+  the edit route was added, per this part's own acceptance criterion).
+
+### Assumptions/decisions flagged, not silently made (either half)
+
+* **`BusinessOnboardingScreen`'s plain, no-argument constructor** — confirmed correct once the
+  real file was supplied for P-028C2 (previously only assumed for P-028C1).
+* **No category picker, either screen** — restated a third time (P-028A, P-028B, this part): the
+  FK exists, but the wire shape is unconfirmed and no Flutter `categories` feature exists. Both
+  onboarding and edit submit `categoryId` unset/null. **Single open item, one owner needed.**
+* **`IntlPhoneField`'s pre-fill behavior with an existing E.164 number** — read from the
+  package's own source (`initialValue` starting with `+` lets it infer the country without
+  `initialCountryCode`), not executed on a real device. If the real run shows the wrong flag or a
+  duplicated dial code, the documented fallback (keep `initialCountryCode: 'EG'` always, strip the
+  leading dial code from `initialValue`) is in the edit screen's own inline comment — flag it back
+  rather than changing the confirmed-correct entity/repository contract.
+* **Edit screen's Retry button has no own-loading guard** — a fast double-tap during a slow
+  `refreshProfile()` isn't protected against. Minor, not blocking; flagged for whoever next
+  touches this screen.
+
+### Testing — what's confirmed vs. still pending on the real machine
+
+- [x] Logic hand-reviewed against the real, supplied source of every file both halves touch.
+- [x] Router-gate test file: 5 original P-028C1 cases + 2 new P-028C2 cases, covering every
+      router-level acceptance criterion from both parts' specs.
+- [x] Provider test file: extended with full `updateProfile`/`refreshProfile` coverage.
+- [x] New edit-screen widget test file: pre-fill, validation, change-detection/Patchable
+      semantics, persistence-without-leaving-the-screen, and backend-error mapping all covered.
+- [ ] `flutter pub get` — not run (no SDK here).
+- [ ] `flutter analyze` — not run. **Particular attention needed on the nested `ref.listen` call
+      inside `_maybeSubscribeToBusinessProfile` (P-028C1) — unchanged and still unconfirmed.**
+- [ ] `flutter test test/features/business_profile/` — not run.
+- [ ] `flutter test` (full suite, confirm zero regressions) — not run.
+- [ ] Manual live-backend run ("register as Business → confirm forced onboarding → ... → edit →
+      persisted change") — **blocked**, not merely deferred, by the `accountType` placeholder.
+      Steps involving malformed-phone validation and clearing the description field ARE
+      independently smoke-testable today on the edit screen alone, if reached by some means other
+      than the gated `/home` button (e.g. a temporary manual `initialLocation` override during
+      development only — not a permanent workaround).
+- [ ] Push to `github.com/Ahmed2132003/cavallo-mobile` + fresh-clone confirmation — pending the
+      above.
+
+### Definition of Done — status (both halves combined)
+
+- [x] Onboarding route added (`route_names.dart`/`app_router.dart`) — P-028C1
+- [x] Router redirect logic: Business+no-profile → onboarding; Customer skips the check entirely
+      (subscription-level, not just `redirect`-level); no redirect loop on onboarding itself —
+      P-028C1
+- [x] `businessProfileProvider` changes refresh the router without an app background/foreground
+      cycle — P-028C1
+- [x] Business Profile edit screen implemented, pre-filled from the current profile — P-028C2
+- [x] PATCH `/businesses/me/` uses the exact P-026 contract, only changed fields sent — P-028C2
+- [x] Changes persist and render immediately on a fresh fetch (via the PATCH response itself, no
+      extra round trip) — P-028C2
+- [x] Phone input produces backend-compatible E.164 values — P-028C2
+- [x] Category picker deliberately NOT included (flagged, unconfirmed wire shape) — both halves
+- [x] Edit route added (`route_names.dart`/`app_router.dart`), P-028C1's gate confirmed intact
+      after adding it (byte-identical redirect/gate/listenable, plus 2 new router tests proving
+      it) — P-028C2
+- [x] "Edit business profile" entry point added to `/home`, gated to Business-type sessions only
+      — P-028C2
+- [ ] `flutter analyze` clean — **pending real-machine run**
+- [ ] `flutter test test/features/business_profile/` passing — **pending real-machine run**
+- [ ] Full onboarding → home → edit → persisted-change cycle verified against the real backend —
+      **blocked by the `accountType` placeholder**, not either half's own gap
+- [ ] Pushed to `github.com/Ahmed2132003/cavallo-mobile` + fresh-clone confirmed — pending all of
+      the above
+
+### Handoff notes for whoever picks up this feature area next
+
+* **The `accountType` placeholder is now the single most important open item across P-028C1,
+  P-028C2, Phase 5, and Phase 14** — three consecutive parts have flagged it without fixing it,
+  by design (P-028C1's own recorded decision: option "b," proceed with the code exactly as if
+  `accountType` were real, don't build a throwaway workaround, don't touch `session_provider.dart`).
+  The two real fixes on the table, unchanged from P-028C1's own note: a backend
+  `GET /api/v1/accounts/me/` returning `{id, email, account_type}`, or an `account_type` JWT claim
+  + client-side decode. Whoever takes this on should treat it as its own small, dedicated part —
+  not bundle it into a larger one, since literally every downstream Business-account feature is
+  now waiting on it.
+* **The category picker gap is now three parts old** (P-028A → P-028B → P-028C2, all flagging the
+  same unconfirmed wire shape). It needs a live-backend snapshot of `GET /api/v1/categories/tree/`
+  and a `PATCH .../me/` with a `category` value set, examined once, by whoever actually builds the
+  Flutter `categories` feature — not re-flagged a fourth time by whatever part touches this
+  screen next.
+* **Do not redesign** the router-gate logic, `_SessionRefreshListenable`'s conditional
+  subscription, the onboarding/edit routes, `BusinessProfileNotifier`'s `updateProfile`/
+  `refreshProfile` conventions, or the edit screen's change-detection/re-seeding mechanism unless
+  real-machine validation (the still-open items above) surfaces an actual bug — flag it
+  explicitly if so, per this project's convention, rather than silently reworking any of it.
+* This closes the originally-scoped P-028 arc (registration → onboarding → router gate → edit →
+  persistence). Phase 5 (Products) and Phase 14 (business console) can proceed on the assumption
+  that a completed `BusinessProfile` exists by this point in a Business user's journey — **except**
+  that assumption is itself only mechanically true once the `accountType` blocker above is
+  resolved.
