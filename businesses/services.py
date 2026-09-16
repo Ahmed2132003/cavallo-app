@@ -1,5 +1,10 @@
 """
-Part P-024 service layer. Per Section 8's service-layer rule, profile
+Part P-024 service layer (phone_number param on
+create_business_profile() added by Part P-027 - see
+businesses/models.py and serializers.py's own P-027 comments for the
+full validation/normalization rationale; this layer only stores
+whatever the serializer already validated). Per Section 8's
+service-layer rule, profile
 creation must happen through these functions — never directly in a
 view/serializer .save() call. Both are wrapped in transaction.atomic()
 so a partially-created profile can never persist if anything inside
@@ -31,6 +36,7 @@ def create_business_profile(
     country: str,
     city: str,
     description: str = "",
+    phone_number: str = "",
 ) -> BusinessProfile:
     if getattr(user, "account_type", None) != ACCOUNT_TYPE_BUSINESS:
         raise ValidationError(
@@ -47,6 +53,7 @@ def create_business_profile(
             country=country,
             city=city,
             description=description,
+            phone_number=phone_number,
         )
 
 

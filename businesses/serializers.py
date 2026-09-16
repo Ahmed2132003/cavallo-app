@@ -23,6 +23,8 @@ either serializer later without re-reading businesses/views.py's
 IDOR-mitigation docstring first.
 """
 
+import phonenumbers
+from phonenumbers import NumberParseException
 from rest_framework import serializers
 
 from .models import BusinessProfile, CustomerProfile
@@ -34,7 +36,9 @@ class BusinessProfileSerializer(serializers.ModelSerializer):
     category (category added by this part — see models.py's P-026
     comment on the field; optional/nullable both at the DB level and
     here, via required=False from ModelSerializer's blank=True
-    inference).
+    inference), phone_number (added by P-027 — optional, validated
+    and normalized to E.164 by validate_phone_number() below; see
+    models.py's P-027 comment on the field).
 
     Read adds: id (read-only), is_verified (computed, read-through
     property — see models.py), follower_count (placeholder, always 0
@@ -54,6 +58,7 @@ class BusinessProfileSerializer(serializers.ModelSerializer):
             "city",
             "description",
             "category",
+            "phone_number",
             "is_verified",
             "follower_count",
         ]
@@ -64,6 +69,42 @@ class BusinessProfileSerializer(serializers.ModelSerializer):
         # is deliberate per this part's explicit scope — the Follow
         # model/relationship doesn't exist yet.
         return 0
+
+    def validate_phone_number(self, value):
+        """
+        Part P-027. Optional field — an empty value (the "no phone on
+        file" state, see models.py) skips validation entirely and is
+        returned as-is.
+
+        phonenumbers.parse(value, None) deliberately passes None as
+        the default region: this forces every input to carry its own
+        explicit country code (e.g. +966501234567) instead of silently
+        assuming Egypt (or any other single country), per architecture
+        assumption A3's explicit MENA-wide requirement. A number
+        missing the leading "+" raises NumberParseException here,
+        which is the intended behavior, not a bug to work around.
+        """
+        if not value:
+            return value
+
+        try:
+            parsed = phonenumbers.parse(value, None)
+        except NumberParseException:
+            raise serializers.ValidationError(
+                "Enter a valid phone number including the country "
+                "code, e.g. +201234567890."
+            )
+
+        if not phonenumbers.is_valid_number(parsed):
+            raise serializers.ValidationError(
+                "Enter a valid phone number including the country "
+                "code, e.g. +201234567890."
+            )
+
+        # Reformat to E.164 so the stored value is always consistent
+        # regardless of how the business typed it in (spacing,
+        # parentheses, dashes, etc. are all normalized away).
+        return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
 
 
 class CustomerProfileSerializer(serializers.ModelSerializer):

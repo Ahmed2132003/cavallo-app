@@ -20,6 +20,12 @@ django-redis==7.0.*
 # Database driver
 psycopg2-binary==2.9.*
 
+# International phone number validation (Part P-027) — Google's
+# libphonenumber Python port, used to validate BusinessProfile.phone_number
+# against the number's own country code (never a single hardcoded
+# country's format, per architecture assumption A3).
+phonenumbers==9.*
+
 # Object storage (Part P-013) — S3-compatible, provider-agnostic
 django-storages==1.14.*
 boto3==1.43.*

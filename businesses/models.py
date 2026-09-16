@@ -72,6 +72,20 @@ class BusinessProfile(TimestampedModel, SoftDeleteModel):
         on_delete=models.SET_NULL,
         related_name="business_profiles",
     )
+    # Part P-027 addition: optional contact number (architecture
+    # assumption A3 - a Trader/Factory's contact number matters more
+    # than for Customers, which is why this lives on BusinessProfile
+    # only, not CustomerProfile). Validated and normalized at the
+    # serializer layer (businesses/serializers.py's
+    # validate_phone_number()) using the phonenumbers library against
+    # the number's own embedded country code - never a hardcoded
+    # Egypt-only pattern, since this is a MENA-wide platform (+20,
+    # +966, +971, etc). Stored value is always E.164
+    # (e.g. +201234567890), regardless of how the business typed it
+    # in. blank=True/default="" (not null=True): an empty string is
+    # the "no phone on file" state, matching description's convention
+    # above, so there is exactly one representation of "not set".
+    phone_number = models.CharField(max_length=20, blank=True, default="")
 
     class Meta:
         verbose_name = "Business Profile"

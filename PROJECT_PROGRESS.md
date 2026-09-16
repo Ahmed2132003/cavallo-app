@@ -2783,3 +2783,115 @@ forward from this part.
 ---
 
 **Definition of Done: all items checked. Part P-026 is closed.**
+
+# Part P-027 — International Phone Number Validation (Per A3)
+
+**Status: ✅ COMPLETE — validated end-to-end on the real machine (Docker Compose, real Postgres, real Redis)**
+
+---
+
+### Source-of-truth note (flagged, not silent)
+
+The local `PROJECT_PROGRESS.md` handed off for this part was stale — it
+stopped at P-025's close, while `github.com/Ahmed2132003/cavallo-app`'s
+`main` already had P-026 complete. This part was authored against a real
+clone of `main` (not the stale local copy), and every step below — including
+`makemigrations`, the full test suite, `flake8`/`black`, and a live HTTP
+smoke test — was run for real in a scratch Postgres+Redis+Django
+environment before hand-off, then re-run and independently confirmed by
+Ahmed on the real Docker Compose stack. Nothing here is hand-authored-blind.
+
+### Final validation summary
+
+All items confirmed on the real machine, not assumed:
+
+- [x] `phonenumbers==9.*` added to `requirements.txt`, installs cleanly (`pip install` + a full `docker compose build web`)
+- [x] `phone_number` field added to `BusinessProfile` only (`CharField(max_length=20, blank=True, default="")`) — deliberately **not** added to `CustomerProfile`, per A3's own framing that a Trader/Factory's contact number matters more than a Customer's
+- [x] Real, machine-generated `businesses/migrations/0003_businessprofile_phone_number.py` (via `makemigrations businesses`), migrated cleanly: `Applying businesses.0003_businessprofile_phone_number... OK`
+- [x] `BusinessProfileSerializer.validate_phone_number()` — `phonenumbers.parse(value, None)` (no default region — every input must carry its own explicit country code), rejects on `NumberParseException` or `is_valid_number() is False`, reformats to E.164 on success
+- [x] Blank/missing `phone_number` is allowed (optional field, skips validation entirely)
+- [x] `pytest businesses/tests/test_serializers.py -v` — **10/10 passed** (valid Egyptian/Saudi/Emirati numbers, spaced input normalizes, blank/missing allowed, no-country-code rejected, malformed-but-prefixed rejected, non-numeric rejected, saved instance carries E.164)
+- [x] `pytest businesses/tests/test_api.py -v` — **17/17 passed** (13 pre-existing + 4 new — see bug note below)
+- [x] `pytest businesses/ -v` — **39/39 passed**
+- [x] `pytest` (full suite) — **148 passed, 1 skipped** (pre-existing P-013 skip) — nothing from P-011 through P-026 broken
+- [x] `flake8 businesses/` clean, `black --check businesses/` clean (`18 files would be left unchanged`) — hit the same recurring Windows-transfer trailing-newline issue every prior part has (P-012/P-016/P-024/P-025/P-026): `black businesses/` reformatted 6 files, re-confirmed `flake8`/`black --check` clean and `pytest` unchanged afterward
+- [x] Live smoke test via PowerShell's `Invoke-RestMethod` against the real running server on port **8095** — every step run for real, in order:
+  1. `POST /api/v1/auth/register/` (business) → `201`
+  2. `POST /api/v1/auth/login/` → access token obtained
+  3. `POST /api/v1/businesses/me/` with `phone_number: "+20 100 123 4567"` (spaced Egyptian input) → `201`, response `phone_number` came back normalized to `"+201001234567"` — proves E.164 reformatting, not a pass-through
+  4. `PATCH /api/v1/businesses/me/` with `phone_number: "+966501234567"` (Saudi) → `200`, updated correctly
+  5. `PATCH /api/v1/businesses/me/` with `phone_number: "01001234567"` (no `+` country code) → `400 VALIDATION_ERROR`, clear `fields.phone_number` message — no default-region assumption silently applied
+  6. `GET /api/v1/businesses/me/` → still `"+966501234567"` — confirms step 5's rejected value never landed, the last valid value survives untouched
+
+### Real bug found during live verification, and the fix
+
+**`TypeError: create_business_profile() got an unexpected keyword argument 'phone_number'` (unhandled HTTP 500) on `POST /api/v1/businesses/me/` whenever `phone_number` was included in the onboarding payload:**
+
+`services.create_business_profile()` (P-024) has an explicit, fixed keyword
+signature (`business_name`, `business_type`, `country`, `city`,
+`description=""`) — it never accepted arbitrary kwargs.
+`BusinessProfileMeView.post()` (P-026) forwards the serializer's entire
+`validated_data` straight into this function. Once `phone_number` became a
+real serializer field, the very first onboarding POST that included it
+crashed with an unhandled `TypeError` instead of a clean `400` — a true
+500, not a validation failure.
+
+This was invisible to `businesses/tests/test_serializers.py` alone (those
+tests call `serializer.is_valid()` directly and never touch the
+view/service layer), and the pre-existing `test_api.py` tests never
+happened to include `phone_number` in a POST payload either, so nothing
+already in the suite exercised this exact path. It only surfaced during a
+live HTTP request against a real running server.
+
+**Fix:** `create_business_profile()` extended with `phone_number: str = ""`,
+passed straight through to `BusinessProfile.objects.create(...)`.
+`update_business_profile()` needed no change — it already accepted
+`**fields` generically, so PATCH was never affected. A permanent
+regression test class, `TestBusinessProfilePhoneNumber` (4 tests), was
+added to `test_api.py` to exercise this exact real view → service path
+going forward, not just the serializer in isolation.
+
+**Lesson recorded for future parts:** a new serializer field is only
+"done" once something actually calls the view that forwards it into the
+service layer — a serializer-only `is_valid()` test suite can pass 100%
+while a real request still 500s, because the two layers can silently
+drift out of sync (a fixed-signature service function vs. a growing set
+of serializer fields). Any future field added to `BusinessProfileSerializer`
+should get at minimum one `test_api.py` case that POSTs through the real
+`/me/` endpoint with that field populated, not just a serializer-level
+`is_valid()` check.
+
+### What now exists
+
+* `requirements.txt` — `phonenumbers==9.*` added under a new comment block, just above the object-storage section.
+* `businesses/models.py` — `BusinessProfile.phone_number` (optional, `blank=True, default=""`; not added to `CustomerProfile`).
+* `businesses/serializers.py` — `BusinessProfileSerializer.fields` gains `"phone_number"`; new `validate_phone_number()` (region-less `phonenumbers.parse`, `is_valid_number` check, E.164 reformat on success).
+* `businesses/services.py` — `create_business_profile()` gains `phone_number: str = ""`, passed straight through to `.objects.create()`. No other function changed; `update_business_profile()` untouched (already generic).
+* `businesses/migrations/0003_businessprofile_phone_number.py` — real, machine-generated, applied cleanly on the real database.
+* `businesses/tests/test_serializers.py` — **new file**, 10 tests, serializer-level validation across Egyptian/Saudi/Emirati country codes plus edge cases (spacing, blank, missing, no-country-code, malformed, non-numeric, E.164-on-save).
+* `businesses/tests/test_api.py` — `TestBusinessProfilePhoneNumber` (4 new tests) appended before `TestCustomerProfileMe`, covering the real onboarding/PATCH path including the exact bug found above.
+
+### Definition of Done — confirmed, on the real machine
+
+- [x] `phone_number` on `BusinessProfile` only, optional, validated against its own embedded country code (never a hardcoded Egypt-only pattern)
+- [x] Stored value always normalized to E.164, regardless of input formatting (spaces, etc.) — confirmed live, not just in pytest
+- [x] A missing `+`/country-code prefix is rejected with a clear `400`, not silently assumed to be Egyptian
+- [x] Real migration generated and applied against the real Postgres database
+- [x] `pytest businesses/` — 39/39 green; full suite — 148 passed, 1 skipped, nothing else broken
+- [x] `flake8`/`black --check` clean on every file this part touched
+- [x] Real end-to-end live smoke test (PowerShell `Invoke-RestMethod`) against the real running server on port 8095, including the exact request shape that first exposed and then confirmed-fixed the real integration bug above
+
+### Handoff note for P-028 (Flutter profile-edit form)
+
+Confirmed live: the API rejects any phone number that doesn't start with an
+explicit `+<country code>` and returns a normal `400` with a
+`fields.phone_number` message when it does (exact message: *"Enter a valid
+phone number including the country code, e.g. +201234567890."*). P-028's
+international phone input widget (country-code picker, per this part's own
+handoff note) should surface that message as-is rather than inventing its
+own client-side "must include country code" copy, so the two stay in sync
+if the server message ever changes.
+
+---
+
+**Definition of Done: all items checked. Part P-027 is closed.**

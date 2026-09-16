@@ -233,6 +233,111 @@ class TestBusinessProfileAccountTypeGuard:
         assert response.status_code == 404
 
 
+class TestBusinessProfilePhoneNumber:
+    """
+    Part P-027, API-integration level. test_serializers.py already
+    covers validate_phone_number() in isolation via
+    serializer.is_valid() — these tests instead go through the real
+    view + services.create_business_profile()/update_business_profile()
+    call path, which is what actually caught this part's real bug
+    during manual verification: create_business_profile()'s original
+    signature had no phone_number parameter at all, so a POST /me/
+    that included phone_number raised an unhandled TypeError (500),
+    not a clean 400 - pytest alone (serializer-only tests) did not
+    catch this, only a live request through the full stack did.
+    """
+
+    def test_can_onboard_with_a_valid_phone_number(self, api_client):
+        user = _make_user("business", "p027-biz1@example.com")
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(
+            BUSINESS_ME_URL,
+            {
+                "business_name": "Acme Trading",
+                "business_type": BusinessProfile.BUSINESS_TYPE_TRADER,
+                "country": "Egypt",
+                "city": "Cairo",
+                "phone_number": "+20 100 123 4567",
+            },
+            format="json",
+        )
+        assert response.status_code == 201
+        # Normalized to E.164, matching serializers.py's
+        # validate_phone_number() contract.
+        assert response.json()["phone_number"] == "+201001234567"
+
+    def test_can_onboard_with_no_phone_number_at_all(self, api_client):
+        # phone_number is optional - onboarding must still succeed
+        # without it (this is the exact "no phone" flow that must
+        # keep working, not just the "has a phone" flow).
+        user = _make_user("business", "p027-biz2@example.com")
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(
+            BUSINESS_ME_URL,
+            {
+                "business_name": "No Phone Co",
+                "business_type": BusinessProfile.BUSINESS_TYPE_TRADER,
+                "country": "Egypt",
+                "city": "Giza",
+            },
+            format="json",
+        )
+        assert response.status_code == 201
+        assert response.json()["phone_number"] == ""
+
+    def test_can_patch_phone_number_after_onboarding(self, api_client):
+        user = _make_user("business", "p027-biz3@example.com")
+        api_client.force_authenticate(user=user)
+        api_client.post(
+            BUSINESS_ME_URL,
+            {
+                "business_name": "Acme Trading",
+                "business_type": BusinessProfile.BUSINESS_TYPE_TRADER,
+                "country": "Egypt",
+                "city": "Cairo",
+            },
+            format="json",
+        )
+
+        response = api_client.patch(
+            BUSINESS_ME_URL, {"phone_number": "+966501234567"}, format="json"
+        )
+        assert response.status_code == 200
+        assert response.json()["phone_number"] == "+966501234567"
+
+    def test_invalid_phone_number_is_rejected_and_previous_value_survives(
+        self, api_client
+    ):
+        user = _make_user("business", "p027-biz4@example.com")
+        api_client.force_authenticate(user=user)
+        api_client.post(
+            BUSINESS_ME_URL,
+            {
+                "business_name": "Acme Trading",
+                "business_type": BusinessProfile.BUSINESS_TYPE_TRADER,
+                "country": "Egypt",
+                "city": "Cairo",
+                "phone_number": "+966501234567",
+            },
+            format="json",
+        )
+
+        # No "+" country code - must be rejected with 400, not silently
+        # assumed to be an Egyptian local number.
+        response = api_client.patch(
+            BUSINESS_ME_URL, {"phone_number": "01001234567"}, format="json"
+        )
+        assert response.status_code == 400
+        assert "phone_number" in response.json()["error"]["fields"]
+
+        # The rejected PATCH must not have touched the previously
+        # stored valid value.
+        get_response = api_client.get(BUSINESS_ME_URL)
+        assert get_response.json()["phone_number"] == "+966501234567"
+
+
 class TestCustomerProfileMe:
     def test_customer_user_can_create_then_update_own_profile(self, api_client):
         user = _make_user("customer", "p026-cust1@example.com")
