@@ -2689,3 +2689,97 @@ An earlier working theory attributed this to a stale long-running `web` process 
 ---
 
 **Definition of Done: all items checked. Part P-025 is closed.**
+
+# Part P-026 — Business/Customer Profile CRUD Endpoints (Own-Profile Write, Public Read)
+
+**Status: ✅ COMPLETE — validated end-to-end on the real machine (Docker Compose, real Postgres, real Redis)**
+
+---
+
+### Final validation summary
+
+All items confirmed on the real machine, not assumed:
+
+- [x] `category` FK added to `BusinessProfile` (nullable, `on_delete=SET_NULL`), resolving the gap P-025 explicitly flagged and left open
+- [x] Real, machine-generated `businesses/migrations/0002_businessprofile_category.py`, migrated cleanly (`Applying businesses.0002_businessprofile_category... OK`)
+- [x] `BusinessProfileSerializer`, `CustomerProfileSerializer` — neither declares `id`/`user` as writable (structural half of the IDOR mitigation)
+- [x] `BusinessProfileMeView`, `CustomerProfileMeView` — object resolved strictly from `request.user`'s related profile, never from a URL/body-supplied id
+- [x] `BusinessProfilePublicView` — `AllowAny`, read-only, no auth required
+- [x] `pytest businesses/tests/test_api.py -v` — **13/13 passed**, including the core IDOR test (`TestBusinessProfileIDOR::test_patch_ignores_id_field_and_updates_only_own_profile`)
+- [x] `pytest` (full suite) — **134 passed, 1 skipped** (pre-existing P-013 skip) — nothing from P-011 through P-025 broken
+- [x] `flake8 businesses/` clean, `black --check businesses/` clean (`16 files would be left unchanged`) — after one `black businesses/` run fixed the same recurring trailing-newline-on-transfer issue seen in P-012/P-016/P-024/P-025; re-ran `pytest` afterward (134 passed, 1 skipped, unchanged) to confirm formatting had zero behavioral impact
+- [x] Pushed to `github.com/Ahmed2132003/cavallo-app` — commit `f809c47`, confirmed present on `origin/main`
+- [x] Live smoke test against the running server on port **8095** (this project's actual mapped port, not the Django default) — every step run for real, in order:
+  1. `POST /api/v1/auth/register/` (business) → `201`
+  2. `POST /api/v1/auth/login/` → access token obtained
+  3. `GET /api/v1/businesses/me/` before onboarding → `404`, clear "POST first" message
+  4. `POST /api/v1/businesses/me/` → `201`, `id: 1`, `is_verified: false`, `follower_count: 0`
+  5. `PATCH /api/v1/businesses/me/` with a forged `{"id": 999999, ...}` in the body → `200`, response `id` stayed `1` (not 999999), `business_name` updated to "Updated Name" — **the core IDOR mitigation confirmed live, not just in pytest**
+  6. `GET /api/v1/businesses/1/` with no Authorization header → `200`, same updated data returned publicly
+  7. `GET /api/v1/businesses/me/` with no Authorization header → `401 AUTHENTICATION_FAILED`
+  8. `POST /api/v1/auth/register/` + login (customer) → `201`
+  9. `POST /api/v1/customers/me/` (customer token) → `201`
+  10. `POST /api/v1/customers/me/` (business token) → `400 VALIDATION_ERROR`, "Only a Customer-type user can have a CustomerProfile created."
+
+### Bug hit during integration, and the corrected root cause
+
+**`RecursionError: maximum recursion depth exceeded` on `manage.py migrate`/`runserver`:**
+root cause was a file-naming collision during hand-off — `businesses/urls.py` and
+`config/urls.py` were delivered as two separate files that both happened to be named
+`urls.py`; one silently overwrote the other before being applied to the repo, so
+`businesses/urls.py` ended up containing a copy of `config/urls.py`'s own urlpatterns,
+including `include("businesses.urls")` — a self-referencing include loop. Fixed by
+restoring `businesses/urls.py`'s correct, intended content (Business-profile routes
+only). **Lesson recorded for future parts:** when a part delivers more than one file
+that could plausibly share a filename (e.g. an app-level `urls.py` alongside
+`config/urls.py`), rename on delivery or double-check each target file's actual content
+before running anything — a stale/wrong file at this layer fails as an opaque
+`RecursionError`, not an obvious import error.
+
+**Formatting issue (as expected, same class as every prior part):** the 8 touched files
+lost their trailing newline in transit. Fixed via `black businesses/`; re-confirmed
+`flake8`/`black --check` clean and `pytest` unchanged afterward.
+
+**Stale port in the first hand-off's manual verification commands:** they used
+`localhost:8090`. Per this project's own P-025 entry, `web` has been mapped to **8095**
+since P-021b. All smoke-test steps above were run against 8095 and passed.
+
+### What now exists (unchanged from authoring, now verified)
+
+* `businesses/serializers.py` — `BusinessProfileSerializer` (write: `business_name`,
+  `business_type`, `country`, `city`, `description`, `category`; read adds `id`,
+  `is_verified` [read-through to `User.is_business_verified`], `follower_count`
+  [placeholder 0, `# TODO(Phase 9)`]). `CustomerProfileSerializer` (write: `display_name`,
+  `country`, `city`; read adds `id`).
+* `businesses/services.py` — `update_business_profile()`, `update_customer_profile()`
+  added alongside P-024's `create_*` functions; same `account_type` guard pattern,
+  wrapped in `transaction.atomic()`.
+* `businesses/views.py` — `BusinessProfileMeView` (GET/POST/PATCH, IDOR-safe by
+  construction), `BusinessProfilePublicView` (GET by id, `AllowAny`), `CustomerProfileMeView`
+  (GET/POST/PATCH, no public equivalent per scope). `_call_service()` helper converts
+  `django.core.exceptions.ValidationError` → DRF's `ValidationError`, matching this
+  codebase's established convention (`accounts/serializers.py`'s `validate_password`).
+* `businesses/urls.py` (`/api/v1/businesses/me/`, `/api/v1/businesses/{id}/`),
+  `businesses/customer_urls.py` (`/api/v1/customers/me/`) — both wired into
+  `config/urls.py`.
+* `businesses/migrations/0002_businessprofile_category.py` — real, applied cleanly.
+* `businesses/tests/test_api.py` — 13 tests across profile CRUD, the core IDOR case,
+  public-view access, and both directions of the account-type guard.
+
+### Template established for future parts
+
+The "resolve my-own-object from `request.user`, never from a URL/body-supplied id"
+pattern is now proven end-to-end in a real, non-throwaway endpoint, live on the running
+server, not just in pytest. Every later "my own content" endpoint — Products (Phase 5),
+Posts/Stories (Phases 6–8) — should copy this pattern rather than a URL-id +
+permission-class-only approach.
+
+### Gap check for later phases
+
+`BusinessProfile.category` is nullable/optional — a Business can complete onboarding
+without picking one and set/change it later via PATCH. No further open gap carried
+forward from this part.
+
+---
+
+**Definition of Done: all items checked. Part P-026 is closed.**
