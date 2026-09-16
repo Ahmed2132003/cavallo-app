@@ -2895,3 +2895,57 @@ if the server message ever changes.
 ---
 
 **Definition of Done: all items checked. Part P-027 is closed.**
+
+## Part P-028A — Flutter: Business Profile Feature (Data + Domain + Provider)
+
+**Status:** ✅ Closed — validated end-to-end on the real machine (D:\Cavallo\social_commerce_app). `flutter analyze` clean, feature tests 24/24 passed, full suite 138/138 passed (no regressions), pushed to `github.com/Ahmed2132003/cavallo-mobile` as commit `671b7ab` on `main`.
+
+### BEFORE CODING step — what was actually confirmed, and what it corrected
+
+Per this part's own execution prompt, the real `/api/v1/businesses/me/` GET/POST/PATCH shape and the category-FK question were confirmed against this file's own P-026/P-027 entries (and the real `cavallo-mobile` source, cloned fresh) before writing any DTO — not guessed:
+
+1. **Category FK: exists.** P-025 left it as an explicit open gap; P-026 closed it — `businesses/migrations/0002_businessprofile_category.py` adds a nullable (`on_delete=SET_NULL`) `category` FK, and `BusinessProfileSerializer`'s write fields include `category`. Per the part spec's own instruction ("if it did, this part must include a category picker in the edit form too"), this required the entity/DTO/repository layer to carry a category id through — added as nullable `categoryId`, **not** in the part spec's own original entity field list. The actual category-tree-based *picker widget* (`GET /api/v1/categories/tree/`, P-025) stays presentation-layer work, correctly out of scope for this part (data/domain/provider only) — flagged for Part P-028B.
+2. **Response shape also includes `follower_count`**, a `# TODO(Phase 9)` placeholder always `0` today (P-026's own progress notes). Included on the entity/DTO for the same reason as `categoryId`: matching the *exact* real response shape rather than a hand-picked subset of it.
+3. **`phone_number`'s backend default is `""`, not `null`** (`CharField(blank=True, default="")`, P-027) — normalized to `null` in the domain entity at the DTO→entity mapping step (not in the DTO itself, which stays a pure JSON mirror).
+4. **A 404 on `GET /api/v1/businesses/me/` maps to `UnknownFailure` by `ErrorInterceptor`** (P-004's real source, read directly: `_mapStatusCode` only special-cases 400/401/403/5xx) — confirmed this is *not* something `core/network` should special-case (feature-agnostic rule), so `BusinessProfileRepositoryImpl.fetchMyProfile()` is the one place in this feature that catches `DioException` at all, narrowly, to turn exactly a 404 into `null`.
+5. **`AuthRepositoryImpl` (P-020) does not catch/re-wrap `DioException` anywhere** — it lets it propagate with `.error` already an `ApiFailure`, and callers (`SessionNotifier`) catch generically. `BusinessProfileRepositoryImpl` follows the identical convention for `createProfile`/`updateProfile`; only `fetchMyProfile`'s 404 case is a deliberate, documented exception.
+
+### What now exists
+
+* `lib/features/business_profile/domain/business_profile_entity.dart` — `BusinessType` enum (`trader`/`factory`, `fromWire`/`toWire`, throws `FormatException` on an unrecognized value — mirrors `AccountType` exactly) + `BusinessProfile` entity (`id`, `businessName`, `businessType`, `country`, `city`, `description`, `phoneNumber`, `categoryId`, `isVerified`, `followerCount`; `==`/`hashCode`/`toString`/`copyWith`).
+* `lib/features/business_profile/domain/business_profile_repository.dart` — `BusinessProfileRepository` abstract interface (`fetchMyProfile` → `Future<BusinessProfile?>`; `createProfile`, `updateProfile` → `Future<BusinessProfile>`) + `Patchable<T>` — a small tri-state wrapper (`.value(x)` / `.clear()` / `.unset()`) so `updateProfile`'s nullable-on-the-backend fields (`description`, `categoryId`, `phoneNumber`) can distinguish "leave unchanged" from "explicitly clear" on a PATCH, which a plain `T?` parameter can't express.
+* `lib/features/business_profile/data/dtos/business_profile_response_dto.dart` — `BusinessProfileResponseDto`, pure JSON mirror of the real GET/POST/PATCH response (raw `business_type` string, no domain imports — same convention as `RegisterResponseDto`).
+* `lib/features/business_profile/data/dtos/business_profile_create_request_dto.dart` — `BusinessProfileCreateRequestDto` for the POST/onboarding body; optional fields omitted from `toJson()` entirely when `null`.
+* `lib/features/business_profile/data/business_profile_repository_impl.dart` — `BusinessProfileRepositoryImpl` (depends only on `dioClientProvider`, per P-004's own rule) + `businessProfileRepositoryProvider`. PATCH's request body is built directly as a `Map` (via `Patchable`) rather than through a dedicated update-DTO class, since its shape is entirely conditional on which fields were passed — mirrors `AuthRepositoryImpl.refresh()`'s one-off inline body, flagged as a deliberate deviation from "every endpoint gets a DTO class."
+* `lib/features/business_profile/presentation/business_profile_provider.dart` — `BusinessProfileNotifier extends AsyncNotifier<BusinessProfile?>` (plain Riverpod, no code-gen, confirmed against the real `pubspec.yaml` first) + `businessProfileProvider`. `build()` fetches via the repository; a 404/no-profile-yet result is `AsyncData(null)`, never `AsyncError`. **Deliberately does not yet expose `createProfile`/`updateProfile` methods** — the part spec's own scope bullet for this file says only "fetches on build()," and the EXECUTION PROMPT's handoff assigns "the onboarding screen and its POST/create flow" to Part P-028B; adding those methods now would be scope creep beyond what was asked, flagged here rather than silently done. P-028B should add to this class, not redesign `build()`.
+* Tests (11 files' worth of cases, all authored against the real confirmed contract, hand-rolled fakes — no mockito/mocktail, matching this project's established convention):
+  - `test/features/business_profile/domain/business_profile_entity_test.dart`
+  - `test/features/business_profile/data/dtos/business_profile_response_dto_test.dart`
+  - `test/features/business_profile/data/dtos/business_profile_create_request_dto_test.dart`
+  - `test/features/business_profile/data/business_profile_repository_impl_test.dart` — `http_mock_adapter` + a real `ErrorInterceptor` attached (same setup as `auth_repository_impl_test.dart`), covering: 200 GET mapping, 404 GET → `null`, 500 GET → still `ServerFailure` (not swallowed), POST with/without optional fields, the exact P-027 phone-number `ValidationFailure` message, and all three `Patchable` states on PATCH.
+  - `test/features/business_profile/presentation/business_profile_provider_test.dart` — hand-rolled `FakeBusinessProfileRepository`, covering the profile-exists / no-profile-yet-is-not-an-error / genuine-failure-is-AsyncError cases.
+* `lib/features/business_profile/{data,domain}/.gitkeep` removed (folders are no longer empty — same convention P-005 used).
+
+### Validation — completed on the real machine
+
+- [x] `flutter pub get` — no-op, no new dependencies added by this part.
+- [x] `flutter analyze` — **No issues found!** (an initial `unintended_html_in_doc_comment` info on two lines in `business_profile_repository.dart`, caused by a backtick code-span split across two doc-comment lines, was fixed by joining `Patchable<T>.value(x)` onto one line — no logic/signature change).
+- [x] `flutter test test/features/business_profile/` — **24/24 passed.**
+- [x] `flutter test` (full suite) — **138/138 passed**, no regressions.
+- [x] `dart format` on all 11 new files.
+- [x] Pushed to `github.com/Ahmed2132003/cavallo-mobile`, commit `671b7ab` on `main` ("feat(business_profile): P-028A data/domain/provider layer", 12 files changed, 1303 insertions).
+
+### Still open before P-028B starts
+
+- [ ] **Ahmed: confirm the `category` field's real wire representation** (assumed here to be a bare int id — DRF's default for a plain FK write field — per the comment in `business_profile_response_dto.dart`) against a real captured response from `POST /api/v1/businesses/me/` with a category set. This is the one field in this part not independently verified against a live response capture, only against the serializer's declared write-field list. If it turns out nested (`{"id": 3, "name": "..."}`), `BusinessProfileResponseDto.fromJson` needs a one-line fix before P-028B builds the picker on top of it.
+- [ ] **Fresh-clone confirmation** (`git clone` into a separate directory, verify all 11 files present at their exact paths) — per this project's own closure convention, still to be run.
+
+### Handoff notes for Part P-028B
+
+- Continue this same P-028 implementation — do not redesign or replace the Data/Domain/Repository/DTO/Provider structures above, per the EXECUTION PROMPT's own instruction. Build `business_onboarding_screen.dart` (calling `BusinessProfileRepository.createProfile` — likely by adding a method to `BusinessProfileNotifier` that calls it and updates `state`, since nothing in this part yet wires the repository's create/update methods into the notifier) and `business_profile_edit_screen.dart` (same for `updateProfile`, using `Patchable` for the clearable fields).
+- The category picker (`GET /api/v1/categories/tree/`, P-025's `CategoryTreeView`) is P-028B's to build — this part only carries `categoryId` through as a plain int; no Flutter categories feature/provider exists yet anywhere in the app (confirmed: no `lib/features/categories/` folder in the fixed Section-12 feature list at all — the tree endpoint has no Flutter consumer yet). P-028B should decide where that provider/cache (`CacheStorage`, P-005, already namespace-ready for e.g. `'categories_tree'`) lives.
+- International phone input (`intl_phone_field` or equivalent, per the part's own "Detailed Implementation" note) should surface the backend's real P-027 validation message as-is (confirmed exact text: *"Enter a valid phone number including the country code, e.g. +201234567890."*) via `ValidationFailure.fields['phone_number']` — not invent separate client-side copy, exactly as P-027's own handoff note asked.
+- The router-guard "second, business-account-specific gate" the part spec's Architecture Rules describe depends on knowing the signed-in user's real `accountType` — but `sessionProvider`'s `User.accountType` is currently a documented **placeholder** (Part P-021a: `_placeholderAccountType`, always `AccountType.customer`, "nothing should ever branch on this until a real fix lands"). P-028B cannot build a reliable business-only router gate on top of that placeholder as-is; this is a real, pre-existing blocker worth flagging back to whoever owns the `/me/`-endpoint-or-JWT-decoding fix P-021a's own docstring already called out, not something to work around silently in P-028B.
+- `businessProfileProvider`'s `AsyncData(null)` state is exactly the "route to onboarding" signal; `AsyncData(non-null)` is "route to the profile view/edit flow." `AsyncError` should show a retry state, distinct from either.
+
+---
