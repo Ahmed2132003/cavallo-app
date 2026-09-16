@@ -54,6 +54,24 @@ class BusinessProfile(TimestampedModel, SoftDeleteModel):
     country = models.CharField(max_length=100)
     city = models.CharField(max_length=100)
     description = models.TextField(blank=True, default="")
+    # Part P-026 addition: resolves the gap P-025 explicitly flagged and
+    # left open (see PROJECT_PROGRESS.md's P-025 entry, "Gap carried
+    # forward to P-026"). Architecture Section 9's ER diagram shows
+    # Category (1)──(M) BusinessProfile, which P-024 could not add
+    # because the categories app didn't exist yet at that point.
+    # Nullable/optional by design — a Business can complete onboarding
+    # via POST /me/ before ever picking a category, and assign/change
+    # one later via PATCH /me/. on_delete=SET_NULL (not PROTECT, unlike
+    # Category's own self-FK): deleting a category must never block
+    # deleting/keeping a business profile the way deleting a parent
+    # category with live children is blocked.
+    category = models.ForeignKey(
+        "categories.Category",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="business_profiles",
+    )
 
     class Meta:
         verbose_name = "Business Profile"

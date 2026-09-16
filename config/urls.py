@@ -34,4 +34,11 @@ urlpatterns = [
     # write access stays Admin-only via Django Admin ("admin/" above),
     # on purpose, per this part's explicit scope.
     path("api/v1/categories/", include("categories.urls")),
+    # Part P-026: first genuinely IDOR-sensitive endpoints (architecture
+    # Section 5, rule 10). /me/ on each resolves strictly from
+    # request.user, never from a URL/body-supplied id — see
+    # businesses/views.py's module docstring. businesses/{id}/ is the
+    # one deliberately public, read-only exception.
+    path("api/v1/businesses/", include("businesses.urls")),
+    path("api/v1/customers/", include("businesses.customer_urls")),
 ]

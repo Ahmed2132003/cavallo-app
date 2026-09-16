@@ -70,3 +70,58 @@ def create_customer_profile(
             country=country,
             city=city,
         )
+
+
+def update_business_profile(user, **fields) -> BusinessProfile:
+    """
+    Part P-026. Updates `user`'s OWN BusinessProfile — this function
+    never accepts a profile id/instance from the caller, only a user
+    and a dict of field values, which is what makes it safe to call
+    directly from BusinessProfileMeView's PATCH handler with whatever
+    survived serializer validation. The view resolves "which profile"
+    exclusively via `user.business_profile` (never a URL/body-supplied
+    id) — see views.py's module docstring for the full IDOR-mitigation
+    rationale this function is one half of.
+
+    Reuses the same account_type guard pattern as
+    create_business_profile() above, so a stray direct call from a
+    script/shell/admin action against a non-Business user's data still
+    fails loudly instead of silently corrupting a row that shouldn't
+    exist in the first place.
+    """
+    if getattr(user, "account_type", None) != ACCOUNT_TYPE_BUSINESS:
+        raise ValidationError("Only a Business-type user can update a BusinessProfile.")
+    try:
+        profile = user.business_profile
+    except BusinessProfile.DoesNotExist:
+        raise ValidationError(
+            "This user does not have a BusinessProfile yet. "
+            "POST to create one first."
+        )
+
+    with transaction.atomic():
+        for field_name, value in fields.items():
+            setattr(profile, field_name, value)
+        profile.save()
+    return profile
+
+
+def update_customer_profile(user, **fields) -> CustomerProfile:
+    """Part P-026. Same pattern as update_business_profile() above, for
+    CustomerProfile. See that function's docstring for the full
+    rationale (structural IDOR mitigation + account_type guard)."""
+    if getattr(user, "account_type", None) != ACCOUNT_TYPE_CUSTOMER:
+        raise ValidationError("Only a Customer-type user can update a CustomerProfile.")
+    try:
+        profile = user.customer_profile
+    except CustomerProfile.DoesNotExist:
+        raise ValidationError(
+            "This user does not have a CustomerProfile yet. "
+            "POST to create one first."
+        )
+
+    with transaction.atomic():
+        for field_name, value in fields.items():
+            setattr(profile, field_name, value)
+        profile.save()
+    return profile
