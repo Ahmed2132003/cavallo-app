@@ -2949,3 +2949,224 @@ Per this part's own execution prompt, the real `/api/v1/businesses/me/` GET/POST
 - `businessProfileProvider`'s `AsyncData(null)` state is exactly the "route to onboarding" signal; `AsyncData(non-null)` is "route to the profile view/edit flow." `AsyncError` should show a retry state, distinct from either.
 
 ---
+
+<!--
+APPEND-ONLY. Paste everything below this comment at the very END of
+PROJECT_PROGRESS.md, right after the last line of the P-028A section.
+Nothing above it changes.
+-->
+
+## Part P-028B — Flutter: Business Profile Feature (Onboarding Screen + Phone Input + Create Flow) ✅ CLOSED
+
+**Status:** ✅ Complete — validated on the real machine (`D:\Cavallo\social_commerce_app`),
+per Ahmed's confirmation. Authored with no Flutter SDK / no pub.dev access (the same
+documented gap every sandbox-authored part in this project has hit: P-000, P-001, P-008,
+P-009, P-010, P-011, P-021a, P-022B, P-022C, P-024) — full validation, including two real
+bugs surfaced only by running the actual test suite (see below), happened afterward on
+the real machine, not in the authoring sandbox.
+
+Authored against the real cloned source, not a guess:
+`github.com/Ahmed2132003/cavallo-mobile` at commit `671b7ab` ("feat(business_profile):
+P-028A data/domain/provider layer") was cloned and every file this part touches or builds
+on (`business_profile_entity.dart`, `business_profile_repository.dart`,
+`business_profile_repository_impl.dart`, `business_profile_provider.dart`,
+`register_screen.dart`, `login_screen.dart`, `app_router.dart`, `route_names.dart`,
+`app_text_field.dart`, `app_button.dart`, `pubspec.yaml`) was read directly before writing
+a single line.
+
+### BEFORE CODING step — what was actually confirmed, and what it corrected
+
+* **Confirmed `BusinessProfileNotifier` has no `createProfile`/`updateProfile` method
+  yet** (P-028A's own scope note: "fetches on build()" only) — exactly as P-028A's own
+  handoff said. This part therefore had to both build the screen **and** add
+  `createProfile()` to `business_profile_provider.dart`, per P-028A's explicit
+  instruction ("P-028B should ADD to this class ... never redesign or replace `build()`
+  itself"). This is a real addition beyond this part's own literal "Files Expected" list
+  (which only names `business_onboarding_screen.dart` + `pubspec.yaml`) — flagged here,
+  not done silently.
+* **Confirmed `AppTextField` (Part P-006) has no `maxLines` parameter** — single-line
+  only. Added one small, backward-compatible optional `maxLines` parameter (default `1`,
+  identical to every existing call site's current behavior — `LoginScreen`/
+  `RegisterScreen` are unaffected) directly to `lib/core/widgets/app_text_field.dart`.
+* **Category picker: confirmed still not buildable in this part.** P-026 added a
+  nullable `category` FK (confirmed already in P-028A); but no Flutter `categories`
+  feature/provider exists anywhere in this app yet — no `GET /api/v1/categories/tree/`
+  consumer, no cache-key convention chosen. Since `category` is optional on the backend,
+  this screen omits the picker entirely (`categoryId` is always `null` on submit from
+  this screen). **Still a real, open item** — carries forward to whichever part builds
+  both the edit screen (P-028C) and the eventual `categories` Flutter feature.
+* **Confirmed the exact E.164 shape `intl_phone_field` produces**, by reading its own
+  source directly: `PhoneNumber.completeNumber` is `'+' + dialCode + regionCode +
+  number` — a leading `+` followed by digits only, no spaces — matching Part P-027's
+  backend validation exactly.
+* **Confirmed `intl_phone_field`'s empty-value behavior**: its built-in per-country
+  length validator only engages once the field is non-empty, so an untouched field
+  passes `Form.validate()` on its own — making the phone field genuinely optional with no
+  extra "skip validation if empty" code needed.
+
+### ⚠️ Flagged: `intl_phone_field` package maintenance status
+
+`intl_phone_field`'s latest version is 3.2.0, published in 2023 — not under active
+development, but not marked discontinued on pub.dev either, and its own `pubspec.yaml`
+declares no dependencies beyond the Flutter SDK. Confirmed on the real machine:
+`flutter pub get` resolved `intl_phone_field 3.2.0` cleanly against this project's
+pinned `flutter_riverpod: 3.3.2` with **no version conflict** — the fallback
+(`intl_phone_field_v2`) was not needed.
+
+### Real bugs found during real-machine validation, and the fixes applied
+
+Both bugs were in the **test files**, not in `business_onboarding_screen.dart` or
+`business_profile_provider.dart` — the production code was correct as authored.
+
+1. **Widget-test tap failures (6 of 7 initial failures) — off-screen hit-test.**
+   `flutter test test/features/business_profile/` reported, for every test that tapped
+   "Complete profile":
+   ```
+   Offset(400.0, 660.0) is outside the bounds of the root of the render tree, Size(800.0, 600.0)
+   ```
+   The onboarding form (business name, business type, country, city, `IntlPhoneField`,
+   multiline description) is taller than the default 800×600 test surface, so the button
+   sits below the fold inside the screen's own `SingleChildScrollView`.
+   `tester.tap(find.text('Complete profile'))` computed its tap point from the button's
+   current (unscrolled) render-tree position — outside the visible viewport — so the
+   synthetic pointer event never reached the button's gesture detector at all.
+   **Fix:** added a `_tapCompleteProfile(tester)` helper in the test file that calls
+   `tester.ensureVisible(...)` (scrolling the ancestor `Scrollable` into position) before
+   every tap, replacing all 7 direct `tester.tap(find.text('Complete profile'))` calls.
+   No change to the screen itself — its `SingleChildScrollView` was correct as written.
+
+2. **Provider-test failure — incorrect assumption about `AsyncNotifier` error semantics.**
+   `business_profile_provider_test.dart`'s rethrow test asserted
+   `expect(state.hasValue, isFalse)` after a failed `createProfile()` call, and got
+   `true` instead. Root cause: Riverpod's `AsyncNotifier` state setter automatically runs
+   an assigned `AsyncError` through `.copyWithPrevious(oldState)` when transitioning
+   through `AsyncLoading()`/`AsyncError()` — this is documented framework behavior (it's
+   what lets `state.value` keep returning "the last known good value" during a failed
+   refresh), not something `createProfile()` opts into or controls. Since `build()` had
+   already resolved to `AsyncData(null)` before the failing call, the retained "known
+   good value" was `null` itself, so `state.hasValue` was legitimately `true` even with
+   `state.hasError` also `true`. **Fix:** replaced the `hasValue` assertion with a direct
+   check on `state.error` (`same(failure)`) — the correct, unambiguous test for "did the
+   call fail with the original exception." (`valueOrNull` was tried as an alternative
+   check first, but isn't exposed as a getter on this project's pinned
+   `flutter_riverpod` version — confirmed via `flutter analyze` on the real machine — so
+   it was dropped in favor of `error`/`hasError`, which already fully cover the intended
+   behavior.)
+
+No other test files or production files needed changes for these two fixes.
+
+### What now exists
+
+* **`pubspec.yaml`** — added `intl_phone_field: ^3.2.0`.
+* **`lib/core/widgets/app_text_field.dart`** — added an optional `maxLines` parameter
+  (default `1`, non-breaking).
+* **`lib/features/business_profile/presentation/business_profile_provider.dart`** —
+  added `BusinessProfileNotifier.createProfile(...)`, mirroring `SessionNotifier.login`'s
+  loading → data/rethrow convention: `state` becomes `AsyncValue.loading()`
+  synchronously, then `AsyncData(profile)` on success, or `AsyncError` (with the original
+  exception rethrown to the caller) on failure. `build()` and the class's existing scope
+  are otherwise untouched.
+* **`lib/features/business_profile/presentation/business_onboarding_screen.dart`**
+  (new) — `BusinessOnboardingScreen`, a `ConsumerStatefulWidget`:
+  * `business_name` — required `AppTextField`.
+  * `business_type` — `SegmentedButton<BusinessType>` (Trader/Factory), mirroring
+    `RegisterScreen`'s existing `SegmentedButton<AccountType>` picker.
+  * `country`/`city` — required, free-text `AppTextField`s (MVP fallback, per the part
+    spec's own allowance).
+  * `phone_number` — `IntlPhoneField`, `initialCountryCode: 'EG'` (placeholder default,
+    changeable via the picker), optional, producing an E.164 value via
+    `PhoneNumber.completeNumber` on change.
+  * `description` — optional, multiline (`maxLines: 4`) `AppTextField`.
+  * On submit: validates the form, calls
+    `businessProfileProvider.notifier.createProfile(...)`, and on success calls
+    `context.goNamed(RouteNames.home)` directly — manual navigation, not a router guard
+    (Part P-028C's job). On a `ValidationFailure`, maps each backend field error onto its
+    matching form field, falling back to a general error banner for anything unmapped.
+* **`test/features/business_profile/presentation/business_profile_provider_test.dart`**
+  (modified) — `FakeBusinessProfileRepository.createProfile` now supports injectable
+  behavior and call/argument tracking. New `BusinessProfileNotifier.createProfile` test
+  group (4 tests, all passing): success forwards every argument and transitions to
+  `AsyncData`; state is `AsyncLoading` synchronously before the call resolves; a failure
+  becomes `AsyncError` with the original exception both set as `state.error` and
+  rethrown to the caller (see "Real bugs found" above for the assertion fix). The
+  pre-existing `build()` group and the `businessProfileRepositoryProvider`
+  overridability test are unchanged and unaffected.
+* **`test/features/business_profile/presentation/business_onboarding_screen_test.dart`**
+  (new, 7 widget tests, all passing after the `ensureVisible` fix above): missing-
+  required-fields shows 3 errors and never calls the repository; a malformed phone
+  number (5 digits against Egypt's real 10-digit requirement) blocks submission; leaving
+  the optional phone field untouched does not block submission; a fully valid submission
+  forwards every field (including the E.164 phone value) to the repository and navigates
+  to `/home`; selecting "Factory" sends `BusinessType.factory`; a `ValidationFailure` on
+  `business_name` is shown on that field and does not navigate; a `ServerFailure` shows a
+  general error and does not navigate.
+
+### Validation — confirmed on the real machine
+
+| Check | Expected | Result |
+| --- | --- | --- |
+| `flutter pub get` | `intl_phone_field` resolves cleanly against `flutter_riverpod: 3.3.2` | ✅ (`intl_phone_field 3.2.0` added, no conflicts) |
+| `flutter analyze` | No issues found! | ✅ |
+| `flutter test test/features/business_profile/` | All tests pass | ✅ (after the two test fixes above) |
+| `flutter test` (full suite) | No regressions from P-028A's own baseline | ✅ (per Ahmed's confirmation) |
+| Pushed to `github.com/Ahmed2132003/cavallo-mobile` and confirmed via a fresh `git clone` | — | ✅ — commit `7033930` ("part 028b"), `671b7ab..7033930 main -> main`, 6 files changed (1013 insertions, 28 deletions), confirmed pushed on `origin/main` |
+
+Manual on-device run of the onboarding screen itself against the real backend is
+**deliberately deferred, not skipped**: no router guard exists yet to route a Business
+account into this screen without a temporary/throwaway route, and building one for a
+screen P-028C is about to wire properly would be wasted, disposable work. This is
+tracked explicitly below, not silently dropped.
+
+### Definition of Done — status
+
+- [x] Onboarding form built: business_name, business_type, country, city, phone, description
+- [x] Phone input produces a backend-compatible E.164 value (confirmed against the package's own source, not assumed)
+- [x] Required fields validated before submission (business_name, country, city)
+- [x] Malformed phone number blocked with a validation error; empty (optional) phone is not blocked
+- [x] Submission calls the POST path of P-026's `/me/` endpoint through `BusinessProfileNotifier.createProfile`
+- [x] On successful submission, navigates to `/home`
+- [x] Widget tests: 7/7 passing, provider tests: all passing (including the new `createProfile` group)
+- [x] `flutter pub get` / `flutter analyze` / `flutter test` — run on the real machine, all green
+- [x] Pushed to `github.com/Ahmed2132003/cavallo-mobile` and confirmed on `origin/main` (commit `7033930`)
+- [ ] **Real manual on-device run against the live backend — deliberately deferred to after P-028C's router guard exists** (see note above), not a gap in this part's own closure
+
+### Still-open items carried forward (flagged, not silent)
+
+* **Category picker** — still not built anywhere in this app. Needs its own Flutter
+  `categories` feature before either this onboarding screen or Part P-028C's edit screen
+  can offer it. `categoryId` stays `null` from this screen until then.
+* **The business-account-specific router gate** is **not** built in this part —
+  confirmed against the real `app_router.dart` (Part P-021b): it currently only redirects
+  on `sessionProvider`, with no awareness of `businessProfileProvider` at all. This is
+  explicitly Part P-028C's job.
+* **`sessionProvider`'s `User.accountType` is still a documented placeholder**
+  (`_placeholderAccountType`, always `AccountType.customer` — Part P-021a). This still
+  blocks a reliable business-only router gate and is unchanged by this part.
+
+### Handoff notes for Part P-028C
+
+* Continue this same P-028 implementation — do not redesign or replace the screen,
+  provider addition, or `AppTextField.maxLines` change above. Build
+  `business_profile_edit_screen.dart` (same fields, pre-filled, submitting via a new
+  `updateProfile` method this part deliberately did **not** add to
+  `BusinessProfileNotifier` — that stays P-028C's job, using `Patchable` for the
+  clearable fields, exactly as `BusinessProfileRepository`'s own interface already
+  expects), plus the router redirect logic and the onboarding/edit routes in
+  `route_names.dart`/`app_router.dart`.
+* `BusinessOnboardingScreen`'s manual `context.goNamed(RouteNames.home)` call on success
+  does not need to change once P-028C's router guard exists — the guard will simply make
+  that manual call redundant-but-harmless on the happy path.
+* `RouteNames` has no `businessOnboarding`/`businessProfileEdit` entries yet — this
+  part's own screen was tested with a throwaway local route name (`'businessOnboarding'`,
+  `'/onboarding'`) inside its own test file only; P-028C should add the real, permanent
+  names to `route_names.dart` and wire `app_router.dart`'s real `GoRoute` for both
+  screens.
+* The category-picker gap applies equally to the edit screen — don't build a category
+  field into the edit form either without first building the underlying Flutter
+  `categories` feature, or explicitly flag punting on it again the same way this part
+  did.
+* Two test-authoring lessons worth carrying into P-028C's own tests, so they don't repeat
+  here: (1) any form tall enough to scroll needs `ensureVisible()` before tapping a
+  below-the-fold submit button in widget tests; (2) don't assert `hasValue == false` on
+  an `AsyncNotifier`'s error state — assert on `error`/`hasError` instead, since Riverpod
+  retains the previous value through `copyWithPrevious` by design.
