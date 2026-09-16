@@ -6,7 +6,7 @@ Included under /api/v1/auth/ by config/urls.py.
 
 from django.urls import path
 
-from accounts.views import LoginView, LogoutView, RefreshView, RegisterView
+from accounts.views import LoginView, LogoutView, MeView, RefreshView, RegisterView
 
 app_name = "accounts"
 
@@ -16,4 +16,6 @@ urlpatterns = [
     path("login/", LoginView.as_view(), name="login"),
     path("refresh/", RefreshView.as_view(), name="refresh"),
     path("logout/", LogoutView.as_view(), name="logout"),
+    # accountType real-value fix: replaces Flutter's P-021a placeholder.
+    path("me/", MeView.as_view(), name="me"),
 ]

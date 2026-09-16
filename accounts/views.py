@@ -147,3 +147,51 @@ class LogoutView(generics.GenericAPIView):
         return Response(
             {"detail": "Successfully logged out."}, status=status.HTTP_200_OK
         )
+        
+# ADD to accounts/views.py
+
+# 1. Add this import alongside the existing rest_framework imports:
+from rest_framework.views import APIView
+
+# 2. Append this class at the end of the file:
+
+
+class MeView(APIView):
+    """
+    GET /api/v1/auth/me/
+
+    Returns the authenticated caller's {id, email, account_type} — the
+    real-data replacement for Flutter's `_placeholderAccountType` (Part
+    P-021a's own documented placeholder, re-flagged as the single
+    blocker by every part since P-028A).
+
+    No serializer, no accounts.services function: unlike RegisterView/
+    LoginView/LogoutView, there is no input to validate and no actual
+    business logic to run (no transaction, no auth check beyond
+    IsAuthenticated, no token minting) — this view only reads three
+    already-validated fields off the already-authenticated
+    `request.user` and shapes them into a Response. This deliberately
+    mirrors RegisterView's own precedent: RegisterView.create() already
+    builds its response dict directly (`{"id": user.id, "email":
+    user.email, "account_type": user.account_type}`) without going
+    through a serializer or a service for that shaping step, since
+    Section 8's "no business logic in views" rule is about real work
+    (writes, auth, external calls), not response-field selection. Same
+    three fields, same shape, here.
+
+    Deliberately IsAuthenticated (matches LogoutView's reasoning): only
+    a caller presenting a currently-valid access token can read this.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        return Response(
+            {
+                "id": user.id,
+                "email": user.email,
+                "account_type": user.account_type,
+            },
+            status=status.HTTP_200_OK,
+        )

@@ -3400,3 +3400,66 @@ blocker, not a gap in either C1's or C2's own code.
   that a completed `BusinessProfile` exists by this point in a Business user's journey — **except**
   that assumption is itself only mechanically true once the `accountType` blocker above is
   resolved.
+
+## Part P-028 — CLOSED (final)
+
+### Blocker resolution — accountType placeholder
+- `GET /api/v1/auth/me/` (`AuthRepository.fetchMe()`) now backs both
+  `SessionNotifier._restoreSession()` and `SessionNotifier.login()`.
+  `user.accountType` is real end-to-end; no placeholder remains anywhere.
+- Files touched: `auth_repository.dart` (added `fetchMe()`),
+  `auth_repository_impl.dart`, `session_provider.dart`, new
+  `me_response_dto.dart`.
+
+### Test fixes (all in test/features/auth/)
+1. **login_screen_test.dart / register_screen_test.dart** — `_FakeAuthRepository`
+   now implements `fetchMe()` returning a real default `User` instead of
+   `throw UnimplementedError(...)`. Root cause: `SessionNotifier.login`
+   genuinely calls `fetchMe()` after every successful login/chained-login,
+   so it's exercised by these screens' tests now, not just a stub.
+2. **session_provider_test.dart** — the "surfaces as AsyncError when fetchMe
+   fails with a non-auth failure" test was hanging for the full 30s test
+   timeout. Root cause: Riverpod 3.x's automatic retry-on-error for a
+   provider's `build()` failure (real, non-mocked exponential backoff up
+   to 6.4s/attempt — see https://riverpod.dev/docs/concepts2/retry).
+   Fixed by passing `retry: (retryCount, error) => null` to that test's
+   `ProviderContainer`, and using a plain `try/catch` instead of
+   `expectLater(..., throwsA(...))` around `container.read(sessionProvider.future)`.
+
+### UI additions — needed to make the P-028C1/C2 gate actually usable
+- `lib/features/feed/presentation/home_screen.dart`: added a conditional
+  "Edit business profile" button. Shown only when the signed-in user is
+  `AccountType.business` AND `businessProfileProvider` resolves to a
+  non-null `BusinessProfile` (`ref.watch` on both — reactive, no manual
+  refresh needed). Routes to `RouteNames.businessProfileEdit`.
+- `lib/features/business_profile/presentation/business_profile_edit_screen.dart`:
+  added an explicit `AppBar` leading "back to home" `IconButton`
+  (`goNamed(RouteNames.home)`) — this route is reached via `goNamed`
+  (not `push`), so `go_router`'s automatic back button had nothing to
+  pop to.
+
+### Manual test scenario — steps 1–9, all confirmed on real device
+1–4: unaffected, passed as before the blocker fix.
+5. Onboarding → `/home` → edit screen: all fields pre-filled correctly
+   from a fresh `GET`.
+6. Changed City only, saved → "Business profile updated." shown, City
+   updates immediately in-place.
+7. Closed and reopened the edit screen (fresh GET) → new City value
+   persisted server-side.
+8. Invalid phone number (<10 digits, Egypt) → "Enter a valid phone
+   number for the selected country." shown, no request sent.
+9. Cleared description field, saved → value actually cleared server-side
+   (not left unchanged).
+
+### Known, deliberate transitional UX note (not a bug — already documented in app_router.dart)
+On cold start with an existing session, a Business user with no completed
+profile briefly lands on `/home` before `businessProfileProvider` resolves
+to 404 and the gate bounces them to onboarding a moment later. This is the
+documented "don't force a redirect while businessProfileProvider is still
+loading" branch in `appRouterProvider`'s `redirect` callback — intentional,
+not something this closure changes.
+
+### Status
+**P-028 (A/B/C1/C2) — DONE.** No open blockers. Phase 5 and Phase 14 parts
+may now safely assume a completed `BusinessProfile` exists and
+`accountType` is real by the time they run.
