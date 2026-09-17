@@ -3642,3 +3642,104 @@ currently-disabled `AppButton(label: 'Follow', onPressed: null)` in
 `_ProfileHeader` and is also where `followerCount` (already carried
 through the DTO/entity, currently unused) becomes real and can be
 displayed.
+
+# Part P-030 — Business Profile Redis Caching (5 min TTL) — ✅ COMPLETE
+
+Wraps BusinessProfilePublicView's public read (P-026) in
+core.cache.cache_get_or_set (P-014) at the exact 5-minute TTL
+architecture Section 16 specifies for Business Profile public data,
+with cache invalidation on the owner's own PATCH so an edit is never
+masked by a stale cached read — following the same
+invalidate-on-write discipline P-025 (Categories) established via
+categories/signals.py.
+
+### What now exists
+
+* `businesses/views.py`:
+  - `BUSINESS_PROFILE_CACHE_TTL_SECONDS = 300` (module-level constant).
+  - `_business_profile_cache_key(pk)` — shared helper returning
+    `"business_profile:{pk}"`, used by both the read and the write
+    path so the key format cannot drift between them.
+  - `BusinessProfilePublicView.retrieve()` — new override wrapping
+    `get_object()` + serialization in `cache_get_or_set`.
+  - `BusinessProfileMeView.patch()` — now calls
+    `cache.delete(_business_profile_cache_key(profile.id))`
+    immediately after a successful `update_business_profile()` call.
+    Direct `cache.delete()`, not `cache_get_or_set` — same sanctioned
+    exception `categories/signals.py` already established for P-025
+    (delete is a different operation from get/set, no ad hoc key
+    string involved).
+* `businesses/tests/test_api.py`:
+  - `TestBusinessProfilePublicCaching` (2 tests) — proves a cache
+    HIT costs 0 DB queries via `django_assert_num_queries`. A genuine
+    cache MISS costs 2 queries, not 1: `BusinessProfileSerializer`'s
+    `is_verified` field reads through `BusinessProfile.is_verified`,
+    a pre-existing Python-level property (from P-024/P-026) that
+    reads `obj.user.is_business_verified` — `BusinessProfilePublicView`'s
+    queryset has no `select_related("user")`, so that property access
+    is a second, separate query. This is pre-existing behavior,
+    unrelated to and unchanged by this Part — flagged here for
+    whoever reads this next so the "2 queries, not 1" numbers in the
+    tests aren't mistaken for a caching bug.
+  - `TestBusinessProfilePublicCacheInvalidation` (2 tests) — proves
+    the `cache.delete()` call actually fires on a real request cycle
+    (warm cache → PATCH → immediate re-read returns the fresh value),
+    not just that the line exists in the source.
+
+### Important implementation details
+
+* Actual repository paths are `businesses/views.py` and
+  `core/cache.py` — **no `apps/` prefix** (this Part's own spec
+  document assumed `apps/businesses/views.py` /
+  `apps/core/cache.py`; the real repo layout, confirmed against
+  `github.com/Ahmed2132003/cavallo-app` main, has no `apps/`
+  directory at all).
+* 404s are never cached: `get_object()`'s `Http404` (if the id
+  doesn't exist) is raised inside `cache_get_or_set`'s `compute_fn`,
+  before `cache.set()` would run, so a not-found id is looked up
+  fresh on every request rather than caching a miss.
+* `cache.delete()` in `patch()` runs unconditionally on every
+  successful update, regardless of which field(s) changed — not
+  gated to only fire when `business_name` (or any specific field)
+  is in the PATCH body.
+
+### Definition of Done — confirmed, on the real machine
+
+- [x] Public profile reads cached at exactly 300s TTL
+- [x] Cache invalidation on update genuinely verified via a real
+      request cycle (not just written, actually tested)
+- [x] `pytest businesses/` — 43/43 green (39 pre-existing + 4 new)
+- [x] `flake8`/`black --check` on the two touched files — clean
+      (installed flake8 7.3.0 / black 26.5.1 into the running
+      container per the same `pip install` convention P-016
+      established; ran against the project's own `.flake8`
+      — `max-line-length = 88`, `extend-ignore = E203, W503`)
+
+### Known issues / flagged for follow-up
+
+* `BusinessProfilePublicView`'s queryset has no `select_related("user")`,
+  so every cache MISS costs 2 queries instead of 1 (see test class
+  docstring above). Out of this Part's explicit scope (caching only,
+  not query optimization) — worth a one-line `select_related("user")`
+  fix in a future part if this read path ever becomes hot enough to
+  matter beyond what the cache already absorbs.
+* Phase 4 gate ambiguity: this Part's own spec says "mark Phase 4
+  COMPLETE only if P-024 through P-030 all genuinely passed
+  validation." P-024/P-025/P-026/P-027/P-030 are confirmed done. The
+  P-028/P-029 entries actually present in this project's history
+  (`P-028A`, `P-028C1`, `P-029`) are Flutter/mobile parts, not
+  backend Business-Profile-cache parts — so it's unclear whether the
+  spec's "P-024 through P-030" range has a backend P-028/P-029 that
+  was simply never logged here, or whether the mobile parts fully
+  satisfy that range. Deliberately NOT marking Phase 4 COMPLETE here
+  — Ahmed to confirm which reading is correct before Phase 5
+  (Products) begins, per this Part's own gate note.
+
+Remaining work: none for P-030 itself, pending the Phase 4 gate
+confirmation noted above.
+
+GitHub references: none captured this session — Ahmed to commit
+`businesses/views.py` and `businesses/tests/test_api.py` locally.
+
+Exact next starting point: once the Phase 4 gate question above is
+resolved, Phase 5 (Products) may begin.

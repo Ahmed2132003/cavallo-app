@@ -7,6 +7,7 @@ ownership/IDOR/account-type logic, not the JWT login flow itself.
 """
 
 import pytest
+from django.core.cache import cache
 from django.urls import reverse
 from rest_framework.test import APIClient
 
@@ -405,3 +406,174 @@ class TestCustomerProfileMe:
         )
         assert response.status_code == 400
         assert CustomerProfile.objects.filter(user=user).exists() is False
+
+
+class TestBusinessProfilePublicCaching:
+    """
+    Part P-030, read-side only. This class does not test invalidation
+    (that is BusinessProfileMeView.patch()'s own cache.delete() call,
+    added in this Part's next step) - only that a second read within
+    the 5-minute TTL is served from Redis instead of hitting Postgres
+    again.
+
+    A genuine cache miss costs 2 queries, not 1: BusinessProfileSerializer's
+    is_verified field reads through BusinessProfile.is_verified, a
+    Python-level property (pre-existing, from P-024/P-026 - see
+    businesses/models.py) that reads obj.user.is_business_verified.
+    BusinessProfilePublicView's queryset has no select_related("user"),
+    so that property access issues its own separate SELECT against
+    accounts_user in addition to the BusinessProfile SELECT itself.
+    That second query is pre-existing behavior, unrelated to and
+    unchanged by this Part - asserting 2 (not 1) here documents it
+    rather than silently tolerating a wrong assumption. The one
+    Part P-030 acceptance criterion this class actually proves is the
+    second number: a cache HIT costs 0 queries.
+    """
+
+    def setup_method(self, _):
+        # Clean cache DB per test - same reasoning as
+        # core/tests/test_cache.py (P-014): avoids cross-test leakage
+        # on the shared Redis cache DB.
+        cache.clear()
+
+    def test_second_read_within_ttl_does_not_hit_db(
+        self, api_client, django_assert_num_queries
+    ):
+        owner = _make_user("business", "p030-cache1@example.com")
+        profile = BusinessProfile.objects.create(
+            user=owner,
+            business_name="Cached Biz",
+            business_type=BusinessProfile.BUSINESS_TYPE_TRADER,
+            country="Egypt",
+            city="Cairo",
+        )
+        url = _business_public_url(profile.id)
+
+        # Cache miss: 1 query for the BusinessProfile row, 1 for the
+        # related User row read by the is_verified property - see this
+        # class's own docstring for why 2 (not 1) is correct here.
+        with django_assert_num_queries(2):
+            first = api_client.get(url)
+        assert first.status_code == 200
+        assert first.json()["business_name"] == "Cached Biz"
+
+        # Cache hit: the full serialized payload was stored on the miss
+        # above, so this second read touches the database zero times.
+        with django_assert_num_queries(0):
+            second = api_client.get(url)
+        assert second.status_code == 200
+        assert second.json() == first.json()
+
+    def test_different_business_ids_are_cached_independently(
+        self, api_client, django_assert_num_queries
+    ):
+        owner_1 = _make_user("business", "p030-cache2@example.com")
+        owner_2 = _make_user("business", "p030-cache3@example.com")
+        profile_1 = BusinessProfile.objects.create(
+            user=owner_1,
+            business_name="Biz One",
+            business_type=BusinessProfile.BUSINESS_TYPE_TRADER,
+            country="Egypt",
+            city="Cairo",
+        )
+        profile_2 = BusinessProfile.objects.create(
+            user=owner_2,
+            business_name="Biz Two",
+            business_type=BusinessProfile.BUSINESS_TYPE_TRADER,
+            country="Egypt",
+            city="Giza",
+        )
+
+        # Warm profile_1's cache entry only.
+        api_client.get(_business_public_url(profile_1.id))
+
+        # profile_2 must still be a genuine cache miss (its own key,
+        # 2 queries per this class's docstring), not accidentally
+        # served from profile_1's cached entry (which would be 0).
+        with django_assert_num_queries(2):
+            response = api_client.get(_business_public_url(profile_2.id))
+        assert response.status_code == 200
+        assert response.json()["business_name"] == "Biz Two"
+
+
+class TestBusinessProfilePublicCacheInvalidation:
+    """
+    Part P-030, write-side. Proves BusinessProfileMeView.patch()'s
+    cache.delete() call actually fires on a real request - not just
+    that the line exists in the source. Per this Part's own Testing
+    note: "owner PATCHes their profile via /me/, then immediately
+    GETs the public /businesses/{id}/ endpoint - confirm the updated
+    value is returned, not a stale cached one".
+    """
+
+    def setup_method(self, _):
+        cache.clear()
+
+    def test_owner_patch_invalidates_the_public_read_cache(self, api_client):
+        user = _make_user("business", "p030-invalidate1@example.com")
+        api_client.force_authenticate(user=user)
+
+        create_response = api_client.post(
+            BUSINESS_ME_URL,
+            {
+                "business_name": "Original Name",
+                "business_type": BusinessProfile.BUSINESS_TYPE_TRADER,
+                "country": "Egypt",
+                "city": "Cairo",
+            },
+            format="json",
+        )
+        assert create_response.status_code == 201
+        profile_id = create_response.json()["id"]
+        public_url = _business_public_url(profile_id)
+
+        # Warm the public-read cache entry with the pre-update name.
+        warm_response = api_client.get(public_url)
+        assert warm_response.status_code == 200
+        assert warm_response.json()["business_name"] == "Original Name"
+
+        # Owner updates their own profile via PATCH /me/.
+        patch_response = api_client.patch(
+            BUSINESS_ME_URL, {"business_name": "Updated Name"}, format="json"
+        )
+        assert patch_response.status_code == 200
+
+        # The very next public read - still well within the 5-minute
+        # TTL - must return the fresh value, not the cached stale one.
+        # This is what actually proves cache.delete() fired: if it
+        # hadn't, this would still return "Original Name".
+        after_patch_response = api_client.get(public_url)
+        assert after_patch_response.status_code == 200
+        assert after_patch_response.json()["business_name"] == "Updated Name"
+
+    def test_patch_that_changes_no_watched_field_still_invalidates(self, api_client):
+        # Deliberately unconditional: cache.delete() runs on every
+        # successful PATCH regardless of which field changed, so a
+        # stale cached response is never served after ANY update -
+        # not just ones that happen to touch business_name.
+        user = _make_user("business", "p030-invalidate2@example.com")
+        api_client.force_authenticate(user=user)
+
+        create_response = api_client.post(
+            BUSINESS_ME_URL,
+            {
+                "business_name": "Same Name Throughout",
+                "business_type": BusinessProfile.BUSINESS_TYPE_TRADER,
+                "country": "Egypt",
+                "city": "Cairo",
+            },
+            format="json",
+        )
+        profile_id = create_response.json()["id"]
+        public_url = _business_public_url(profile_id)
+
+        api_client.get(public_url)  # warm the cache
+
+        patch_response = api_client.patch(
+            BUSINESS_ME_URL, {"city": "Alexandria"}, format="json"
+        )
+        assert patch_response.status_code == 200
+
+        after_patch_response = api_client.get(public_url)
+        assert after_patch_response.status_code == 200
+        assert after_patch_response.json()["city"] == "Alexandria"

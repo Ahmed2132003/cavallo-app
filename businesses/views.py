@@ -25,6 +25,7 @@ exception: it looks up by an id in the URL on purpose, because it
 exists specifically to let anyone view a business's public profile.
 """
 
+from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework.exceptions import NotFound
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -32,6 +33,8 @@ from rest_framework.generics import RetrieveAPIView
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from core.cache import cache_get_or_set
 
 from . import services
 from .models import BusinessProfile, CustomerProfile
@@ -138,7 +141,34 @@ class BusinessProfileMeView(APIView):
             user=request.user,
             **serializer.validated_data,
         )
+
+        # Part P-030: the public read (BusinessProfilePublicView.retrieve()
+        # below) caches this profile under _business_profile_cache_key(id)
+        # for up to BUSINESS_PROFILE_CACHE_TTL_SECONDS. Deleting it here -
+        # instead of waiting out the TTL - makes the owner's own edit
+        # visible on the very next public read, per this Part's own
+        # acceptance criteria. Direct cache.delete() call, not
+        # cache_get_or_set: the same sanctioned exception
+        # categories/signals.py already established for P-025 (that
+        # function's contract is "read-or-compute-and-store", it has no
+        # invalidation mode, and delete is a different operation with no
+        # ad hoc key string involved here either).
+        cache.delete(_business_profile_cache_key(profile.id))
+
         return Response(BusinessProfileSerializer(profile).data)
+
+
+BUSINESS_PROFILE_CACHE_TTL_SECONDS = 300  # 5 min, per architecture Section 16
+
+
+def _business_profile_cache_key(pk):
+    """Cache key convention for a Business Profile's public-read cache.
+
+    Shared between BusinessProfilePublicView.retrieve() (which caches
+    under it) and BusinessProfileMeView.patch() (which invalidates it)
+    so the exact key format cannot drift between the two call sites.
+    """
+    return f"business_profile:{pk}"
 
 
 class BusinessProfilePublicView(RetrieveAPIView):
@@ -151,12 +181,35 @@ class BusinessProfilePublicView(RetrieveAPIView):
     serializer class used for the owner's /me/ view is safe to reuse
     here unchanged (no raw User fields, no internal
     verification-review notes are ever exposed by it).
+
+    Part P-030: the read below is cached for
+    BUSINESS_PROFILE_CACHE_TTL_SECONDS under
+    _business_profile_cache_key(id) via core.cache.cache_get_or_set.
+    BusinessProfileMeView.patch() above deletes this same key on a
+    successful update, so an owner's own edit is never masked by a
+    stale cached read.
     """
 
     queryset = BusinessProfile.objects.all()
     serializer_class = BusinessProfileSerializer
     permission_classes = [AllowAny]
     authentication_classes = []
+
+    def retrieve(self, request, *args, **kwargs):
+        # get_object() still runs check_object_permissions() and can
+        # raise Http404 — both happen only inside _compute(), i.e.
+        # only on a cache miss, exactly like an uncached view would.
+        pk = self.kwargs["pk"]
+        cache_key = _business_profile_cache_key(pk)
+
+        def _compute():
+            instance = self.get_object()
+            return self.get_serializer(instance).data
+
+        data = cache_get_or_set(
+            cache_key, _compute, ttl_seconds=BUSINESS_PROFILE_CACHE_TTL_SECONDS
+        )
+        return Response(data)
 
 
 class CustomerProfileMeView(APIView):
