@@ -4126,3 +4126,42 @@ P-034), which depend on this part's exact contracts:
   nested object — the Flutter side needs a separate
   `GET /api/v1/businesses/{id}/` call (P-026) for the business's
   display name/logo alongside a product.
+
+## Part P-032B
+
+**Status:** ✅ Complete — validated end-to-end on Ahmed's Windows machine (D:\Cavallo\scd-backend), pushed to github.com/Ahmed2132003/cavallo-app as commit 2c74f12 on main.
+
+**Why this part exists:** P-032's own handoff note flagged that ProductVariant was read-only/nested only, with no write path. P-033 (Flutter business-console product management) requires a working variant add/remove UI whose Acceptance Criteria explicitly requires "2+ variants... reflected against the real backend" — impossible against P-032's contract alone. This part closes that gap before P-033 resumes.
+
+**What was implemented:** Full CRUD for ProductVariant, scoped under its parent Product, following the exact same "resolve ownership server-side, explicit object-level check inside the write path" IDOR pattern P-026/P-032 established — applied one relationship-hop deeper (Product → ProductVariant, not just BusinessProfile → Product).
+
+**Endpoints added:**
+- `POST /api/v1/products/<int:product_pk>/variants/` — create (authenticated; only the owning business).
+- `GET /api/v1/products/<int:product_pk>/variants/<int:pk>/` — public, no auth (mirrors ProductDetailView's own public GET).
+- `PATCH /api/v1/products/<int:product_pk>/variants/<int:pk>/` — update (authenticated; owner only).
+- `DELETE /api/v1/products/<int:product_pk>/variants/<int:pk>/` — delete (authenticated; owner only).
+
+**Files created:**
+- `products/tests/test_variant_serializer.py`
+- `products/tests/test_variant_api.py`
+
+**Files modified:**
+- `products/serializers.py` — added `ProductVariantWriteSerializer` (separate class; the existing read-only nested `ProductVariantSerializer` used inside `ProductSerializer` is untouched).
+- `products/views.py` — added `_ProductVariantParentMixin`, `ProductVariantCreateView`, `ProductVariantDetailView`.
+- `products/urls.py` — added `product-variant-create` and `product-variant-detail` routes (both listed before `<int:pk>/` for readability).
+
+**Architecture decisions:**
+- `product` is not a writable field on `ProductVariantWriteSerializer` at all — always resolved from the URL's `product_pk`, never from the request body.
+- `ProductVariantDetailView.get_queryset()` is scoped to `product_id=product_pk`, not just the variant's own `pk` — a variant id that exists under a *different* product 404s, it does not resolve cross-product or leak a 403.
+- `ProductVariant.delete()` is a **real, hard delete** — `ProductVariant` inherits `TimestampedModel` only, not `SoftDeleteModel` (P-031's own deliberate choice). Unlike `Product`, a deleted variant is not recoverable.
+- No model/migration changes were needed — `ProductVariant` (name, value) already existed from P-031.
+
+**Tests:** 21 new tests total (6 serializer-level in `test_variant_serializer.py`, 15 API-level in `test_variant_api.py` — covering create, 2+ variants in one product, cross-business IDOR on create/patch/delete, cross-product variant-id 404, unauthenticated rejection on every write method, and nonexistent-product/variant 404s). Full suite: **217 passed, 1 skipped** (196 pre-existing + 21 new), `flake8`/`black` clean.
+
+**Known issues:** None.
+
+**Remaining work:** None for this part. P-033 (Flutter business-console product management) can now resume — its variant add/remove UI has a real, working, IDOR-protected backend to call.
+
+**GitHub reference:** commit `2c74f12` on `main`, github.com/Ahmed2132003/cavallo-app.
+
+**Exact next starting point:** Resume Part P-033 exactly as originally specified — the Flutter data/domain/provider/UI layers under `lib/features/products/`, calling `/api/v1/products/`, `/api/v1/products/<pk>/`, and now also `/api/v1/products/<product_pk>/variants/` + `/api/v1/products/<product_pk>/variants/<pk>/` for real variant persistence — starting from the domain-entity layer (`Product`, `ProductVariant`, currency enum: `EGP`/`SAR`/`AED`/`JOD`).
