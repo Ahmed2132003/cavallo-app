@@ -64,6 +64,8 @@ INSTALLED_APPS = [
     "accounts",
     "businesses",
     "categories",  # Part P-025: self-referencing category tree.
+    "products",  # Part P-031: Product + ProductVariant (non-transactional).
+
 ]
 
 # ---------------------------------------------------------------------------
