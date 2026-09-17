@@ -101,6 +101,35 @@ class Product(TimestampedModel, SoftDeleteModel):
     # therefore the layer that MUST reject invalid currencies on the
     # real write path.
     currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES)
+    # Part P-032: single, optional primary product image.
+    #
+    # Deliberately a plain FileField, not ImageField - Pillow is not a
+    # project dependency (see requirements.txt) and never needs to
+    # become one for this: the project's real image-content validation
+    # already happens through core.media.validate_upload() via
+    # python-magic content-sniffing (P-013's handoff note explicitly
+    # requires every upload-handling part to route through that single
+    # function), not through Django's own Pillow-based ImageField
+    # validation. Adding Pillow just to get a redundant second
+    # validation path would be an unjustified new dependency.
+    #
+    # Deliberately a single field, not a ProductImage child model / real
+    # multi-image gallery: this part's own execution prompt explicitly
+    # allows "a simple first-pass single primary image field ... if a
+    # full multi-image gallery feels like scope creep for MVP", and a
+    # real gallery (ordering, multiple files per request, per-image
+    # delete) is a meaningfully larger feature. Flagged, not hidden: a
+    # future part should build a real ProductImage(product, file,
+    # position) model if/when multi-image galleries are actually
+    # required - do not silently bolt a list of files onto this field.
+    #
+    # No default `upload_to` subfolder logic beyond "products/" - actual
+    # storage (bucket/provider) is entirely delegated to
+    # core.storage_backends.MediaStorage via STORAGES["default"]
+    # (config/settings/base.py), matching P-013's convention that no
+    # FileField/ImageField in this project should hardcode a storage
+    # backend of its own.
+    image = models.FileField(upload_to="products/", null=True, blank=True)
     # Business-controlled visibility toggle ("Hide" in the Trader app,
     # presentation slide 16) - distinct from is_deleted, which is the
     # generic soft-delete flag inherited from SoftDeleteModel.

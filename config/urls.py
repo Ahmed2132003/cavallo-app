@@ -41,4 +41,12 @@ urlpatterns = [
     # one deliberately public, read-only exception.
     path("api/v1/businesses/", include("businesses.urls")),
     path("api/v1/customers/", include("businesses.customer_urls")),
+    # Part P-032: second real application of P-026's IDOR-prevention
+    # pattern, this time against a many-owned-resources relationship
+    # (one BusinessProfile, many Products) — see products/views.py's
+    # module docstring for the full singleton-vs-many-owned
+    # distinction. products/{id}/ is the one endpoint here that
+    # necessarily takes a URL-supplied id even for the owner's own
+    # write path (PATCH/DELETE), unlike businesses/me/ above.
+    path("api/v1/products/", include("products.urls")),
 ]
