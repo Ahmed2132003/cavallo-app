@@ -3463,3 +3463,182 @@ not something this closure changes.
 **P-028 (A/B/C1/C2) — DONE.** No open blockers. Phase 5 and Phase 14 parts
 may now safely assume a completed `BusinessProfile` exists and
 `accountType` is real by the time they run.
+
+PROGRESS UPDATE
+
+Add this section after:
+[P-028C2 — Business Profile Edit Screen]
+
+## P-029 — Flutter: Public Business Profile Screen + Category Display
+
+Status: ✅ Complete.
+
+What was implemented:
+- Customer-facing, read-only Public Business Profile screen at
+  `/business/:id`, replacing the P-007 placeholder route.
+- `BusinessProfilePublicRepository` (domain interface) +
+  `BusinessProfilePublicRepositoryImpl` (data), calling
+  `GET /api/v1/businesses/{id}/` via `dioClientProvider`. Maps a 404
+  to `null` (a real, renderable "not found" state — never an error),
+  since `ErrorInterceptor` (P-004) only special-cases 400/401/403/5xx
+  and lets 404 fall through to `UnknownFailure` otherwise. Every
+  other failure rethrows unmodified.
+- Reuses the existing `BusinessProfile` domain entity and
+  `BusinessProfileResponseDto` from P-028A — the public endpoint
+  reuses `BusinessProfileSerializer` unchanged on the backend, so no
+  parallel "public" entity/DTO was created.
+- `businessProfilePublicProvider`: `FutureProvider.autoDispose
+  .family<BusinessProfile?, int>`, keyed by business id (int, not the
+  raw route string — see below). `autoDispose` because this is the
+  first family provider in the project keyed by an unbounded id
+  space (a discovery feed browsing many businesses shouldn't keep
+  every profile cached for the app's whole lifetime — a deliberate
+  deviation from every other, singleton, provider in this project).
+  Automatic retry is disabled (`retry: (_, __) => null`) — same
+  reasoning as the fix already documented for
+  `session_provider_test`'s hang during P-028's closure: an explicit
+  Retry button already exists, and Riverpod 3.x's own exponential
+  backoff would only delay + complicate testing the error state.
+- `BusinessProfilePublicScreen`: parses the raw `:id` route string to
+  an `int` itself (`int.tryParse`) before ever touching the
+  provider — the backend route is `<int:pk>/`
+  (`businesses/urls.py`), so a non-numeric id is resolved to the
+  not-found state with zero network calls, never as a generic error
+  (Django would otherwise answer with an HTML 404, not this API's
+  JSON error envelope). Renders: business name, a Trader/Factory
+  `Chip`, a `Icons.verified` badge ONLY when `isVerified == true`,
+  `city, country`, description (with a placeholder string when
+  empty), and a disabled `AppButton` labeled "Follow" next to a
+  "(coming soon)" label — Follow itself is Phase 9, deliberately
+  neither faked nor omitted, so the header's layout won't need to
+  change again when Phase 9 activates it.
+- `followerCount` is fetched but intentionally NOT rendered anywhere
+  on this screen: the backend's `follower_count` is currently a
+  hardcoded `0` (`# TODO(Phase 9)` in `businesses/serializers.py`) —
+  showing "0 followers" for every business would be a confident
+  falsehood.
+- No logo/cover image rendered — `BusinessProfile` has no image
+  fields yet (P-024/P-026); this header is text-only until image
+  fields land.
+
+Files created:
+- `lib/features/business_profile/domain/business_profile_public_repository.dart`
+- `lib/features/business_profile/data/business_profile_public_repository.dart`
+- `lib/features/business_profile/presentation/business_profile_public_provider.dart`
+- `lib/features/business_profile/presentation/business_profile_public_screen.dart`
+- `test/features/business_profile/data/business_profile_public_repository_test.dart`
+  (5 tests: 200 / unverified / 404→null / 500 / network failure)
+- `test/features/business_profile/presentation/business_profile_public_screen_test.dart`
+  (8 tests: non-numeric id → not-found w/o repo call; loading state;
+  found+verified incl. disabled Follow; found+unverified, no badge;
+  empty description placeholder; numeric id 404 → not-found, not
+  generic error; genuine error shows message+Retry; tapping Retry
+  re-invokes repository)
+
+Files modified:
+- `lib/routing/app_router.dart` — the `/business/:id` `GoRoute`'s
+  `builder` now returns `BusinessProfilePublicScreen(businessId: id)`
+  instead of P-007's placeholder. No other route, the `redirect`
+  callback, the Business-account gate (P-028C1), or
+  `_SessionRefreshListenable` were touched — this route needed no
+  gate clause of its own, being a protected route like any other.
+- `test/routing/app_router_test.dart` — the pre-existing test
+  asserting P-007's placeholder text for `businessProfile` at
+  `pathParameters: {'id': ...}` was rewritten (not deleted) to assert
+  against the real screen instead: navigating with a non-numeric id
+  (`'sample-business-1'`) now asserts
+  `find.byType(BusinessProfilePublicScreen)` plus the rendered
+  not-found copy. Chosen deliberately over a numeric id here so this
+  particular test needs no repository override (a numeric-id/real-404
+  case is already covered by this Part's own screen widget tests).
+
+Important implementation details:
+- Auth: `/business/:id` is a protected route in-app (behind the
+  P-021b sign-in gate) even though the backend endpoint itself is
+  fully public (`authentication_classes = []`,
+  `BusinessProfilePublicView`). This was flagged during planning and
+  deliberately left as-is — no change to the P-021b gate was made or
+  requested for this Part.
+- The 404→null interpretation lives in the repository (not
+  `core/network`), following the same precedent P-028A set for
+  `fetchMyProfile()`'s own 404 handling — `core/network` stays
+  feature-agnostic per the architecture rule.
+- `_LoadErrorView` matches both a `DioException` wrapping a typed
+  `ApiFailure` (the real production shape from `ErrorInterceptor`)
+  and a bare `ApiFailure` thrown directly (the shape every hand-rolled
+  fake repository in this project's tests throws) — a pre-existing
+  mismatch already present in `business_profile_edit_screen.dart`'s
+  own `_ErrorView`, not introduced or fixed by this Part.
+
+Architecture decisions:
+- New file split for this feature's public-facing half: `domain/` for
+  the repository interface, `data/` for the impl, `presentation/` for
+  the provider and screen — matching the split P-028A already
+  established for "my own profile," rather than collapsing
+  interface+impl into one file.
+
+Commands used:
+```powershell
+dart format <changed files>
+flutter analyze
+flutter test
+```
+
+Tests:
+- `flutter analyze`: clean, no issues.
+- `flutter test`: 178 passed, 0 failed (165 baseline + 5 repository +
+  8 screen). Scoped `flutter test test/features/business_profile/`:
+  62 passed.
+- Manual, on a real Android emulator against the local backend
+  (`localhost:8095`, business ids 1–4, all `is_verified: False` at
+  test time):
+  - Business found (id=1, unverified): header renders exactly as
+    specified. ✅
+  - Business not found (id=999999): not-found empty state, no Retry
+    button. ✅
+  - Genuine network failure (`docker compose stop web`): error state
+    with Retry; after `docker compose start web` and tapping Retry
+    without leaving the screen, real data loads successfully. ✅
+  - Auth-gate check (signed-out access attempt): NOT re-verified this
+    Part — treated as optional, since P-029 makes no change to the
+    P-021b gate itself.
+- Verified `BusinessProfile.is_verified` is a Python-level
+  `@property` (read-through to `User.is_business_verified`), NOT a DB
+  column — confirmed via `FieldError` when attempting
+  `.values_list('is_verified')` in a Django shell; worked correctly
+  once queried as `[(b.id, b.business_name, b.is_verified) for b in
+  BusinessProfile.objects.all()]` instead.
+
+Verification results: all automated and manual tests above passed;
+no known regressions.
+
+Known issues:
+- Pre-existing `_ErrorView`/`_LoadErrorView` dual-shape error matching
+  (bare `ApiFailure` vs. `DioException`-wrapped) is duplicated across
+  `business_profile_edit_screen.dart` and this Part's
+  `business_profile_public_screen.dart` — not unified, out of this
+  Part's scope.
+- `businessProfilePublicRepositoryImpl._toEntity` duplicates
+  `BusinessProfileRepositoryImpl._toEntity`'s mapping logic (six
+  fields) rather than sharing it — flagged in that file's own
+  docstring: if a third consumer of `BusinessProfileResponseDto`
+  ever appears, move this onto the DTO as a `toEntity()` method
+  instead of duplicating a third time.
+- `_SessionRefreshListenable`'s known, pre-existing
+  `accountType`-placeholder blocker (from P-028C1) is unrelated to
+  and unaffected by this Part.
+
+Remaining work: none for P-029 itself.
+
+GitHub references: none captured in this session (no commit/PR was
+made as part of this handoff — Ahmed to commit these files locally).
+
+Exact next starting point: Phase 5 (Products) and Phase 7
+(Posts/Reels) each extend `business_profile_public_screen.dart`'s
+`_ProfileView`, appending their own section immediately after the
+marked `SECTION BOUNDARY` comment inside the `Column` — do NOT create
+a second/competing business-profile screen. Phase 9 activates the
+currently-disabled `AppButton(label: 'Follow', onPressed: null)` in
+`_ProfileHeader` and is also where `followerCount` (already carried
+through the DTO/entity, currently unused) becomes real and can be
+displayed.
