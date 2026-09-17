@@ -1,6 +1,7 @@
 """
 Views for Part P-032 — Product CRUD Endpoints (Business-Owned,
-IDOR-Protected) + Media Upload.
+IDOR-Protected) + Media Upload, and Part P-032B — Product Variant CRUD
+Endpoints (Business-Owned, IDOR-Protected).
 
 Second real application of P-026's "resolve ownership from
 request.user, never trust a client-supplied id" IDOR pattern — this
@@ -23,15 +24,23 @@ pattern rather than a URL-id + permission-class-only approach:
   write path itself (``_check_owner`` below), not merely via a DRF
   permission class alone — this is the "many-owned-resources" half of
   the fork, and the part this file exists to prove.
+
+Part P-032B extends the exact same pattern one level deeper: a
+ProductVariant is itself a many-owned-resource of a Product (which is
+itself a many-owned-resource of a BusinessProfile), so
+ProductVariantCreateView/ProductVariantDetailView below repeat
+ProductDetailView's own "resolve by URL id, then explicitly check
+ownership inside the write path" shape rather than inventing a new
+one.
 """
 
 from rest_framework import generics, permissions
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import NotFound, PermissionDenied
 
 from core.pagination import StandardCursorPagination
 
-from .models import Product
-from .serializers import ProductSerializer
+from .models import Product, ProductVariant
+from .serializers import ProductSerializer, ProductVariantWriteSerializer
 
 
 class ProductListCreateView(generics.ListCreateAPIView):
@@ -175,3 +184,110 @@ class ProductPublicListView(generics.ListAPIView):
         if business_id is not None:
             queryset = queryset.filter(business_id=business_id)
         return queryset
+
+
+class _ProductVariantParentMixin:
+    """
+    Shared helper for Part P-032B's two variant views below: both need
+    to resolve the parent Product from the URL's ``product_pk`` and
+    raise a genuine 404 (not a 500, not a silent empty result) when it
+    does not exist — deliberately a plain NotFound rather than Django's
+    get_object_or_404 shortcut, to stay consistent with this file's
+    existing convention of raising DRF's own exception classes directly
+    (see PermissionDenied usage above) rather than mixing in
+    django.shortcuts helpers.
+    """
+
+    def _get_product(self):
+        product_pk = self.kwargs["product_pk"]
+        try:
+            return Product.objects.get(pk=product_pk)
+        except Product.DoesNotExist:
+            raise NotFound("Product not found.")
+
+
+class ProductVariantCreateView(_ProductVariantParentMixin, generics.CreateAPIView):
+    """
+    POST /api/v1/products/{product_pk}/variants/ — create a new variant
+    on the given product. Authenticated; only the owning business may
+    create a variant on its own product.
+
+    ``product`` is resolved exclusively from the URL's ``product_pk``
+    (see _ProductVariantParentMixin), never from anything in the
+    request body — ProductVariantWriteSerializer has no ``product``
+    field at all, so there is nothing for a client to spoof here in the
+    first place (stricter than P-032's "declared but read-only"
+    approach for ``business``, and unnecessary to relax: a variant
+    genuinely has no legitimate reason to ever target a different
+    product than the one in its own URL).
+    """
+
+    serializer_class = ProductVariantWriteSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def perform_create(self, serializer):
+        product = self._get_product()
+        if product.business.user_id != self.request.user.id:
+            raise PermissionDenied(
+                "You do not have permission to add a variant to this product."
+            )
+        serializer.save(product=product)
+
+
+class ProductVariantDetailView(
+    _ProductVariantParentMixin, generics.RetrieveUpdateDestroyAPIView
+):
+    """
+    GET            /api/v1/products/{product_pk}/variants/{pk}/ — public,
+                                             no auth required (mirrors
+                                             ProductDetailView's own GET —
+                                             a product's variants are
+                                             already publicly visible,
+                                             nested, via that endpoint).
+    PATCH / DELETE /api/v1/products/{product_pk}/variants/{pk}/ —
+                                             authenticated; only the
+                                             owning business may modify
+                                             or delete.
+
+    get_queryset() is scoped to the URL's product_pk, not just filtered
+    by the variant's own pk — a variant id that exists but belongs to a
+    *different* product must 404, not silently resolve across products
+    or leak a cross-product PermissionDenied that would confirm the id
+    exists elsewhere. This is a second, distinct IDOR angle from
+    ProductDetailView's (which only ever deals with one id, not a
+    parent/child pair).
+    """
+
+    serializer_class = ProductVariantWriteSerializer
+
+    def get_queryset(self):
+        return ProductVariant.objects.filter(product_id=self.kwargs["product_pk"])
+
+    def get_permissions(self):
+        if self.request.method in permissions.SAFE_METHODS:
+            return [permissions.AllowAny()]
+        return [permissions.IsAuthenticated()]
+
+    def _check_owner(self, variant):
+        """
+        Same "resolve the object by primary key from the model's own
+        FK, then compare against request.user" shape as
+        ProductDetailView._check_owner — here through one extra hop
+        (variant.product.business.user_id) since the owning business is
+        two FKs away from the variant itself.
+        """
+        if variant.product.business.user_id != self.request.user.id:
+            raise PermissionDenied("You do not have permission to modify this variant.")
+
+    def perform_update(self, serializer):
+        self._check_owner(serializer.instance)
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._check_owner(instance)
+        # ProductVariant inherits TimestampedModel only, not
+        # SoftDeleteModel (P-031's own deliberate choice — see
+        # models.py) — this is therefore a real, hard row delete, not a
+        # soft one. That is correct here: a variant genuinely has no
+        # independent lifecycle worth preserving once removed.
+        instance.delete()

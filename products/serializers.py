@@ -130,3 +130,41 @@ class ProductSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(list(exc.messages))
 
         return value
+
+
+class ProductVariantWriteSerializer(serializers.ModelSerializer):
+    """
+    Write-path serializer for a single ProductVariant — Part P-032B.
+
+    Deliberately a SEPARATE class from ProductVariantSerializer above
+    (P-032), which stays exactly as it was: read-only, nested inside
+    ProductSerializer for every Product read path. This class is never
+    nested inside ProductSerializer and is used only by the new
+    create/update variant endpoints (products/views.py, this same
+    part) — P-032's existing read behavior is completely unaffected by
+    this addition.
+
+    ``product`` is deliberately NOT a field here: the ProductVariant a
+    request creates or updates is always resolved from the URL's
+    ``product_pk`` in views.py (get_object_or_404(Product, pk=...)),
+    never from a client-supplied ``product``/``product_id`` key in the
+    body — the same "resolve ownership server-side, never trust client
+    input" principle P-026/P-032 already established for ``business``.
+    """
+
+    class Meta:
+        model = ProductVariant
+        fields = ["id", "name", "value"]
+        read_only_fields = ["id"]
+
+    def validate_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("This field may not be blank.")
+        return value
+
+    def validate_value(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("This field may not be blank.")
+        return value
