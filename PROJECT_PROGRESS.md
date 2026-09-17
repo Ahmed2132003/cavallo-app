@@ -3905,3 +3905,224 @@ framing, which must be preserved in `ProductSerializer` and every
 later Flutter form built on top of it. P-032 is also the part that
 must add the `full_clean()`-vs-`.save()` currency validation at the
 serializer layer, per the flagged gap above.
+
+## Part P-032 — Product CRUD Endpoints (Business-Owned, IDOR-Protected) + Media Upload — ✅ COMPLETE
+
+**Status: ✅ COMPLETE — 33/33 new tests passing, full suite green
+(190 passed, 1 pre-existing skip), validated on the real Docker
+Compose stack (Postgres 16 + Redis 7 + MinIO) after an initial
+sandbox validation pass — see "Validation environment" note below.**
+
+---
+
+### Summary
+
+Built `products/serializers.py` and `products/views.py` (both were
+empty/nonexistent placeholders left by P-031), wiring
+`/api/v1/products/` end to end. This is the second real application of
+P-026's "resolve ownership from `request.user`, never trust a
+client-supplied id" IDOR pattern — this time against a
+many-owned-resources relationship (one `BusinessProfile`, many
+`Product`s), proving the pattern generalizes beyond P-026's own 1:1
+singleton case, per this part's own explicit reason for existing.
+
+### What was implemented
+
+* **`products/models.py`** — added `Product.image`
+  (`FileField(upload_to="products/", null=True, blank=True)`).
+  Deliberately a plain `FileField`, **not** `ImageField`: this repo has
+  no Pillow dependency, and image-content validation happens through
+  `core.media.validate_upload()`'s content-sniffing (P-013's shared
+  choke point). Deliberately a single field, not a `ProductImage`
+  child model / real multi-image gallery — explicitly allowed by this
+  part's own execution prompt as a first-pass MVP scope decision.
+  **Flagged for a future part:** a real gallery (ordering, multiple
+  files, per-image delete) is a separate, larger feature if ever
+  required.
+* **`products/migrations/0002_product_image.py`** — real,
+  machine-generated migration, applied cleanly against a real
+  Postgres 16 database.
+* **`products/serializers.py`** (new file):
+  - `ProductVariantSerializer` — read-only nested (`id`, `name`,
+    `value`). Variant creation/editing is explicitly **not** built in
+    this part.
+  - `ProductSerializer` — write fields: `category`, `name`,
+    `description`, `price`, `currency`, `image`, `is_active`. Read
+    adds: `id`, `business` (read-only), `variants` (read-only nested
+    list), `created_at`/`updated_at`. `business` is `read_only_fields`,
+    not omitted from `fields` — same pattern as
+    `businesses/serializers.py`'s `id`/`user` exclusion: it renders on
+    read, but a `business`/`business_id` key in a request body is
+    silently dropped during `is_valid()`.
+    - `validate_image()` calls `core.media.validate_upload()` with
+      `allowed_mime_types=["image/jpeg", "image/png", "image/webp"]`
+      and `max_size_bytes=5*1024*1024`.
+    - **Closes P-031's own flagged gap**: `Product.currency`'s
+      `choices` was only enforced by `full_clean()`, never at raw
+      `.save()`. DRF's `ModelSerializer` auto-generates a `ChoiceField`
+      for any `choices=`-bearing model field, so every write through
+      `ProductSerializer` now enforces it — confirmed by
+      `TestProductCreate::test_invalid_currency_is_rejected`.
+* **`products/views.py`** (new file):
+  - `ProductListCreateView` (`ListCreateAPIView`) — GET lists only the
+    authenticated business's own products, filtered from
+    `request.user.business_profile` (P-026's exact resolution pattern
+    — **the real attribute is `business_profile`**, not
+    `businessprofile` as the original spec's literal text says).
+    POST always attributes via `serializer.save(business=business)` in
+    `perform_create()` — a `business` key in the request body is never
+    honored. A user with no business profile gets `403
+    PermissionDenied` on POST, empty `results: []` on GET.
+  - `ProductDetailView` (`RetrieveUpdateDestroyAPIView`) — GET is
+    `AllowAny` (public, looked up by URL `pk`). PATCH/DELETE require
+    auth **and** an explicit object-level check inside
+    `perform_update()`/`perform_destroy()`: `if product.business.user_id
+    != self.request.user.id: raise PermissionDenied(...)` — in code,
+    not left to `permission_classes` alone (defense in depth, per
+    Architecture Section 5 rule 10). DELETE is the inherited soft
+    delete (`is_deleted=True`), never a real row deletion.
+  - `ProductPublicListView` (`ListAPIView`) — `AllowAny`, filters to
+    `is_active=True` products (soft-deleted rows already excluded by
+    the default manager), with an optional `?business_id=` filter. This
+    is the endpoint P-029's public business-profile screen will
+    eventually consume.
+  - **Architecture Section 9 point 7 — first real usage anywhere in
+    the codebase:** both list views set
+    `pagination_class = core.pagination.StandardCursorPagination`. List
+    responses are `{"results": [...], "next": ..., "previous": ...}`,
+    not bare arrays. **Flag this for the Flutter data layer.**
+* **`products/urls.py`** (new file) — `/api/v1/products/` (list/create,
+  own), `/api/v1/products/<int:pk>/` (detail),
+  `/api/v1/products/public/` (business_id-filterable public list).
+* **`config/urls.py`** — added `path("api/v1/products/",
+  include("products.urls"))`.
+* **`products/tests/test_api.py`** (new file) — 33 tests across
+  creation (incl. business-field-spoofing and invalid-currency),
+  authenticated "own products" list (incl. `?business_id=` having no
+  effect there), the critical cross-business IDOR case on both PATCH
+  and DELETE with a re-fetch confirming no modification, unauthenticated
+  rejections, the public list (auth-free, business_id filter, excludes
+  inactive, excludes soft-deleted), and image upload (valid PNG
+  accepted, spoofed-extension executable rejected, optional image
+  omitted still valid). Reuses `core.tests.test_media`'s own
+  `_VALID_PNG_BYTES` / `_DISGUISED_EXE_BYTES` fixtures directly, not
+  reimplemented.
+
+### Files created
+
+* `products/serializers.py`
+* `products/views.py` (replaced the P-031-era empty placeholder)
+* `products/urls.py`
+* `products/migrations/0002_product_image.py`
+* `products/tests/test_api.py`
+
+### Files modified
+
+* `products/models.py` — added the `image` field.
+* `config/urls.py` — added the `/api/v1/products/` include.
+* `products/apps.py` — no content change, only `black` reformatting.
+
+### Important implementation details
+
+1. **`request.user.business_profile`, not `businessprofile`** — the
+   original spec's literal text says `businessprofile` throughout; the
+   real attribute (confirmed against `businesses/models.py`'s
+   `related_name="business_profile"`) has the underscore. Every
+   reference in the new code uses the real name.
+2. **Currency-choices gap (P-031's flagged item) is closed** by
+   `ProductSerializer` alone, confirmed by a real test.
+3. **`FileField`, not `ImageField`** — deliberate scope/dependency
+   decision (no Pillow in this repo), not an oversight.
+4. **Single primary image, not a gallery** — deliberate MVP scope
+   decision, explicitly sanctioned by this part's execution prompt.
+5. **`StandardCursorPagination` applied for the first time anywhere in
+   this codebase**, on both of this part's list endpoints. New
+   response-shape contract for Flutter to build against.
+6. **Variants are read-only in this part** — flagged as remaining work
+   below.
+
+### Validation environment
+
+Authored and first validated in a scratch sandbox (real Postgres 16 +
+Redis 7 + a `moto`-backed S3-compatible server, not the project's own
+Docker Compose stack), then **applied to the real working copy and
+fully re-validated on the real Docker Compose stack** (Postgres 16,
+Redis 7, MinIO — P-013's actual object store, no `moto` involved) per
+the Commands/Tests below. `moto` was never added to
+`requirements.txt` and played no role outside the initial sandbox
+validation session.
+
+### Commands (run and confirmed on the real machine)
+
+```bash
+docker compose exec web python manage.py migrate
+docker compose exec web python manage.py check
+docker compose exec web pytest products/ -v
+docker compose exec web pytest -q
+docker compose exec web flake8 products/
+docker compose exec web black --check products/
+```
+
+### Tests (results, real Docker Compose stack)
+
+* `pytest products/ -v` — **33/33 new tests passed**, plus the 9
+  pre-existing `test_models.py` tests from P-031 still green (42/42 for
+  the whole `products/` app).
+* `pytest -q` (full suite) — **190 passed, 1 skipped**. The 1 skip is
+  the same pre-existing P-013 `moto`-dependent skip in
+  `core/tests/test_storage_backends.py` (no `moto` on the real image,
+  exactly matching `requirements.txt`) — not a P-032 regression.
+* `flake8 products/` — clean, no output.
+* `black --check products/` — `All done!`, 13 files unchanged.
+* Tests worth calling out by name:
+  - `TestProductCreate::test_business_field_in_body_is_ignored_not_honored`
+  - `TestProductDetailIDOR::test_other_business_cannot_patch_product` /
+    `test_other_business_cannot_delete_product`
+  - `TestProductCreate::test_invalid_currency_is_rejected`
+  - `TestProductImageUpload::test_spoofed_extension_image_is_rejected`
+
+### Known issues
+
+* None. The currency-choices gap P-031 flagged is now closed, not
+  carried forward.
+
+### Remaining work / flagged for future parts
+
+* **Variant CRUD** (create/update/delete a `ProductVariant` through the
+  API) is not built in this part — currently read-only, nested into
+  `ProductSerializer`. A future part should add this as its own write
+  path when the Trader app needs to manage variants directly.
+* **Multi-image product gallery** — explicitly deferred; if ever
+  needed, build a real `ProductImage(product, file, position)` child
+  model, do not overload the single `image` field.
+* Every future many-owned-resources content model (Posts P-041, Reels
+  P-042, Stories P-046) should copy this part's object-level-check-
+  inside-perform_update/perform_destroy pattern.
+
+### GitHub references
+
+* Applied to the real working copy and pushed to
+  `github.com/Ahmed2132003/cavallo-app` (`main`):
+  - `5c51429` — initial P-032 implementation (serializers, views,
+    urls, migration, tests, model field, config/urls.py).
+  - `a64a5b1` — filename fixes (migration and test file renamed to
+    their correct Django-required names) + `black` reformatting across
+    all P-032 files.
+* Fully validated against the real Docker Compose stack (Postgres,
+  Redis, MinIO) after these commits — see Commands/Tests above, all
+  green.
+
+### Exact next starting point
+
+Phase 5 (Products) is now functionally complete for P-032's own scope.
+Remaining Phase 5 items (per the master plan) are Flutter UI (P-033/
+P-034), which depend on this part's exact contracts:
+- List responses are cursor-paginated (`{"results", "next", "previous"}`),
+  not bare arrays.
+- `currency` must be one of `EGP`/`SAR`/`AED`/`JOD` — a normal `400`
+  with `fields.currency` otherwise.
+- A single optional `image` field, not a gallery.
+- `business` on every Product read is a bare business-profile id, not a
+  nested object — the Flutter side needs a separate
+  `GET /api/v1/businesses/{id}/` call (P-026) for the business's
+  display name/logo alongside a product.
