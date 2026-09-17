@@ -3743,3 +3743,165 @@ GitHub references: none captured this session — Ahmed to commit
 
 Exact next starting point: once the Phase 4 gate question above is
 resolved, Phase 5 (Products) may begin.
+
+## Phase 4 gate — RESOLVED
+
+Ahmed confirmed: P-028/P-029 in the master plan are the Flutter parts
+("Business Profile Feature" and "Public Business Profile Screen"),
+not a missing backend piece — the ambiguity P-030 raised does not
+exist. Also: `businesses/views.py` and `businesses/tests/test_api.py`
+from P-030 WERE pushed to GitHub at the time, just never documented
+here — Ahmed forgot to log the commit, not forgot to push.
+
+**Phase 4 (Business/Customer Profiles & Categories) is COMPLETE:
+P-024 through P-030, all confirmed.**
+
+## Part P-031 — products App: Product Model + Variants + Category FK — ✅ COMPLETE
+
+Built the `products` app: `Product` (business-owned, non-transactional
+discovery item) and `ProductVariant` (simple key/value option), per
+architecture Section 1/20's explicit "never a transactional model"
+framing.
+
+### What was implemented
+
+* `products/models.py`:
+  - `Product(TimestampedModel, SoftDeleteModel)`: `business` (FK to
+    `businesses.BusinessProfile`, `on_delete=PROTECT`,
+    `related_name="products"`), `category` (FK to
+    `categories.Category`, `on_delete=PROTECT`,
+    `related_name="products"`), `name`, `description`, `price`
+    (`DecimalField(10,2)`, documented as informational/negotiable
+    only), `currency` (`CharField(3)`, `choices` = EGP/SAR/AED/JOD,
+    no default), `is_active` (default `True`).
+  - `ProductVariant(TimestampedModel)`: `product` (FK to `Product`,
+    `on_delete=CASCADE`, `related_name="variants"`), `name`, `value`.
+  - Composite index `products_category_business` on
+    `(category, business)` via `Meta.indexes`.
+  - No inventory/stock/SKU/cart/order field anywhere on either model.
+* `products/admin.py`: `Product` (with a `ProductVariant` tabular
+  inline) and `ProductVariant` both registered, `autocomplete_fields`
+  on the FK pickers.
+* `products/migrations/0001_initial.py` — real, machine-generated,
+  applied.
+* `products/tests/test_models.py` — 9 tests.
+* `config/settings/base.py` — `"products"` added to `INSTALLED_APPS`.
+
+### Files created
+
+* `products/__init__.py`, `products/apps.py`, `products/models.py`,
+  `products/admin.py`, `products/views.py` (empty, P-032 scope),
+  `products/migrations/__init__.py`,
+  `products/migrations/0001_initial.py`, `products/tests/__init__.py`,
+  `products/tests/test_models.py`.
+
+### Files modified
+
+* `config/settings/base.py`.
+
+### Important implementation details
+
+* **Currency choice set (locked contract for P-032/P-033/Phase 11):**
+  `EGP` (Egyptian Pound), `SAR` (Saudi Riyal), `AED` (UAE Dirham),
+  `JOD` (Jordanian Dinar). No default value — a business must state
+  its own currency explicitly; defaulting to EGP would silently
+  re-centre the platform on one market, which A3 rules out.
+* **on_delete decisions, both deliberate:**
+  - `Product.business` → `PROTECT` (not `CASCADE`): `BusinessProfile`
+    is soft-deleted in normal operation (P-024); `PROTECT` stops an
+    exceptional hard-delete from silently destroying real Products.
+  - `Product.category` → `PROTECT` (matches `Category.parent`'s own
+    convention from P-025). Deliberately different from
+    `BusinessProfile.category`'s `SET_NULL` (P-026): that FK is
+    optional, this one is required — a category-less Product breaks
+    Discovery's browse/filter flow.
+  - `ProductVariant.product` → `CASCADE`: a variant has no
+    independent existence without its parent Product.
+* **Known, flagged limitation (not a bug):** Django's `choices` is
+  enforced only via `full_clean()` / forms / serializers — never at
+  the database level. `Product.objects.create(currency="XYZ")` via a
+  direct `.save()` is currently accepted by Postgres. This is
+  documented in a code comment on `Product.currency` and locked in by
+  `test_direct_save_does_not_enforce_choices_known_gap`.
+  **P-032's `ProductSerializer` MUST reject invalid currencies on the
+  real write path** — this is not optional, it's the layer this gap
+  was left for.
+* Repo convention followed (per P-011/P-024/P-025/P-030): app lives
+  at `products/`, **not** `apps/products/` — the part spec's literal
+  file list is wrong about this, as it has been for every prior part.
+* Environment note: interactive `psql` metacommands (`\d`) do not
+  work reliably when piped through
+  `docker compose exec db sh -c "psql ... \d ..."` from PowerShell
+  (multi-layer quoting: PowerShell → Windows argv parser → POSIX
+  shell). Workaround: `docker compose exec db bash`, then run `psql`
+  interactively inside the container directly.
+
+### Commands
+
+```bash
+# From D:\Cavallo\scd-backend, PowerShell
+docker compose exec web python manage.py check
+docker compose exec web python manage.py makemigrations products
+docker compose exec web python manage.py migrate
+docker compose exec web pytest products/ -v
+docker compose exec web pytest -q
+docker compose exec web black --check products/
+docker compose exec web flake8 products/
+```
+
+### Tests
+
+* `pytest products/ -v` — 9/9 passed:
+  variant relationship (2 tests), currency choices (3 tests: valid
+  set accepted, invalid rejected via `full_clean()`, invalid accepted
+  by raw `.save()` — the documented gap), FK `PROTECT` integrity
+  (4 tests: business soft-delete leaves Products untouched, business
+  hard-delete blocked by `ProtectedError` while Products exist,
+  business hard-delete succeeds once its Products are truly gone,
+  category hard-delete blocked by `ProtectedError` while Products
+  exist).
+* `pytest -q` (full suite) — 166 passed, 1 skipped (was 157/1 before
+  this part; the 1 skip is the pre-existing, unrelated `moto` skip
+  from P-013).
+
+### Verification results
+
+* Composite index confirmed via two independent methods:
+  - Django introspection:
+    `[('products_category_business', ['category_id', 'business_id']), ...]`
+  - Raw `psql \d products_product` (run inside the `db` container
+    directly, see environment note above):
+    `"products_category_business" btree (category_id, business_id)`.
+* `\d products_product` / `\d products_productvariant` confirm no
+  stock/SKU/quantity/cart/order column exists on either table.
+* Django Admin verified visually at
+  `/admin/products/product/add/`: autocomplete `Business`/`Category`
+  pickers, constrained `Currency` dropdown, no stock field.
+
+### Known issues
+
+* None new. The `choices`-not-enforced-at-DB-level gap above is
+  known and deliberately left for P-032 to close, not a defect in
+  this part.
+
+### Remaining work
+
+* None for P-031 itself.
+
+### GitHub references
+
+* Commit `63bebb5` on `github.com/Ahmed2132003/cavallo-app` (main) —
+  confirmed present via direct fetch of all six touched files at
+  that commit, including the `INSTALLED_APPS` edit in
+  `config/settings/base.py`.
+
+### Exact next starting point
+
+Phase 5 continues with **PART P-032 — Product CRUD Endpoints
+(Business-Owned, IDOR-Protected) + Media Upload**, which depends on
+this exact model shape — especially the locked currency choice set
+(EGP/SAR/AED/JOD, no default) and the non-transactional `price`
+framing, which must be preserved in `ProductSerializer` and every
+later Flutter form built on top of it. P-032 is also the part that
+must add the `full_clean()`-vs-`.save()` currency validation at the
+serializer layer, per the flagged gap above.
