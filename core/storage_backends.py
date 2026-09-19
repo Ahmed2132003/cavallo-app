@@ -16,10 +16,29 @@ This does NOT block dev/test: the dev defaults point at the MinIO
 service in docker-compose.yml, so this backend is fully functional
 today. It DOES still block staging/production (Phase 21/22) until the
 real values are provided.
+
+PART P-033-HOTFIX: this file also splits the single boto3 connection
+used by S3Boto3Storage into TWO separate connections:
+  - ``self.connection`` (inherited, unchanged) — the INTERNAL endpoint
+    (``OBJECT_STORAGE_ENDPOINT_URL``), used for every real upload/
+    read/delete call the backend itself makes to the storage service.
+  - ``self.public_connection`` (added below) — the PUBLIC-facing
+    endpoint (``OBJECT_STORAGE_PUBLIC_ENDPOINT_URL``), used ONLY when
+    signing a presigned URL to hand back to an API client (see the
+    overridden ``url()`` method below).
+Generating a presigned URL is a pure local cryptographic signing
+operation — it never actually contacts the endpoint over the network —
+so pointing the SIGNING client at a different (public) endpoint has no
+effect whatsoever on the backend's own ability to talk to MinIO/S3
+internally.
 """
 
+import threading
+
 from django.conf import settings
+from django.utils.encoding import filepath_to_uri
 from storages.backends.s3boto3 import S3Boto3Storage
+from storages.utils import clean_name
 
 
 class MediaStorage(S3Boto3Storage):
@@ -53,6 +72,12 @@ class MediaStorage(S3Boto3Storage):
     secret_key = settings.OBJECT_STORAGE_SECRET
     use_ssl = settings.OBJECT_STORAGE_USE_SSL
 
+    # PART P-033-HOTFIX: the PUBLIC-facing endpoint, used only by
+    # ``public_connection``/``url()`` below — never by any inherited
+    # upload/read/delete method, which all keep using ``endpoint_url``
+    # above via the parent class's own ``self.connection``.
+    public_endpoint_url = settings.OBJECT_STORAGE_PUBLIC_ENDPOINT_URL
+
     # Signed URLs by default: works out of the box against every
     # provider (Backblaze B2, Wasabi, DO Spaces, MinIO) without first
     # requiring a public-read bucket policy to be configured on the
@@ -73,3 +98,83 @@ class MediaStorage(S3Boto3Storage):
     # path-style too, so this is safe across every provider this class
     # will ever point at.
     addressing_style = "path"
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Mirrors the parent class's own ``self._connections`` /
+        # ``self._unsigned_connections`` pattern (storages/backends/s3.py)
+        # — one boto3 resource per thread, lazily created.
+        self._public_connections = threading.local()
+
+    @property
+    def public_connection(self):
+        """
+        A second boto3 S3 resource, identical to the parent class's own
+        ``self.connection`` (same credentials, region, SSL, verify —
+        via the inherited ``self._create_session()``), except its
+        ``endpoint_url`` is ``self.public_endpoint_url`` instead of
+        ``self.endpoint_url``.
+
+        Only ever used for signing inside ``url()`` below — never for
+        an actual upload/read/delete call, all of which continue to go
+        through the parent's own ``self.connection`` untouched.
+        """
+        connection = getattr(self._public_connections, "connection", None)
+        if connection is None:
+            session = self._create_session()
+            connection = session.resource(
+                "s3",
+                region_name=self.region_name,
+                use_ssl=self.use_ssl,
+                endpoint_url=self.public_endpoint_url,
+                config=self.client_config,
+                verify=self.verify,
+            )
+            self._public_connections.connection = connection
+        return connection
+
+    def url(self, name, parameters=None, expire=None, http_method=None):
+        """
+        Overrides storages.backends.s3.S3Storage.url() (django-storages
+        1.14.4) to sign presigned URLs using ``self.public_connection``
+        (the PUBLIC endpoint) instead of ``self.connection`` (the
+        INTERNAL endpoint) — see PART P-033-HOTFIX at the top of this
+        file. Every other line below is an exact copy of the parent
+        implementation; only which connection generates the signed URL
+        changes.
+        """
+        name = self._normalize_name(clean_name(name))
+        params = parameters.copy() if parameters else {}
+        if expire is None:
+            expire = self.querystring_expire
+
+        if self.custom_domain:
+            from urllib.parse import urlencode
+            from datetime import datetime, timedelta
+
+            url = "{}//{}/{}{}".format(
+                self.url_protocol,
+                self.custom_domain,
+                filepath_to_uri(name),
+                "?{}".format(urlencode(params)) if params else "",
+            )
+
+            if self.querystring_auth and self.cloudfront_signer:
+                expiration = datetime.utcnow() + timedelta(seconds=expire)
+                return self.cloudfront_signer.generate_presigned_url(
+                    url, date_less_than=expiration
+                )
+
+            return url
+
+        params["Bucket"] = self.bucket_name
+        params["Key"] = name
+
+        connection = (
+            self.public_connection
+            if self.querystring_auth
+            else self.unsigned_connection
+        )
+        return connection.meta.client.generate_presigned_url(
+            "get_object", Params=params, ExpiresIn=expire, HttpMethod=http_method
+        )

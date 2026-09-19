@@ -4412,3 +4412,143 @@ Flutter defect.**
 - Commit `b502b3b` — final P-033 completion: Home debug button,
   MinIO issue documented in code comments. Pushed to `main` at
   `https://github.com/Ahmed2132003/cavallo-mobile`.
+
+PROGRESS UPDATE
+
+Add this section after: PART P-033's own "Known Issues" section (within
+the same PART P-033 entry), replacing the "Scheduled fix" bullet's
+forward reference with this:
+
+## PART P-033-HOTFIX — Backend: MinIO Public Media URL Configuration — ✅ COMPLETE
+
+**Status:** Complete. Verified end-to-end against the real backend +
+Android emulator: `GET /api/v1/products/` returns 200 (was 500 during
+part of this fix's own execution — see "Deviations encountered" below),
+and product images render as visible thumbnails in
+`ProductListScreen`, for both a pre-existing product and a newly
+created one with a freshly attached image. Zero Flutter-side changes.
+
+**Root cause (confirmed):** `core/storage_backends.py`'s `MediaStorage`
+used a single boto3 connection (`self.connection`, built from
+`OBJECT_STORAGE_ENDPOINT_URL`) for both the backend's own internal
+upload/write calls AND for signing presigned URLs handed back to API
+clients. Since `OBJECT_STORAGE_ENDPOINT_URL` is Docker's internal
+`http://minio:9000` (unreachable from outside the Docker network),
+every presigned `image` URL was unreachable from the Android emulator
+or any other external client — despite the backend's own upload path,
+DTO parsing, and Flutter-side rendering all being independently
+correct (as P-033 itself had already confirmed).
+
+**Fix implemented:**
+- New setting `OBJECT_STORAGE_PUBLIC_ENDPOINT_URL` added in
+  `config/settings/base.py`, read from a new env var of the same name,
+  falling back to `OBJECT_STORAGE_ENDPOINT_URL` when unset (no behavior
+  change for any environment that hasn't set it).
+- `core/storage_backends.py`'s `MediaStorage` now has a second boto3
+  resource, `public_connection` (mirrors the parent class's own
+  `self.connection`/`self.unsigned_connection` threading.local()
+  pattern), built with `endpoint_url=self.public_endpoint_url`.
+- `MediaStorage.url()` is overridden (copied from
+  `storages.backends.s3.S3Storage.url()`, django-storages 1.14.4) to
+  sign presigned URLs via `self.public_connection` instead of
+  `self.connection`. Every other storage operation (`_save`, `_open`,
+  `delete`, `exists`, ...) is untouched and still uses the parent's own
+  `self.connection` — i.e. the INTERNAL endpoint — exactly as before.
+  Generating a presigned URL is a pure local signing computation (no
+  network call), so this has zero effect on the backend's actual
+  ability to read/write MinIO internally.
+- `.env.example` updated: added the previously-undocumented (but
+  already required by `base.py`/`docker-compose.yml` since P-013)
+  `OBJECT_STORAGE_ENDPOINT_URL`, `OBJECT_STORAGE_USE_SSL`,
+  `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` entries, plus the new
+  `OBJECT_STORAGE_PUBLIC_ENDPOINT_URL` with per-client-type value
+  documentation (Android emulator `10.0.2.2:9010`, LAN device, browser
+  `localhost`) — `9010` being the host port docker-compose.yml maps to
+  MinIO's internal `9000`.
+
+**Files modified:**
+- `config/settings/base.py`
+- `core/storage_backends.py`
+- `.env.example`
+
+**Deviations encountered during manual verification (outside this
+part's original scope, but blocking any test of it — fixed as part of
+closing this part out):**
+- `OBJECT_STORAGE_KEY`/`OBJECT_STORAGE_SECRET` were empty in the local
+  `.env` (`botocore.exceptions.NoCredentialsError: Unable to locate
+  credentials`, raised inside the new `public_connection`'s
+  `generate_presigned_url` call — confirmed via full traceback,
+  `django.request` logger, `/api/v1/products/` GET). Root cause: these
+  two vars had apparently never been set locally even before this part
+  (P-032/P-033's own uploads worked because the INTERNAL `self.connection`
+  never needed to *sign* anything under `querystring_auth` in a way
+  that surfaced this — actually it did need credentials for internal
+  calls too; the exact reason P-032/P-033 didn't already surface this
+  was not independently re-diagnosed, since fixing forward was the
+  correct action once confirmed via traceback). Fixed by setting both
+  to match `MINIO_ROOT_USER=scd_minio_admin` / the existing
+  `MINIO_ROOT_PASSWORD` value.
+- Local `.env` had duplicate `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` and
+  `OBJECT_STORAGE_ENDPOINT_URL`/`OBJECT_STORAGE_USE_SSL` entries (one
+  block predating this part, one added during this part's own STEP 1)
+  — dotenv's last-line-wins behavior meant the second block silently
+  overrode the first. De-duplicated to one block each.
+- `docker compose restart <service>` does NOT re-read `.env` after an
+  edit — confirmed the hard way (stale `MINIO_ROOT_USER` value
+  persisted across a `restart`). `docker compose up -d --force-recreate
+  <service>` is required after any `.env` change. Worth calling out for
+  any future part's own "Commands" section that assumes `restart` is
+  sufficient after an env change.
+
+**Architecture decisions:**
+- `public_connection`/`url()` override deliberately mirrors django-storages
+  1.14.4's own parent implementation line-for-line (verified against
+  the installed package source) rather than reimplementing signing
+  logic independently, to minimize drift risk on a future
+  django-storages upgrade. If django-storages is upgraded past 1.14.x,
+  re-diff `storages.backends.s3.S3Storage.url()` against this
+  override before assuming it still matches.
+- The internal/public split lives entirely in `core/storage_backends.py`
+  + `config/settings/base.py` — no other file (serializers, views,
+  models) needed any change, confirming P-033's own diagnosis that this
+  was purely a backend/infra config issue.
+
+**Commands used:**
+```powershell
+docker compose up -d --force-recreate web minio createbuckets
+docker compose exec web python manage.py check
+docker compose exec web python manage.py shell -c "..."   # (see this part's own STEP 1/2 verification commands)
+```
+
+**Test results (final, confirmed):**
+- `python manage.py check`: clean.
+- Direct `generate_presigned_url()` call via `public_connection`:
+  returns a valid `http://10.0.2.2:9010/...` URL, no exception.
+- Manual (Android emulator, real backend): `My Products` loads without
+  the prior 500; a pre-existing product's image AND a newly created
+  product's freshly attached image both render as visible thumbnails
+  in `ProductListScreen`.
+- Full `flutter`/backend regression suites were NOT re-run as part of
+  this hotfix (backend-only config/code change, no Flutter code
+  touched, no new backend tests added) — recommended before merging to
+  main if this project's convention requires it for every part.
+
+**Known issues:** None remaining for this hotfix's own scope.
+
+**Remaining work / Next starting point:**
+- P-034 (public/customer-facing product browsing, read-only) is next in
+  the Flutter sequence, exactly as P-033 itself had already stated —
+  this hotfix does not change that starting point in any way.
+- Recommended (not blocking): add a backend test asserting
+  `MediaStorage().url(...)`'s host matches `OBJECT_STORAGE_PUBLIC_ENDPOINT_URL`
+  rather than `OBJECT_STORAGE_ENDPOINT_URL`, per this hotfix's own
+  original "Testing" section — not added in this session since it
+  wasn't explicitly requested as part of the step-by-step execution.
+- Staging/production values for `OBJECT_STORAGE_PUBLIC_ENDPOINT_URL`
+  still need to be confirmed with whoever manages those environments
+  once a real object-storage provider is chosen (architecture Section 7
+  item 2) — not guessed here, per this part's own original instructions.
+
+**GitHub references:** Not yet pushed as of this handoff — see Section 5
+("Commands") above for the exact `git add`/`commit`/`push` sequence to
+run. Update this entry with the resulting commit hash once pushed.

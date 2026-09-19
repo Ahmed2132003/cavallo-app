@@ -360,7 +360,26 @@ OBJECT_STORAGE_KEY = env("OBJECT_STORAGE_KEY", default="")
 OBJECT_STORAGE_SECRET = env("OBJECT_STORAGE_SECRET", default="")
 OBJECT_STORAGE_REGION = env("OBJECT_STORAGE_REGION", default="")
 OBJECT_STORAGE_ENDPOINT_URL = env("OBJECT_STORAGE_ENDPOINT_URL", default=None)
+
+# PART P-033-HOTFIX: separate public-facing endpoint used ONLY when
+# generating presigned URLs handed back to API clients (Flutter app,
+# browsers, etc.). OBJECT_STORAGE_ENDPOINT_URL above remains the
+# INTERNAL endpoint used for the backend's own upload/write calls to
+# the storage service (e.g. Docker's internal "minio" hostname) and
+# must never be changed for this purpose. When left unset, falls back
+# to OBJECT_STORAGE_ENDPOINT_URL's value (no behavior change for any
+# environment that hasn't set this yet).
+OBJECT_STORAGE_PUBLIC_ENDPOINT_URL = env(
+    "OBJECT_STORAGE_PUBLIC_ENDPOINT_URL", default=None
+)
+
 OBJECT_STORAGE_USE_SSL = env.bool("OBJECT_STORAGE_USE_SSL", default=True)
+# Resolved once here so every consumer (core.storage_backends.MediaStorage)
+# reads a single already-defaulted value instead of repeating the
+# fallback logic itself.
+OBJECT_STORAGE_PUBLIC_ENDPOINT_URL = (
+    OBJECT_STORAGE_PUBLIC_ENDPOINT_URL or OBJECT_STORAGE_ENDPOINT_URL
+)
 
 STORAGES = {
     "default": {
