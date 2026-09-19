@@ -4552,3 +4552,90 @@ docker compose exec web python manage.py shell -c "..."   # (see this part's own
 **GitHub references:** Not yet pushed as of this handoff — see Section 5
 ("Commands") above for the exact `git add`/`commit`/`push` sequence to
 run. Update this entry with the resulting commit hash once pushed.
+
+---
+
+## PART P-034 — Flutter: Public Product Browse/Detail Screens (Customer View)
+
+**Status:** COMPLETE — validated on the real machine.
+**Repo / commit:** `cavallo-mobile`, branch `main`, commit `ab9be96` ("update"), pushed (`b502b3b..ab9be96`).
+**Backend changes:** none (consumes the P-032 public endpoints as-is).
+
+### What was implemented
+
+1. **`ProductPublicRepository`** (public reads only, no ownership concerns), split like the rest of the project into a domain interface and a Data implementation over `dioClientProvider`:
+   - `fetchPublicProduct(int id)` → `Product?` (`null` = the product does not exist, i.e. a backend 404) — `GET /api/v1/products/{id}/`
+   - `fetchBusinessProducts(int businessId)` → `PaginatedResponse<Product>` (first page only) — `GET /api/v1/products/public/?business_id=...`
+   - Reuses P-033's `Product` / `ProductVariant` entities and DTOs; no second copy was created.
+2. **Providers** in `product_public_providers.dart`: `productPublicRepositoryProvider` (overridable in tests), a Riverpod family provider for the product detail, and `businessProductsProvider(businessId)` for a business's product list.
+3. **Price framing (architecture Section 20) — single source of truth:** `ProductPriceFraming` widget + `ProductPriceCopy` in `product_price_framing.dart`. It has a `compact` variant for lists; both variants carry exactly the same copy.
+4. **`ProductDetailScreen`** (replaces the P-007 placeholder in place): image(s), name, description (placeholder text if empty), framed price, read-only variants list (heading hidden when there are none), and a visible-but-disabled `AppButton` "Message Business" with a "(coming soon)" note. States: loading, non-numeric id → not-found (repository is NOT called), `null` result → not-found with NO Retry, genuine failure → backend message + Retry.
+5. **Business profile public screen:** the P-029 SECTION BOUNDARY placeholder was replaced by a real `_ProductsSection` (independent loading / empty / error+Retry states, so a products failure never replaces the whole profile). Each card shows thumbnail, name and `ProductPriceFraming(compact: true)`, and opens the detail screen with `context.pushNamed(RouteNames.productDetail, ...)` (push, so Back returns to the profile).
+
+### EXACT PRICE-FRAMING COPY (Section 20) — Phase 11 Search MUST reuse this
+
+- Headline: `Starting from {price} {currency}` (e.g. `Starting from 199.99 EGP`; currency code from `currency.toWire()`)
+- Mandatory note: `Approximate price, negotiable directly with the business. Message the business to confirm.`
+- Rule: never render a price as a bare number; always use `ProductPriceFraming` (do not re-type the strings). Any product list (Phase 11 Search results) must render prices through it.
+- Hard rule: no cart icon, no "Buy Now", no quantity selector anywhere on product screens.
+
+### Files created (7)
+- `lib/features/products/data/product_public_repository.dart`
+- `lib/features/products/domain/product_public_repository.dart`
+- `lib/features/products/presentation/product_price_framing.dart`
+- `lib/features/products/presentation/product_public_providers.dart`
+- `test/features/products/data/product_public_repository_test.dart`
+- `test/features/products/presentation/product_detail_screen_test.dart`
+- `test/features/products/presentation/product_price_framing_test.dart`
+
+### Files modified (4)
+- `lib/features/products/presentation/product_detail_screen.dart` (P-007 placeholder replaced with the real screen)
+- `lib/features/business_profile/presentation/business_profile_public_screen.dart` (products section added; top docstring updated: Phase 5 DONE, Phase 7 still to come at the same boundary)
+- `test/features/business_profile/presentation/business_profile_public_screen_test.dart` (adds an empty-products fake override so the 8 existing tests do not hit the real network; the 8 tests themselves are unchanged)
+- `test/routing/app_router_test.dart` (updated for the real detail screen instead of the placeholder)
+
+Note: `lib/routing/app_router.dart` was NOT modified in this commit (it does not appear in `git show --stat ab9be96`); the `/product/:id` route already pointed at `ProductDetailScreen`, which was replaced in place.
+
+### Important implementation details
+- Test doubles are hand-rolled (no mockito/mocktail in this project). `_FakeProductPublicRepository` mirrors the P-029 fake: mutable result/error, call counter, optional `Completer` for a deterministic loading state.
+- Errors are handled in both shapes: bare `ApiFailure` (what fakes throw) and `DioException` wrapping `ApiFailure` (what `ErrorInterceptor` produces in production).
+- **Test bug fixed during STEP 6:** `find.byType(ButtonStyleButton)` matches the exact runtime type only, so it matched nothing even when a `FilledButton` existed (a vacuous "no buttons" assertion). Use `find.bySubtype<ButtonStyleButton>()`. The detail-screen test additionally asserts the only button on the screen is the single disabled "Message Business" (`onPressed == null`).
+- The price-framing tests assert on the actual widget-tree text (exact copy + independent `textContaining` for "Approximate", "negotiable", "Message the business"), and that the number never appears outside the framed headline.
+
+### Commands run (PowerShell, from `D:\Cavallo\social_commerce_app`)
+```
+dart format <changed files>
+flutter analyze
+flutter test
+flutter test test/features/products/
+flutter test test/features/business_profile/presentation/business_profile_public_screen_test.dart
+flutter test test/routing/
+flutter run -d emulator-5554 --route=/business/3
+flutter run -d emulator-5554 --route=/product/999999
+```
+
+### Verification results
+- `flutter analyze`: 2 issues — the same pre-existing `unused_element_parameter` warnings (`fetchMeBehavior`) in `login_screen_test.dart` and `register_screen_test.dart`. No new issues.
+- `flutter test` (full suite): **264 passed**, 0 failed.
+- `flutter test test/features/products/`: **72 passed**.
+- `business_profile_public_screen_test.dart`: 8 passed. `test/routing/`: 18 passed.
+- Manual run on the Android emulator (Pixel 2) against the real backend: opened with `--route=/business/3` (business 3 has products id 1 and 2) — products section renders cards with the framed price, no transactional UI; tapping a card opens the detail screen with the framing copy and the disabled "Message Business" + "(coming soon)"; Back returns to the profile; `--route=/product/999999` shows the not-found state without Retry.
+
+### How to reach a business/product screen right now
+The app has no navigation entry to a business yet (Discover/Search come in later phases; Home is still the placeholder). To test manually: find a business id with active products (e.g. `docker compose exec web python manage.py shell -c "from products.models import Product; print(list(Product.objects.filter(is_active=True).values('id','business_id','name')[:10]))"` from `D:\Cavallo\scd-backend`), then run `flutter run -d emulator-5554 --route=/business/<id>`.
+
+### Known issues
+- `_ProductThumbnail` is duplicated as a private widget in `business_profile_public_screen.dart` and `product_list_screen.dart` (P-033). Consider extracting a shared widget in a later cleanup.
+- The business profile products section shows the first page only (no "load more"), same decision as P-033's list.
+- The 2 pre-existing analyzer warnings above remain (not introduced by P-034).
+- Product images depend on the MinIO internal-hostname issue documented in P-033-HOTFIX; if that hotfix is not deployed, the UI shows the fallback icon instead of the image. Its push status was not confirmed during this part.
+- Whether the backend's product detail endpoint returns `is_active=False` products was not verified in this part; the screen treats a backend 404 as not-found.
+
+### Remaining work / hand-off to later phases
+- **Phase 12 (Chat):** replace the disabled "Message Business" stub on `ProductDetailScreen` with the real action.
+- **Phase 11 (Search):** link results into `RouteNames.productDetail` and render prices via `ProductPriceFraming` (copy above).
+- **Phase 7 (Posts/Reels):** append sections below `_ProductsSection` at the SECTION BOUNDARY in `business_profile_public_screen.dart` (same screen, no second profile screen).
+- **Phase 9 (Follow):** activate the disabled Follow button in `_ProfileHeader`.
+
+### Exact next starting point
+Start the part that follows P-034 in the Master Plan (P-033 and P-034 were marked parallelizable; check the Master Plan for the next numbered part and its dependencies). Baseline to preserve: `cavallo-mobile` `main` at `ab9be96`, `flutter test` = 264 passing, `flutter analyze` = the 2 pre-existing warnings only.
