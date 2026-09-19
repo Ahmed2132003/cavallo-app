@@ -4165,3 +4165,250 @@ P-034), which depend on this part's exact contracts:
 **GitHub reference:** commit `2c74f12` on `main`, github.com/Ahmed2132003/cavallo-app.
 
 **Exact next starting point:** Resume Part P-033 exactly as originally specified — the Flutter data/domain/provider/UI layers under `lib/features/products/`, calling `/api/v1/products/`, `/api/v1/products/<pk>/`, and now also `/api/v1/products/<product_pk>/variants/` + `/api/v1/products/<product_pk>/variants/<pk>/` for real variant persistence — starting from the domain-entity layer (`Product`, `ProductVariant`, currency enum: `EGP`/`SAR`/`AED`/`JOD`).
+
+PROGRESS UPDATE
+
+Add this section after: PART P-032 (and its P-032B variants sub-part)
+
+## PART P-033 — Flutter: Business-Console Product Management (Create/Edit/List) — ✅ COMPLETE
+
+### Status
+Complete and pushed to `main` on GitHub (commit `b502b3b`, following `6b909c1`).
+Full create/edit/list/delete cycle verified manually against the real
+backend on an Android emulator, end to end, including image upload and
+2 variants. One known issue remains — see "Known Issues" below — which
+is a local backend/infra configuration matter, not a Flutter defect,
+and does not block this part's completion.
+
+### What was implemented
+- **Data layer**: `ProductRepository`/`ProductRepositoryImpl`
+  (`lib/features/products/data/product_repository_impl.dart`) — GET
+  (list, paginated), POST (create), PATCH (update), DELETE, all against
+  P-032's `/api/v1/products/` and `/api/v1/products/<id>/` endpoints.
+  Image upload: when no `imageFile` is given, the request body is plain
+  JSON; when one is given, the WHOLE body (every field + the image)
+  becomes a single `FormData` multipart request — there is no separate
+  upload endpoint. `is_active` is stringified only in the multipart
+  path (multipart fields are always strings on the wire); the JSON path
+  sends a real boolean via Dio's own encoder.
+- **ProductVariantRepository/ProductVariantRepositoryImpl** (P-032B) —
+  create/update/delete against `/api/v1/products/<id>/variants/`.
+- **DTOs**: `ProductResponseDto`, `ProductVariantDto` — map P-032's/
+  P-032B's exact real response shapes (confirmed from their own
+  progress notes, not the original spec's literal field guesses).
+  `business` on the product response is a bare id (`int`), never a
+  nested object — a future part needing the business's display name/
+  logo alongside a product needs a separate `GET /api/v1/businesses/
+  {id}/` call (P-026).
+- **`ownProductsProvider`** (`AsyncNotifier<List<Product>>`,
+  `lib/features/products/presentation/own_products_provider.dart`) —
+  `createProduct`/`updateProduct`/`deleteProduct` methods that refresh
+  the list on success; failures rethrow to the caller and leave state
+  untouched (not silently swallowed).
+- **`ProductListScreen`**
+  (`lib/features/products/presentation/product_list_screen.dart`) —
+  shows the business's own products (thumbnail, name, price+currency,
+  variant count, "Inactive" chip), Edit/Delete per row (Delete shows a
+  confirmation dialog first), pull-to-refresh, and a "Create New" FAB.
+  Mirrors `BusinessProfilePublicScreen`'s (P-029) `AsyncValue` switch
+  pattern and `EmptyStateWidget`/`ErrorStateWidget`/`LoadingIndicator`
+  (P-006) usage. Error-message extraction handles BOTH a bare
+  `ApiFailure` (test fakes) and a real `DioException(error: ApiFailure)`
+  (production, via `ErrorInterceptor`, P-004) — see this file's own
+  "Correction after review" doc comment for why both shapes matter.
+  Navigation (`onCreateNew`, `onEditProduct`) is injected as callbacks,
+  not hardcoded `context.goNamed`, because `RouteNames.productForm`
+  didn't exist yet when this screen was first written within this part
+  — see the file's own docstring.
+- **`ProductFormScreen`**
+  (`lib/features/products/presentation/product_form_screen.dart`) —
+  shared create/edit form (`existingProduct == null` → create,
+  non-null → edit, pre-filled). Fields: name, description, price
+  (numeric validation), currency (dropdown — exact 4-choice backend set:
+  EGP/SAR/AED/JOD, confirmed not guessed), category (flattened,
+  indented dropdown built from `categoryTreeProvider`'s tree — the
+  "simple flattened dropdown with indentation" MVP approach the part
+  spec explicitly allows), active toggle, image picker (`image_picker`
+  package, gallery source) with inline preview, and a repeatable
+  variant name/value add/remove row UI. On submit: the product itself
+  is created/updated first (needs a real, persisted `productId` before
+  any variant can be attached), THEN `_syncVariants` reconciles the
+  variant rows against `ProductVariantRepository` (create new rows,
+  update changed existing rows, delete removed rows — untouched rows
+  are left alone, no pointless PATCH). On success, calls
+  `Navigator.of(context).pop(true)` — no `RouteNames` dependency by
+  design (see file's own docstring on why). Field-level backend
+  validation errors (`ValidationFailure.fields`) are mapped onto the
+  matching form field; anything else becomes a general error banner
+  that does not disappear silently.
+- **Routing**: `RouteNames.productList` / `RouteNames.productForm`
+  added and wired into `app_router.dart`'s route table (both behind the
+  existing auth guard). `BusinessConsoleScreen`
+  (`lib/features/business_console/presentation/business_console_screen.dart`,
+  P-007 placeholder) got a real **"My Products"** button
+  (`context.pushNamed(RouteNames.productList)`) — this is this part's
+  only actual entry point into the feature; the full Business Console
+  shell itself is still Phase 14, not built yet.
+- **Home debug entry point (temporary, non-P-033-spec addition)**: a
+  **"Business Console (debug)"** button was added to `HomeScreen`
+  (`lib/features/home/presentation/home_screen.dart`), shown only for
+  signed-in Business accounts, that does
+  `context.pushNamed(RouteNames.businessConsole)`. This was needed
+  because P-007's original debug navigation chain (Home → Discover →
+  Search → ChatList → Notifications → Business Console → back to
+  splash) turned out to be broken somewhere past the Search screen (an
+  unrelated later part changed a screen along that chain without
+  preserving its own "next" button) — fixing that whole chain was out
+  of P-033's scope, so this one button was added instead purely to make
+  P-033's own manual-verification acceptance criterion reachable at
+  all. **Marked in its own doc comment as temporary — remove once a
+  real Home/Profile screen or the real Phase-14 Business Console shell
+  provides proper navigation.**
+
+### Files created
+- `lib/features/products/domain/product_entity.dart`
+- `lib/features/products/domain/product_repository.dart`
+- `lib/features/products/domain/product_variant_entity.dart`
+- `lib/features/products/domain/product_variant_repository.dart`
+- `lib/features/products/data/dtos/product_response_dto.dart`
+- `lib/features/products/data/dtos/product_variant_dto.dart`
+- `lib/features/products/data/product_repository_impl.dart`
+- `lib/features/products/data/product_variant_repository_impl.dart`
+- `lib/features/products/presentation/own_products_provider.dart`
+- `lib/features/products/presentation/product_list_screen.dart`
+- `lib/features/products/presentation/product_form_screen.dart`
+- Matching test files under `test/features/products/{data,presentation}/`
+  (repository tests, provider tests, both screens' widget tests) — 48
+  tests total in `test/features/products/`, all passing.
+
+### Files modified
+- `lib/routing/route_names.dart` — added `productList`, `productForm`.
+- `lib/routing/app_router.dart` — wired both new routes.
+- `lib/features/business_console/presentation/business_console_screen.dart`
+  — added the real "My Products" button (P-033's actual spec-required
+  entry point).
+- `lib/features/home/presentation/home_screen.dart` — added the
+  temporary "Business Console (debug)" button (see above — not part of
+  P-033's original spec, added for manual-testing reachability).
+- `test/routing/app_router_test.dart` — added coverage for
+  `productList`/`productForm` route resolution and the "My Products"
+  button navigation; existing tests updated to override
+  `productRepositoryProvider`/`categoryRepositoryProvider` where those
+  routes are now exercised (both routes' screens watch providers that
+  hit the network on build, which would otherwise hang under
+  `flutter test`).
+
+### Architecture decisions
+- Currency choice set (EGP/SAR/AED/JOD) confirmed directly against
+  backend documentation before implementation, per this part's own
+  "confirm it, don't guess" instruction.
+- Category picker: flattened, depth-indented dropdown built from
+  `categoryTreeProvider`'s tree (`_flattenCategories`, depth-first,
+  preserving backend order) — the explicitly-allowed MVP approach, not
+  a full expandable tree widget.
+- Variant sync happens strictly AFTER the product create/update
+  succeeds, never before or in parallel — `ProductVariantRepository`
+  needs a real, already-persisted `productId`.
+- `ProductFormScreen` has no `RouteNames`/router dependency — it
+  communicates success via a plain `Navigator.pop(true)`, deliberately
+  decoupled from however a future caller chooses to push it.
+- `ProductListScreen` takes navigation as injected callbacks
+  (`onCreateNew`, `onEditProduct`) rather than calling
+  `context.goNamed` directly, for the sequencing reason documented in
+  the file's own class docstring.
+- `http_mock_adapter`'s route matcher cannot match a `FormData` request
+  body by structural equality — repository tests for the image-upload
+  path use a hand-rolled `_FakeJsonAdapter` (draining the request
+  stream before replying, to avoid a Windows file-lock on the temp test
+  image file) instead of `DioAdapter.onPost(..., data: {...})`. **Any
+  future part testing a multipart upload (P-051 Story upload, P-044
+  Post/Reel creation) should follow this same pattern.**
+
+### Commands used throughout this part
+```powershell
+flutter analyze
+flutter test test/features/products/
+flutter test test/routing/
+flutter test
+git add .
+git commit -m "Part P-033: Business-Console Product Management (create/edit/list/delete) — complete. Adds temporary Home debug button for Business Console access; documents MinIO internal-hostname image display issue (backend/infra, out of scope) in code comments."
+git push
+```
+
+### Test results (final, confirmed)
+- `flutter analyze`: clean — only the 2 pre-existing, unrelated
+  warnings (`fetchMeBehavior` unused optional parameter in
+  `login_screen_test.dart`/`register_screen_test.dart`, both pre-dating
+  P-033).
+- `flutter test test/features/products/`: **48/48 passing**.
+- `flutter test test/routing/`: **18/18 passing**.
+- `flutter test` (full suite): **240/240 passing**.
+- Manual verification against the real backend (Android emulator,
+  signed-in Business account): create with image + 2 variants, list
+  reflects it, persists across pull-to-refresh, edit persists, delete
+  (Cancel then real Delete) both behave correctly — **all 6 manual
+  test steps passed**, with one caveat (see Known Issues).
+
+### Known Issues
+
+**Created product images do not visually render on this local dev
+setup — confirmed as a backend/infra configuration issue, NOT a
+Flutter defect.**
+
+- **Symptom**: After creating a product with an image (verified 201
+  response), `ProductListScreen`'s thumbnail shows the "no image"
+  placeholder icon instead of the actual photo.
+- **Root cause (confirmed via a temporary debug `print` of the raw
+  POST response body, since removed)**: the backend's own response
+  IS correct — every field, including a fully-formed presigned `image`
+  URL, is present and correctly shaped
+  (`ProductResponseDto`/`ProductRepositoryImpl` parse and pass it
+  through with no defect). The URL's **host segment is `minio`** — the
+  internal Docker container hostname for this backend's local MinIO
+  object-storage service, e.g.:
+  `http://minio:9000/scd-dev-media/products/scaled_33_zjixuOh.png?AWSAccessKeyId=...&Signature=...&Expires=...`
+  This hostname only resolves inside the backend's own Docker network.
+  No device outside that network — including the Android emulator this
+  part was verified on — can resolve or reach it, so `Image.network`
+  fails silently and `_ProductThumbnail`'s `errorBuilder` correctly
+  falls back to its placeholder (working exactly as designed for an
+  unreachable URL).
+- **Why this is out of scope for P-033**: the create request, the
+  DTO parsing, and the list/thumbnail rendering are all independently
+  confirmed correct end-to-end. There is no Flutter-side code change
+  that would fix an unreachable backend-issued URL — the fix belongs
+  entirely in the backend's MinIO / presigned-URL configuration
+  (its public/external endpoint setting needs to point at a host
+  reachable from outside the Docker network, e.g. `localhost` or the
+  emulator-facing `10.0.2.2`, instead of the internal container
+  hostname `minio`).
+- **Scheduled fix**: tracked as a separate, exceptional hotfix part —
+  see "PART P-033-HOTFIX" below — NOT folded into P-033 itself and NOT
+  assigned a number in the main Phase sequence, since it is a
+  backend/infra config change, not new Flutter feature work.
+- **No action needed on the Flutter side** once the backend is fixed —
+  this same code will render the image with zero changes required, since
+  `_ProductThumbnail` already handles a valid URL correctly (confirmed
+  by its own existing widget tests using a reachable network URL).
+
+### Remaining work / Next starting point
+- **Immediate**: PART P-033-HOTFIX (backend MinIO public-endpoint
+  config) — see the separate execution prompt provided alongside this
+  update. Not a prerequisite for starting Phase 6+ Flutter work, since
+  it's entirely backend-side.
+- P-034 (public/customer-facing product browsing, read-only) is next
+  in the Flutter sequence — a separate, simpler feature that must NOT
+  reuse this part's `ownProductsProvider` (deliberately scoped to "my
+  own products" only, per this part's own Handoff Notes).
+- The temporary "Business Console (debug)" button on `HomeScreen` and
+  P-007's still-broken debug navigation chain (Search → ChatList →
+  Notifications → Business Console) remain as known, intentionally
+  deferred cleanup — not blocking, but should be revisited once a real
+  Home/Profile screen or the Phase-14 Business Console shell exists.
+
+### GitHub references
+- Commit `6b909c1` — STEP 8/9 screens (`product_list_screen.dart`,
+  `product_form_screen.dart` + their tests).
+- Commit `b502b3b` — final P-033 completion: Home debug button,
+  MinIO issue documented in code comments. Pushed to `main` at
+  `https://github.com/Ahmed2132003/cavallo-mobile`.
