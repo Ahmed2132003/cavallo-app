@@ -5111,3 +5111,137 @@ written at the top of `moderation/services.py`.
 - No new architecture introduced; same generic-FK/mixin design from P-036.
 
 ### Commands (run from `D:\Cavallo\scd-backend`, PowerShell)
+
+
+
+
+## PART P-038 — Moderator Queue API (List Pending, Approve/Reject) — ✅ COMPLETE
+
+**Status: COMPLETE — verified against the real dev stack (Docker Compose + Postgres, port 8095) and pushed.**
+(`cavallo-app` `main` @ `cb10f3c`)
+
+### What was implemented
+The moderator-facing HTTP API that the Flutter moderator screen (P-040) will consume. It is a thin wrapper around P-037's `approve()` / `reject()`: **no state-transition logic lives in the views.**
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| GET | `/api/v1/moderation/queue/` | Pending items only, `StandardCursorPagination` (newest first, page size 20). Optional `?priority=normal\|fast_path`. |
+| POST | `/api/v1/moderation/queue/{id}/approve/` | Calls `services.approve(queue_item, request.user)`, returns the updated item. |
+| POST | `/api/v1/moderation/queue/{id}/reject/` | Body `{"reason": "..."}` (required). Calls `services.reject(queue_item, request.user, reason)`, returns the updated item. |
+
+All three are gated by `HasCapability("can_moderate_content")` (P-019). There are no manual role checks. Moderator and Admin group users are allowed. A Customer gets 403, and an unauthenticated request gets 401.
+
+- **`Moderatable.get_moderation_preview()`** (in `moderation/models.py`): the extension point. Contract: returns a dict with EXACTLY `{"preview_text": str, "preview_image_url": str | None}`. The default is `{"preview_text": str(self)[:200], "preview_image_url": None}`, so it works with no override.
+- **`ModerationQueueSerializer`**: fields `id`, `content_type` (model name, e.g. `"post"`), `object_id`, `status`, `priority`, `created_at`, `age`, `preview`, `submitter`.
+  - `age` is an integer number of seconds since `created_at` (never negative).
+  - `preview` comes from `content_object.get_moderation_preview()`, and is `null` if the content row was hard-deleted.
+  - `submitter` is `{"business_name": ...}` and only appears if the content object has a `business` attribute (looked up with `getattr`). Otherwise the key is omitted entirely.
+- **`RejectRequestSerializer`**: `reason = CharField()`. A missing, empty, whitespace-only or `null` reason gives 400 with `fields.reason` before reaching the service.
+- **`core.exceptions.ConflictError`** (new): HTTP 409, `default_code="conflict"`. `"conflict": "CONFLICT"` was added to `_EXCEPTION_CODE_MAP` (and a default message). It is additive only: the P-012 envelope shape is unchanged.
+
+### Files created (7)
+- `moderation/serializers.py`
+- `moderation/views.py`
+- `moderation/urls.py`
+- `moderation/tests/test_preview.py`
+- `moderation/tests/test_serializers.py`
+- `moderation/tests/test_api.py`
+- `core/tests/test_conflict_error.py`
+
+### Files modified (3)
+- `moderation/models.py` — added `Moderatable.get_moderation_preview()` only. Nothing else in this file changed.
+- `core/exceptions.py` — added `ConflictError`, the `CONFLICT` code mapping and its default message.
+- `config/urls.py` — added `path("api/v1/moderation/", include("moderation.urls"))` (also gained a trailing newline).
+
+### Error handling (how service errors map to HTTP)
+| Situation | Status | Envelope `code` |
+| --- | --- | --- |
+| Unauthenticated | 401 | `AUTHENTICATION_FAILED` |
+| No `can_moderate_content` | 403 | `PERMISSION_DENIED` |
+| Unknown queue id | 404 | `NOT_FOUND` |
+| Missing/blank reason, or invalid `?priority=` | 400 | `VALIDATION_ERROR` (with `fields`) |
+| `AlreadyDecidedError` (item already decided) | 409 | `CONFLICT` |
+| Any other service `ValidationError` (e.g. content hard-deleted) | 400 | `VALIDATION_ERROR` |
+
+### Response shape (for P-040)
+```json
+{
+  "id": 7,
+  "content_type": "post",
+  "object_id": 42,
+  "status": "pending",
+  "priority": "normal",
+  "created_at": "2026-09-20T03:06:47.123456Z",
+  "age": 3600,
+  "preview": {"preview_text": "...", "preview_image_url": null},
+  "submitter": {"business_name": "Acme Trading"}
+}
+```
+The list endpoint wraps items in the cursor format `{"next": ..., "previous": ..., "results": [...]}`. `submitter` may be absent. `preview` may be `null`. After approve/reject the returned `status` is `approved` / `rejected`.
+
+### Important implementation details and deviations from the spec
+- **Paths:** the spec says `apps/moderation/`. The real project uses top-level `moderation/` (convention since P-011), and the validation command is `pytest moderation/`.
+- **The 500 trap:** the services raise `django.core.exceptions.ValidationError`, which the P-012 handler does NOT reshape (it only handles DRF exceptions), so it would surface as a 500. `_run_decision()` in `moderation/views.py` translates: `AlreadyDecidedError` → `ConflictError` (409), any other `ValidationError` → DRF `ValidationError` (400).
+- **404 must be DRF `NotFound`, not `django.shortcuts.get_object_or_404`:** Django's `Http404` has no `get_codes()`/`default_code`, so the handler returns `code: "ERROR"` instead of `"NOT_FOUND"`. This was caught by the API tests. The views use `_get_queue_item_or_404()` (same convention as `products/views.py`). **Any future part that looks up an object by id must do the same.**
+- **Invalid `?priority=` value → 400**, not silently ignored.
+- **Queryset:** `select_related("content_type")` + `prefetch_related("content_object")` to avoid one query per item for the generic FK.
+- **Decision (409 vs 400) for already-decided items:** 409 chosen so the Flutter client can tell "state conflict" apart from "invalid input". This touched `core/` (additive only).
+
+### Architecture decisions
+- The generic preview/serializer contains zero Post/Reel/Story-specific code. All content-specific behavior comes from the content model's own `get_moderation_preview()` and optional `business` attribute.
+- `HasCapability("can_moderate_content")` is now consumed by a real endpoint (previously only a throwaway test view, P-019).
+- No new migrations. `makemigrations --check --dry-run` reports no changes for all apps.
+
+### 🔒 RULE FOR PHASE 7 (Posts/Reels) AND PHASE 8 (Stories) — get_moderation_preview() MUST be overridden
+Each concrete content model (Post, Reel, Story) that inherits `Moderatable` **must override `get_moderation_preview()`** and return `{"preview_text": <real caption/text, ≤ ~200 chars>, "preview_image_url": <real thumbnail URL or None>}` (exactly these two keys). Leaving the generic fallback (`str(self)[:200]`) in production content is a gap, not a design choice: the moderator would see meaningless text such as `Post object (12)`. Also expose a `business` attribute (a `BusinessProfile`, which has `business_name`) on each content model so the moderator sees who submitted the item; if it is absent, `submitter` is silently omitted. The Phase 7/8 parts should each add a test proving their override is used by the queue API.
+
+### Tests
+- New: **37** (preview 5, serializer 8, conflict error 3, API 21).
+  - API tests cover: 401 unauthenticated, 403 for Customer on all three endpoints, Admin-group access, list shows pending only and generic preview, cursor pagination (25 items → 20 + 5, no overlap), `?priority=fast_path` filter, invalid priority 400, approve/reject happy paths (queue + content + `ModerationLog` with reviewer/reason), views delegate to the service (monkeypatched), reject without reason (missing / empty / whitespace / null → 400 envelope, nothing changed), approve twice and reject-after-approve → 409 with a single log row, unknown id → 404 `NOT_FOUND` (approve and reject), hard-deleted content → 400 (not 500).
+- `pytest moderation/`: **62 passed** (28 before this part + 34 in the moderation app).
+- Full project `pytest -q -rs`: **276 passed, 1 skipped** (was 239). The skip is pre-existing and unrelated: `core/tests/test_storage_backends.py:31` — `moto` not installed in the container.
+- P-012's existing `core/tests/test_exceptions.py`: 13 passed, unchanged.
+
+### Verification results (real machine, Docker Compose, real Postgres)
+- `makemigrations --check --dry-run`: "No changes detected". `manage.py check`: no issues.
+- flake8: clean and black `--check`: "9 files would be left unchanged" on all 9 new/changed Python files of this part.
+- Live requests on `http://localhost:8095/api/v1/` with real JWTs (Moderator user vs Customer user, both deleted afterwards):
+  - Moderator `GET /moderation/queue/` → `200`, `{"next":null,"previous":null,"results":[]}` (the dev DB has no content until Phase 7).
+  - Customer `GET /moderation/queue/` → `403 PERMISSION_DENIED`, and Customer `POST .../1/approve/` → `403 PERMISSION_DENIED`.
+  - Moderator `POST .../999999/approve/` → `404 NOT_FOUND`.
+  - Moderator `GET ...?priority=urgent` → `400 VALIDATION_ERROR` with `fields.priority`.
+  - Unauthenticated `GET /moderation/queue/` → `401 AUTHENTICATION_FAILED`.
+- Approve/reject success paths and 409 are proven by the API tests only, because the dev DB has no `Moderatable` rows before Phase 7.
+
+### Commands (run from `D:\Cavallo\scd-backend`, PowerShell)
+```powershell
+git pull origin main
+docker compose ps
+docker compose exec web python manage.py makemigrations --check --dry-run
+docker compose exec web python manage.py check
+docker compose exec web pytest moderation/ -q
+docker compose exec web pytest -q -rs
+```
+flake8 and black are NOT installed in the `web` image (they run in CI). To lint locally: `docker compose exec web pip install --quiet flake8 black`. This lasts only until the container is recreated. Then `docker compose exec web flake8 <files>` and `docker compose exec web black --check <files>`.
+
+### Known issues / caveats
+- **Pre-existing lint debt, deliberately NOT touched (belongs to closed parts P-036/P-037):** `moderation/models.py` (E302 at line ~21, E303 at line ~132, W292 at EOF), `moderation/services.py` (W292), `moderation/tests/test_services.py` (W292), plus black reformat needs in those files and in the moderation migrations. `flake8 moderation/` on the whole folder therefore still fails on those 3 files (the P-038 files are clean). Whether CI lints the whole repo or only changed files was not verified. A small dedicated clean-up part can fix these. The question of fixing `models.py` lint in this part was left unanswered, so it was not done.
+- **Hard-deleted content leaves a stuck item:** if the content row was hard-deleted, `approve`/`reject` return 400 and the item stays `pending` forever, and the API gives moderators no way to dismiss it. Not in P-038's scope (content is soft-deleted by convention). Revisit if hard deletes are ever introduced.
+- **List ordering is newest-first** (`StandardCursorPagination` uses `-created_at`). Moderators may prefer oldest-first (FIFO) to clear the backlog. The `age` field is there to show staleness. Changing this needs a dedicated paginator and was not done here.
+- **`submitter` costs an extra query per item** once real content types define `business` as a foreign key (the queryset only prefetches `content_object`). Phase 7/8 should optimise this (for example a prefetch that reaches `business`) if the queue page gets slow.
+- `ModerationQueue.object_id` is `PositiveIntegerField` while models use `BigAutoField` IDs (a P-036 decision, unchanged).
+- Local runserver gotcha: if `config/urls.py` is edited to include `moderation.urls` before `moderation/urls.py` exists, the dev server keeps crashing on import (`Empty reply from server` from curl) and needs `docker compose restart web`. Create the URL module first.
+- `PROJECT_PROGRESS.md` tail before this section: the P-037 body was appended inside the P-036 section and the second "PART P-037" heading ends at "Commands" with no content. The code and the record of P-037 are consistent with each other. Only the file layout is untidy, and it can be cleaned up whenever convenient.
+- Notifications to the business owner on approve/reject are NOT implemented (Phase 13).
+
+### Remaining work
+- **P-039** — SLA alert job (out of scope here).
+- **P-040** — Flutter moderator UI: a pure consumer of this API. No backend change is expected, except if Phase 7/8's `get_moderation_preview()` overrides reveal a genuinely missing field.
+- Phase 7 (Post/Reel) and Phase 8 (Story): follow the get_moderation_preview() rule above and the P-037 rule (never write `status` directly; only `moderation.services.approve()`/`reject()`).
+
+### Git reference
+`cavallo-app` `main` — commit `cb10f3c` ("P-038: moderator queue API (list pending, approve, reject) + CONFLICT error code"), pushed on top of `51ecf14`. 10 files changed, 861 insertions(+), 3 deletions(-).
+https://github.com/Ahmed2132003/cavallo-app/commit/cb10f3c
+
+### Exact next starting point
+Start **P-039** (SLA alert job for pending moderation items). Baseline to preserve: `cavallo-app` `main` @ `cb10f3c`, `docker compose ps` all services up, `pytest moderation/` = 62 passed, full `pytest -q` = 276 passed / 1 skipped (`moto` not installed). Migration state unchanged: `moderation` at `0002_moderationlog`. Available for P-039: `ModerationQueue.created_at`, the `priority` field (`fast_path` for Stories), and the `age` calculation already implemented in `ModerationQueueSerializer.get_age`.
