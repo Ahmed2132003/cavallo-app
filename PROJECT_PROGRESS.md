@@ -5245,3 +5245,68 @@ https://github.com/Ahmed2132003/cavallo-app/commit/cb10f3c
 
 ### Exact next starting point
 Start **P-039** (SLA alert job for pending moderation items). Baseline to preserve: `cavallo-app` `main` @ `cb10f3c`, `docker compose ps` all services up, `pytest moderation/` = 62 passed, full `pytest -q` = 276 passed / 1 skipped (`moto` not installed). Migration state unchanged: `moderation` at `0002_moderationlog`. Available for P-039: `ModerationQueue.created_at`, the `priority` field (`fast_path` for Stories), and the `age` calculation already implemented in `ModerationQueueSerializer.get_age`.
+
+
+## P-039 — Moderation SLA Alert Celery Beat Job — ✅ DONE (pushed)
+
+**Status:** Implemented, scheduled, tested (6 unit tests + real manual validation
+against the Docker stack), pushed to `main`.
+
+**Commit:** `c0e2d2b` on `github.com/Ahmed2132003/cavallo-app` (main).
+`git log -1 --stat` for this commit:
+```
+config/celery.py               |  20 +++++
+config/settings/base.py        |  16 ++++
+moderation/tasks.py            | 101 +++++++++++++++++++++++
+moderation/tests/test_tasks.py | 176 +++++++++++++++++++++++++++++++++++++++++
+celerybeat-schedule             | Bin 16384 -> 16384 bytes
+5 files changed, 313 insertions(+)
+```
+
+### What was implemented
+- `moderation/tasks.py` (new): `check_moderation_sla()` Celery task. Queries
+  `ModerationQueue` for `status=pending` rows past their priority's age threshold and
+  logs each breach at `WARNING` level with structured `extra={}` fields. No writes, no
+  "already alerted" state — a still-breaching item is logged again every run by design.
+- `config/settings/base.py`: added `CELERY_BEAT_SCHEDULE` (first entry in it), running
+  `moderation.check_moderation_sla` every 300 seconds.
+- `config/celery.py`: added a `celery.signals.setup_logging` receiver
+  (`dictConfig(settings.LOGGING)`), fixing Celery's default root-logger hijack that was
+  silently discarding P-015's JSON log format for every Celery task, not just this one —
+  a project-wide fix, worth knowing about for whoever writes the next Celery task.
+- `moderation/tests/test_tasks.py` (new, 6 tests): breach detection (fast_path/urgent,
+  normal/warning), under-threshold non-detection, `approved`-status items correctly
+  excluded, idempotency across two runs, no-breach run produces no log lines.
+
+### Exact tunable values (in `moderation/tasks.py`, change only there)
+- `FAST_PATH_SLA_MINUTES = 30` → `severity: "urgent"`
+- `NORMAL_SLA_HOURS = 4` → `severity: "warning"`
+- Both explicitly placeholder values pending real-world tuning.
+
+### Log format (the exact seam P-105 / Phase 21 monitoring should watch)
+Logger: `moderation.tasks`, level `WARNING` for both severities. JSON fields on every
+breach line: `event: "moderation_sla_breach"`, `severity`, `queue_item_id`,
+`content_type`, `priority`, `age_seconds`, plus `threshold_minutes` (fast_path breaches)
+or `threshold_hours` (normal breaches). P-105 should alert on
+`event == "moderation_sla_breach"`.
+
+### Verification
+Real manual validation against the Docker stack confirmed a genuine JSON breach log line
+in `celery_worker`'s actual output (not just a unit test) — see conversation log for full
+commands. `pytest moderation/` → 68/68 passed, no regressions.
+
+### Known issues / flagged, not blocking
+- `celerybeat-schedule` (PersistentScheduler's binary state file) got committed in this
+  push — it's runtime state, not source, and probably shouldn't be tracked in git. Worth
+  adding to `.gitignore` in a follow-up, not addressed here since it wasn't in P-039's
+  scope.
+- No UI surfaces the backlog yet (explicitly out of scope — optional for P-040's
+  moderator screen).
+- No queryable `last_sla_breach_at` singleton/cache key was added — log output alone
+  satisfies the spec's "detectable and loggable" requirement; add this later only if a
+  future part (health endpoint, admin dashboard) actually needs it.
+
+### Next starting point
+P-039 fully done and pushed. Next dependent part: **P-105** (Phase 21 monitoring),
+which wires real alerting on top of `event == "moderation_sla_breach"`. Parts P-040
+through P-104 are unrelated and can proceed independently.

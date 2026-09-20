@@ -10,14 +10,27 @@ suite can pass 100% while a real request still 500s").
 from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
+from django.core.cache import cache
 
 User = get_user_model()
 
 
 class TestMe(APITestCase):
     def setUp(self):
+        # LoginRateThrottle's counters live in the default cache (Redis
+        # via P-014) and don't reset automatically between test
+        # methods sharing the same test-runner IP — same issue
+        # accounts/tests/test_auth.py's `_clear_throttle_cache` fixture
+        # already documents and fixes for its own module. This class
+        # calls `_register_and_login` up to twice per test, so without
+        # this the 5/min cap gets tripped spuriously once enough tests
+        # accumulate logins in one run.
+        cache.clear()
         self.client = APIClient()
 
+    def tearDown(self):
+        cache.clear()
+        
     def _register_and_login(self, email, account_type):
         register_response = self.client.post(
             "/api/v1/auth/register/",
@@ -68,10 +81,10 @@ class TestMe(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["account_type"], User.ACCOUNT_TYPE_BUSINESS)
 
-    def test_me_response_matches_register_response_shape(self):
-        # RegisterView and MeView are deliberately built to return the
-        # exact same {id, email, account_type} shape (see MeView's own
-        # docstring) — confirm that's actually true, not just claimed.
+    def test_me_response_includes_role_flags_on_top_of_register_shape(self):
+        # RegisterView and MeView share the same base {id, email,
+        # account_type} shape, but MeView now also carries the two role
+        # flags P-040's router gate needs — confirm both halves.
         registered, access = self._register_and_login(
             "shape@example.com", User.ACCOUNT_TYPE_CUSTOMER
         )
@@ -79,11 +92,35 @@ class TestMe(APITestCase):
 
         response = self.client.get("/api/v1/auth/me/")
 
-        self.assertEqual(set(response.data.keys()), set(registered.keys()))
+        self.assertEqual(
+            set(response.data.keys()),
+            set(registered.keys()) | {"is_moderator", "is_staff"},
+        )
         self.assertEqual(response.data["id"], registered["id"])
         self.assertEqual(response.data["email"], registered["email"])
         self.assertEqual(response.data["account_type"], registered["account_type"])
+        # A fresh Customer registration defaults to both False.
+        self.assertFalse(response.data["is_moderator"])
+        self.assertFalse(response.data["is_staff"])
+        
+    def test_me_reflects_true_role_flags(self):
+        # Confirms the flags aren't hardcoded False — a real moderator
+        # account must see is_moderator=True, and a real staff account
+        # must see is_staff=True.
+        _, access = self._register_and_login(
+            "moderator@example.com", User.ACCOUNT_TYPE_CUSTOMER
+        )
+        user = User.objects.get(email="moderator@example.com")
+        user.is_moderator = True
+        user.is_staff = True
+        user.save(update_fields=["is_moderator", "is_staff"])
 
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+        response = self.client.get("/api/v1/auth/me/")
+
+        self.assertTrue(response.data["is_moderator"])
+        self.assertTrue(response.data["is_staff"])
+        
     def test_me_rejects_unauthenticated_request(self):
         response = self.client.get("/api/v1/auth/me/")
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
