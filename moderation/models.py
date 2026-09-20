@@ -11,12 +11,12 @@ based) so it never needs to change shape when a new content type is
 added later.
 """
 
+from django.conf import settings
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
 
 from core.models import TimestampedModel
-
 
 class ModerationQueue(TimestampedModel):
     """
@@ -126,3 +126,58 @@ class Moderatable(models.Model):
 
     class Meta:
         abstract = True
+
+
+
+class ModerationLog(TimestampedModel):
+    """
+    Permanent, append-only audit trail of every moderation decision
+    (Part P-037): who reviewed which queue item, what they decided,
+    and why.
+
+    Deliberately inherits ONLY TimestampedModel, NOT
+    core.models.SoftDeleteModel — the same documented exception as
+    ModerationQueue (P-036), for the same reason: an audit trail must
+    stay permanent. A soft-deleted log row would silently vanish from
+    the default manager, and the rejection reason and reviewer identity
+    must never be lost, even if the queue item is later cleaned up.
+
+    Both foreign keys use on_delete=PROTECT so that neither a queue item
+    nor a reviewer account can be deleted out from under an existing
+    log entry.
+
+    ``reason`` is blank=True at the database level because approvals
+    carry no reason. A non-empty reason for rejections is enforced in
+    the service layer (moderation/services.py), not as a DB constraint.
+
+    Rows are created ONLY by moderation.services.approve()/reject().
+    """
+
+    class Action(models.TextChoices):
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+
+    queue_item = models.ForeignKey(
+        ModerationQueue,
+        on_delete=models.PROTECT,
+        related_name="logs",
+    )
+    reviewer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="moderation_logs",
+    )
+    action = models.CharField(
+        max_length=20,
+        choices=Action.choices,
+    )
+    reason = models.TextField(blank=True)
+
+    class Meta:
+        db_table = "moderation_moderationlog"
+        verbose_name = "Moderation log entry"
+        verbose_name_plural = "Moderation log entries"
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"ModerationLog(queue_item={self.queue_item_id}, {self.action})"
