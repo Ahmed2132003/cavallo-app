@@ -4767,3 +4767,192 @@ environment baseline: all Docker Compose services (`db`, `redis`,
 `minio`, `web`, `celery_worker`, `celery_beat`) healthy/running as of
 this part's close.
 
+
+## PART P-036 — moderation app: ModerationQueue generic model + Moderatable mixin
+
+**Status: COMPLETE — verified against the real dev stack and pushed.**
+(`cavallo-app` `main` @ `9afb710`)
+
+### What was implemented
+- New top-level Django app `moderation/` (no `apps/` prefix — follows
+  the project-wide convention from P-011/P-012/P-013/P-016/P-024/P-025:
+  local apps live at `<name>/`, not `apps/<name>/`).
+- `ModerationQueue(TimestampedModel)` — generic-FK queue model
+  (`content_type`, `object_id`, `content_object`), `status`
+  (pending/approved/rejected, default pending), `priority`
+  (normal/fast_path, default normal — `fast_path` is defined now for
+  P-047/Stories to use once Phase 8 exists, not consumed yet).
+  Deliberately does **not** inherit `SoftDeleteModel` — documented
+  exception in the model's own docstring, same category of deviation
+  as `categories.Category` (P-025) not inheriting it, for a different
+  reason: a moderation audit/queue trail must stay permanent,
+  append-only infrastructure. Indexed on `(content_type, object_id)`
+  and on `status` for the future moderator list-pending query (P-038).
+- `Moderatable(models.Model)` — abstract mixin with a `status` field
+  (pending_review/published/rejected, default pending_review). Its
+  docstring flags this field name + these three choice values as a
+  **cross-cutting contract**: P-043's `.objects.published()` manager
+  will filter on `status == "published"` from this exact field on
+  whichever content model (Post/Reel/Story) inherits it. Any future
+  content type MUST inherit this mixin's `status` as-is rather than
+  defining its own similarly-named field.
+- `moderation/signals.py` — a single `post_save` receiver connected
+  **without** a `sender=` argument (i.e. fires for every model's save,
+  filtered inside via `isinstance(instance, Moderatable)`), following
+  the existing `categories/signals.py` + `apps.py.ready()` pattern
+  already established in this codebase (not a new convention). Creates
+  exactly one `ModerationQueue` row when `created=True` (first save
+  only) for any Moderatable subclass — no per-model wiring needed, so
+  Phase 7/8's Post/Reel/Story get moderation enqueueing for free just
+  by inheriting `Moderatable`.
+- `moderation/admin.py` — `ModerationQueue` registered as a **read-only**
+  Django Admin list view (`has_add/change/delete_permission` all
+  `False`) — real moderator actions (approve/reject) are explicitly
+  P-038's scope, not built here.
+- `moderation/tests/testapp/` — throwaway app providing a concrete
+  `DummyContent(Moderatable)` model for signal/model tests, same
+  pattern as `core.tests.testapp.Widget` (P-011): only added to
+  `INSTALLED_APPS` by `config/settings/test.py`, no migrations module,
+  never ships. (Named `DummyContent`, not `TestPost` — a `Test`-prefixed
+  class name would trigger a spurious pytest collection warning and
+  risks confusion with the real future `Post` model.)
+
+### Files created
+- `moderation/__init__.py`
+- `moderation/apps.py`
+- `moderation/models.py`
+- `moderation/signals.py`
+- `moderation/admin.py`
+- `moderation/migrations/__init__.py`
+- `moderation/migrations/0001_initial.py`
+- `moderation/tests/__init__.py`
+- `moderation/tests/test_models.py`
+- `moderation/tests/testapp/__init__.py`
+- `moderation/tests/testapp/apps.py`
+- `moderation/tests/testapp/models.py`
+
+### Files modified
+- `config/settings/base.py` — added `"moderation"` to `INSTALLED_APPS`
+  (after `"products"`). `django.contrib.contenttypes` was already
+  present (Django default), no change needed there.
+- `config/settings/test.py` — added `"moderation.tests.testapp"` to the
+  test-only `INSTALLED_APPS` extension, alongside the existing
+  `"core.tests.testapp"`.
+
+### Architecture decisions
+- Signal-based enqueue (not a `save()` override on the mixin) — decouples
+  enqueueing from the model's own save logic, so a future model
+  inheriting `Moderatable` never needs to remember to call
+  `super().save()` in any particular way for moderation to work.
+- `post_save` connected globally (no `sender=`) with an `isinstance`
+  filter inside the receiver, rather than one `@receiver(post_save,
+  sender=X)` per future content model — this is what makes "Phase 7/8
+  content types don't need their own duplicate signal wiring" actually
+  true, per this part's Definition of Done.
+- `ModerationQueue` explicitly does NOT inherit `SoftDeleteModel` —
+  reasoning documented directly in the model's docstring (append-only
+  audit trail, not user content); `ModerationLog` (P-037) will restate
+  the same exception for the same reason when it lands.
+
+### Commands used
+
+**Stage 1 — authoring verification (isolated sandbox: Django 5.2.17 +
+sqlite, `core` + `moderation` apps only, no Postgres/Docker/Celery/MinIO):**
+```
+python -m venv venv
+pip install "Django==5.2.*" pytest pytest-django
+python -m django makemigrations moderation   # generated 0001_initial.py
+python -m pytest moderation/ -v
+```
+Used to produce `0001_initial.py` via a real `makemigrations` run
+(rather than hand-writing it) and to sanity-check model/signal logic
+before touching the real stack.
+
+**Stage 2 — final verification against the real project stack** (run by
+Ahmed, from `D:\Cavallo\scd-backend`, against the actual running Docker
+Compose services and the real dev Postgres database):
+```
+docker compose ps
+docker compose exec web python manage.py makemigrations --check --dry-run moderation
+docker compose exec web python manage.py migrate moderation
+docker compose exec web pytest moderation/ -v
+```
+
+### Test results — final, confirmed against the real stack
+- `makemigrations --check --dry-run moderation`: **"No changes
+  detected in app 'moderation'"** — the committed `0001_initial.py`
+  matches the models exactly, no drift.
+- `migrate moderation`: **applied cleanly** against the real dev
+  Postgres database —
+  `Applying moderation.0001_initial... OK`. No other app's migrations
+  were touched.
+- `pytest moderation/ -v`: **8/8 passed**, run inside the `web`
+  container against `config.settings.test` (Python 3.12.14, Django
+  5.2.17, pytest 8.4.2):
+  - creating a `Moderatable` instance creates exactly one
+    `ModerationQueue` row
+  - that row's `content_object` resolves back to the instance via the
+    generic FK
+  - editing the same instance twice more does **not** create additional
+    rows (enqueue-once-on-creation-only, confirmed)
+  - new queue rows default to `status=pending`, `priority=normal`
+  - new `Moderatable` instances default to `status=pending_review`
+  - saving a non-`Moderatable` model does not create a queue row (the
+    sender-less receiver correctly ignores it)
+  - `ModerationQueue` has no `is_deleted`/`deleted_at` fields
+  - `ModerationQueue` has no `.all_objects` manager (confirming it does
+    not inherit `SoftDeleteModel`)
+
+Both stages agree exactly — no discrepancy between the sandbox and the
+real stack.
+
+### Known issues / caveats
+- One deviation encountered during Stage 2, environment-only, not a
+  code issue: running `python manage.py ...` directly against the
+  Windows-native Python (outside the `web` container) fails with
+  `ModuleNotFoundError: No module named 'environ'`, since project
+  dependencies are installed inside the Docker image, not on the host.
+  Fixed by prefixing every management command with
+  `docker compose exec web ...`. Documented here only so a future
+  session doesn't re-diagnose it from scratch — not a moderation-app
+  bug, and does not affect this part's Definition of Done.
+- `pytest.ini`'s `addopts = --ds=config.settings.test` was not itself
+  touched — no change needed there, since `moderation.tests.testapp` is
+  added via `config/settings/test.py`'s existing `INSTALLED_APPS`
+  extension pattern.
+
+### Files created (as committed)
+`moderation/__init__.py`, `moderation/admin.py`, `moderation/apps.py`,
+`moderation/models.py`, `moderation/signals.py`,
+`moderation/migrations/__init__.py`, `moderation/migrations/0001_initial.py`,
+`moderation/tests/__init__.py`, `moderation/tests/test_models.py`,
+`moderation/tests/testapp/__init__.py`, `moderation/tests/testapp/apps.py`,
+`moderation/tests/testapp/models.py` — 12 new files.
+
+### Files modified (as committed)
+`config/settings/base.py` (added `"moderation"` to `INSTALLED_APPS`),
+`config/settings/test.py` (added `"moderation.tests.testapp"`).
+
+### Git reference
+`cavallo-app` `main` — commit `9afb710` ("update"), pushed on top of
+`9625e88`. 14 files changed, 417 insertions(+), 1 deletion(-).
+https://github.com/Ahmed2132003/cavallo-app/commit/9afb710
+
+### Remaining work
+P-037 (ModerationLog audit-trail model) and P-038 (the review/
+approve/reject API gating on `HasCapability(...)` from P-019) build
+directly on top of this part's `ModerationQueue`/`Moderatable`. Neither
+was built here — out of this part's explicit scope. Phase 7's Post/Reel
+models and Phase 8's Story model are the first real (non-test)
+consumers of `Moderatable`; when building them, inherit `Moderatable`'s
+`status` field exactly as defined here (do not redefine it), since
+P-043's `published()` manager depends on that exact field/value
+contract.
+
+### Exact next starting point
+Phase 6's `ModerationQueue`/`Moderatable` foundation is live on `main`
+(`9afb710`) and verified against the real Docker/Postgres dev stack.
+P-037 (ModerationLog audit-trail model) is unblocked and ready to
+begin. Baseline to preserve: `cavallo-app` `main` @ `9afb710`,
+`docker compose ps` all services healthy, `pytest moderation/` = 8
+passing.
