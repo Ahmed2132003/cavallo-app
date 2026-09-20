@@ -65,6 +65,8 @@ INSTALLED_APPS = [
     "businesses",
     "categories",  # Part P-025: self-referencing category tree.
     "products",  # Part P-031: Product + ProductVariant (non-transactional).
+    "moderation",  # Part P-036: ModerationQueue + Moderatable mixin.
+
 
 ]
 

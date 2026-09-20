@@ -17,4 +17,7 @@ history.
 
 from .dev import *  # noqa: F401,F403
 
-INSTALLED_APPS = INSTALLED_APPS + ["core.tests.testapp"]  # noqa: F405
+INSTALLED_APPS = INSTALLED_APPS + [
+    "core.tests.testapp",
+    "moderation.tests.testapp",  # Part P-036
+]  # noqa: F405
