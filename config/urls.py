@@ -53,4 +53,5 @@ urlpatterns = [
     # Every route is gated by HasCapability("can_moderate_content"); see
     # moderation/views.py.
     path("api/v1/moderation/", include("moderation.urls")),
+    path("api/v1/posts/", include("content.urls")),
 ]
