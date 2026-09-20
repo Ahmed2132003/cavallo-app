@@ -5310,3 +5310,91 @@ commands. `pytest moderation/` → 68/68 passed, no regressions.
 P-039 fully done and pushed. Next dependent part: **P-105** (Phase 21 monitoring),
 which wires real alerting on top of `event == "moderation_sla_breach"`. Parts P-040
 through P-104 are unrelated and can proceed independently.
+
+## PART P-040 — Moderator Review UI (In-App Flutter) — ✅ COMPLETE
+
+**Status: COMPLETE — implemented, unit/widget tested, and verified by a real approve + reject cycle on the Android emulator against the real dev backend (Docker Compose + Postgres, port 8095). Pushed.**
+`cavallo-mobile` `main` @ `c90d902` · `cavallo-app` `main` @ `d019766`
+
+### 🔒 PHASE 6 GATE — Phase 6 (Moderation) is COMPLETE
+P-036 ✅ (`9afb710`) · P-037 ✅ (`6c1576b`) · P-038 ✅ (`cb10f3c`) · P-039 ✅ (`c0e2d2b`) · P-040 ✅ (this part).
+The moderation pipeline (queue → SLA alert job → API → in-app moderator UI) is now end to end. **Phase 7 (Posts/Reels) may begin**; its first part is **P-041**.
+
+### Gap found in exposing `isModerator` / `isStaff` to Flutter — RESOLVED with a small backend addition
+Before this part, no endpoint returned the caller's role flags: `GET /api/v1/auth/me/` returned only `{id, email, account_type}`, and the Flutter `User` entity had only `id/email/accountType`. The router gate could not be built without a real source of truth, so a minimal backend addition was made **first** (a deviation from the spec's "no backend change", flagged and done deliberately):
+- `accounts/views.py` — `MeView` now returns `{id, email, account_type, is_moderator, is_staff}`. `is_superuser` is deliberately NOT exposed (`is_staff` already covers the Admin role, per `accounts/models.py`).
+- `accounts/tests/test_me.py` — the shape test now expects the two extra keys (fresh Customer → both `false`); new test `test_me_reflects_true_role_flags` (flags are not hardcoded). Also added `cache.clear()` in `setUp`/`tearDown`: `LoginRateThrottle` (5/min, Redis cache) was tripping spuriously because this class logs in up to twice per test.
+- `register()` in Flutter hardcodes both flags `false` (the register endpoint does not return them, and registration can never grant them).
+
+### What was implemented (Flutter, `D:\Cavallo\social_commerce_app`)
+A new feature folder **`lib/features/moderation/{data,domain,presentation}/`** — a deliberate, documented addition to P-001's original skeleton (which had no moderation feature).
+- **Data:** `ModerationRepositoryImpl` → `GET /api/v1/moderation/queue/?page_size=100[&priority=]`, `POST .../{id}/approve/`, `POST .../{id}/reject/` `{reason}` via `dioClientProvider`; `QueueItemResponseDto` (pure JSON mirror of the P-038 shape).
+- **Domain:** `QueueItem` entity (id, contentType, status, priority, createdAt, ageDuration, previewText, previewImageUrl, submitter business name or null); `ModerationRepository`; `queue_sla.dart` (thresholds + `urgencyFor`).
+- **Presentation:** `moderationQueueProvider` (`AsyncNotifier<List<QueueItem>>` with `approve(id)` / `reject(id, reason)` / `refresh()`), `ModerationQueueScreen`, `ModerationReviewScreen`, shared `moderation_widgets.dart` (`PriorityBadge`, `QueueAgeChip`, `QueuePreviewThumbnail`, age formatting).
+- **Routing:** `/moderation` and `/moderation/review` (+ route names). **Third redirect gate** in `appRouterProvider`, layered on the base auth gate and the Business-account gate: anything under the `/moderation` prefix needs `isModerator || isStaff`, else redirect to `/home`. Enforced in `redirect` itself (runs for `context.go/push`, deep links, restored locations), NOT by hiding a menu entry. The review route without a `QueueItem` in `extra` (deep link / restore) goes back to `/moderation`. The role check runs first.
+- **Auth layer:** `User` now has **required** `isModerator` and `isStaff`; `MeResponseDto` + `fetchMe()` carry them.
+- **Home:** temporary debug button "Moderation queue (debug)", visible only when `isModerator || isStaff` (nothing else in the app links to `/moderation` yet).
+
+### Files created
+Mobile `lib/features/moderation/`: `data/dtos/queue_item_response_dto.dart`, `data/moderation_repository_impl.dart`, `domain/moderation_repository.dart`, `domain/queue_item_entity.dart`, `domain/queue_sla.dart`, `presentation/moderation_provider.dart`, `presentation/moderation_queue_screen.dart`, `presentation/moderation_review_screen.dart`, `presentation/moderation_widgets.dart`.
+Mobile tests: `test/features/moderation/data/dtos/queue_item_response_dto_test.dart`, `.../data/moderation_repository_impl_test.dart`, `.../domain/queue_sla_test.dart`, `.../presentation/{moderation_provider,moderation_queue_screen,moderation_review_screen,moderation_widgets}_test.dart`, `test/routing/moderation_router_gate_test.dart`, `test/features/feed/presentation/home_screen_test.dart`.
+Backend: none.
+
+### Files modified
+Backend: `accounts/views.py`, `accounts/tests/test_me.py`.
+Mobile: `lib/features/auth/domain/user_entity.dart`, `lib/features/auth/data/dtos/me_response_dto.dart`, `lib/features/auth/data/auth_repository_impl.dart`, `lib/routing/app_router.dart`, `lib/routing/route_names.dart`, `lib/features/feed/presentation/home_screen.dart`; tests that build `User(...)` directly, updated for the two new required fields: `test/features/auth/data/auth_repository_impl_test.dart` (+3 `fetchMe` tests, which previously had zero coverage), `.../login_screen_test.dart`, `.../register_screen_test.dart`, `.../session_provider_test.dart`, `test/routing/app_router_test.dart`, `test/routing/app_router_redirect_test.dart`, `test/features/business_profile/business_profile_router_gate_test.dart`.
+
+### Important implementation details / architecture decisions
+- **Ordering is client-side:** `fast_path` first, then oldest first inside each tier, ties by lower queue id (stable across refreshes). The backend returns newest-first (`-created_at`) and the repository leaves it untouched.
+- **Age colour is relative to each priority's own SLA**, mirroring P-039's constants (`moderation/tasks.py`): fast_path green < 15 min, amber 15–30 min, red > 30 min; normal green < 2 h, amber 2–4 h, red > 4 h. Boundary matches the backend (`created_at < cutoff`): exactly 30:00 is still amber. Colour is not the only signal (icon changes; breached items say "overdue"). If P-039's constants are retuned, only the four durations in `queue_sla.dart` change. The `fast_path` badge uses the theme's primary colour on purpose, so it is never confused with the age colours.
+- **Age is a snapshot** from the last load/refresh; it does not tick by itself.
+- **approve/reject decision (documented in the provider):** call the backend first, remove the item from local state only after success — no refetch (a full 100-item round trip per decision) and no optimistic removal (an item would vanish even if the call failed). 409/404 (already decided elsewhere / gone) also remove the item locally. A second tap on the same id while a request is in flight is ignored. `reject` trims the reason and throws `ArgumentError` on a blank one before any network call.
+- **Provider is `autoDispose` with `retry` disabled** (the spec did not say autoDispose; chosen so the queue is not held in memory after leaving the screen, and so a 403 shows immediately instead of Riverpod 3's automatic retry-with-backoff leaving the screen "loading").
+- **Review screen:** the `QueueItem` is a constructor parameter (via router `extra`, like `ProductFormScreen.existingProduct`), no id lookup, no GoRouter dependency inside the screen. `Navigator.pop` result: `true` = decided, `false` = no longer pending (409/404), `null` = backed out. Approve has no confirmation dialog (fast path for back-to-back decisions; a snackbar "Item approved" confirms). Reject opens a dialog whose confirm button is disabled until the trimmed reason is non-empty (same rule as the backend); the dialog cannot be dismissed by tapping outside, and the request runs inside the dialog so a failure keeps the typed reason.
+- **403 handling:** both screens show a readable message ("ask an admin to add it to the Moderator group") instead of the raw permission text.
+- **`User` constructor now requires both flags.** Any future part that builds `User(...)` (tests included) must pass `isModerator` and `isStaff`. The original STEP 2 listed 5 construction sites; `flutter analyze` found 8 more in 3 routing/business_profile test files — all fixed.
+
+### Verification performed
+**Automated (all green):** `flutter analyze` → `No issues found!`; `flutter test` → **364 passed** (≈100 new: 85 in `test/features/moderation/`, 8 router-gate, 4 Home-button, 3 `fetchMe`). Router-gate tests cover: signed-out → `/login`; plain user → `/home` by path and by route name; plain user blocked from the review route even with a valid item; `isModerator` alone reaches `/moderation`; `isStaff` alone reaches it; tapping a row opens review; review without an item → back to queue. Backend `pytest -q -rs` → **283 passed, 1 skipped** (`moto` not installed, pre-existing); `pytest accounts/tests/test_me.py` → 6 passed.
+
+**Manual, on the real backend** (Android emulator Pixel 2, `10.0.2.2:8095`, account `p040.mod@example.com` = `is_moderator` + Moderator Group). Phase 7 content does not exist yet, so the dev `web` container was temporarily run with a throwaway settings module adding P-036's `DummyContent` test model (`migrate --run-syncdb`) and 5 seeded pending items (fast_path 40 min / 20 min; normal 5 h / 3 h / 1 min):
+- Queue order fast_path first, oldest first; badges and colours: red + "overdue", amber, green — matched exactly. Header counter "5 pending · 2 fast path" ✅
+- Approve on the top item → snackbar, item left the list without a refetch (5 → 4) ✅
+- Reject: button disabled while the reason was empty/whitespace, enabled after typing; item left the list (4 → 3) ✅
+- Backend records after the two actions: queue rows `approved` / `rejected` with content `published` / `rejected`; `ModerationLog` has 2 rows (`approved`, reason `''`; `rejected`, reason `'1'`), both `reviewer=p040.mod@example.com`; the other 3 items still `pending` ✅
+
+**NOT manually verified on the device/real backend (covered by automated tests only, stated honestly):** the `is_moderator`-without-Group account (403 message), the plain Customer account being blocked from `/moderation` (router-gate tests prove the redirect; no real blocked account was driven through the app), and the 409 path (item decided on the server while its review screen is open).
+
+**Cleanup done:** `p040_cleanup.py` removed the seeded queue rows, logs, `DummyContent` rows, its table, its content type and the 3 test users; `web` recreated → `DJANGO_SETTINGS_MODULE=config.settings.dev`; the 8 temporary verification files were removed from the repo (`b1b6697`). The dev DB again has no `Moderatable` content.
+
+### Commands
+```powershell
+# Flutter — from D:\Cavallo\social_commerce_app
+flutter analyze
+flutter test test/features/moderation/
+flutter test
+
+# Backend — from D:\Cavallo\scd-backend
+docker compose exec web pytest accounts/tests/test_me.py -v
+docker compose exec web pytest -q -rs
+```
+
+### Known issues / flagged, not blocking
+- **One bad queue row breaks the whole queue (backend, P-038):** during manual verification a stray pending `ModerationQueue` row whose content was `accounts.User` (not `Moderatable`, so no `get_moderation_preview`) made `GET /moderation/queue/` return **500** for everyone (`AttributeError` in `ModerationQueueSerializer.get_preview`). The row was hand-made (the signal only enqueues `Moderatable` instances) and was deleted. Not fixed here (P-040 must not change the backend). Suggested hardening for a later backend part: resolve `get_moderation_preview` with `getattr(..., None)` and skip/flag rows that lack it.
+- **Only the first page is loaded (≤ 100 items, newest first).** The client sorts what it has but does not follow `next`. With more than 100 pending items, the OLDEST (most SLA-critical) items are not visible until newer ones are cleared. Proper fix = oldest-first ordering / a dedicated paginator on the backend (already flagged in P-038), or client-side paging.
+- **Role-flag vs capability gap:** the Flutter gate follows the spec (`is_moderator || is_staff`), but the backend authorizes with `HasCapability("can_moderate_content")` (Moderator/Admin Group). An account with `is_moderator=True` but no Group passes the gate and then gets 403 from the API — the app shows the readable "Moderator group" message. Aligning the two (e.g. exposing the capability on `/auth/me/`) needs a decision.
+- **Temporary "Moderation queue (debug)" button on Home** — remove once moderators have a real navigation entry.
+- Two small private helpers in `moderation_review_screen.dart` (`_isNoLongerPending`, `_actionErrorMessage`) duplicate a rule from the notifier and the 403 text from the queue screen; earlier closed steps were not touched to unify them.
+- The default backend preview has no image, so rows show a placeholder icon until Phase 7/8 override `get_moderation_preview()` (rule already recorded under P-038).
+- Git hygiene: the temporary verification files (including a local test password for accounts that no longer exist) were pushed in `c64f87f` and removed in `b1b6697` — they remain in history. `celerybeat-schedule` (runtime state file) was committed again in `d019766`; still needs a `.gitignore` entry (see P-039).
+- No bulk approve/reject (explicitly out of scope; possible later enhancement). No notification to the business owner on approve/reject (Phase 13).
+
+### Remaining work
+Nothing for P-040. Optional follow-ups: the backend hardening and ordering/paging items above; remove the debug button; decide the `is_moderator` vs `can_moderate_content` alignment.
+
+### Git reference
+- `cavallo-mobile` `main`: `eea0de9` (auth role flags) → `738afa5` (moderation data/domain/provider/queue screen/widgets) → `c90d902` (review screen, routes + gate, Home button, gate tests). https://github.com/Ahmed2132003/cavallo-mobile/commit/c90d902
+- `cavallo-app` `main`: `4da7621` (`MeView` role flags + `test_me.py`), `b1b6697` (removed temporary verification files), `d019766` (state file). https://github.com/Ahmed2132003/cavallo-app/commit/d019766
+
+### Exact next starting point
+Start **P-041 — content App: Post Model (Moderatable) + CRUD Endpoints** (Phase 7; depends on P-036–P-040, all done). Baselines to preserve: backend `cavallo-app` `main` @ `d019766`, `pytest -q` = 283 passed / 1 skipped, `moderation` migrations at `0002_moderationlog`; Flutter `cavallo-mobile` `main` @ `c90d902`, `flutter analyze` clean, `flutter test` = 364 passed. Rules P-041/P-042 must follow: inherit `Moderatable` without redefining `status`; change status only through `moderation.services.approve()/reject()`; **override `get_moderation_preview()`** (exactly `{"preview_text", "preview_image_url"}`) and expose a `business` attribute so the queue shows the submitter; add a test proving the override reaches the queue API; any Flutter code that builds `User(...)` must pass `isModerator` and `isStaff`. To see real Posts in the moderator UI after P-041, log in with a Moderator-Group account (created via Django Admin Group assignment) — the temporary verification kit (`p040_users.py`, `p040_seed.py`, `manual_p040.py`, `docker-compose.p040.yml`) can be recovered from commit `c64f87f` if a `DummyContent`-style fixture is ever needed again.
