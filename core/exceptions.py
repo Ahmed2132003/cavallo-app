@@ -20,7 +20,7 @@ part should build its own custom error response.
 
 from django.conf import settings
 from rest_framework import status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 
@@ -45,6 +45,10 @@ _EXCEPTION_CODE_MAP = {
     # for why it needs its own entry rather than falling through to a
     # dict lookup crash.
     "token_not_valid": "AUTHENTICATION_FAILED",
+    # Part P-038: a state conflict (e.g. a moderation item that was
+    # already approved/rejected). Additive only: no existing code or
+    # envelope field changes. See ConflictError below.
+    "conflict": "CONFLICT",
 }
 
 # Human-readable fallback messages, used only when the exception itself
@@ -57,11 +61,25 @@ _DEFAULT_MESSAGES = {
     "NOT_ACCEPTABLE": "Could not satisfy the request's Accept header.",
     "UNSUPPORTED_MEDIA_TYPE": "Unsupported media type.",
     "THROTTLED": "Request was throttled.",
+    "CONFLICT": "The request conflicts with the current state of the resource.",
     "PARSE_ERROR": "Malformed request.",
     "VALIDATION_ERROR": "Invalid input.",
     "SERVER_ERROR": "An unexpected error occurred.",
     "ERROR": "An error occurred.",
 }
+
+
+class ConflictError(APIException):
+    """
+    HTTP 409. Raise when a request is valid but cannot be applied
+    because the resource is no longer in the required state (for
+    example, moderating an item that was already decided). Comes out of
+    custom_exception_handler as code "CONFLICT" in the standard envelope.
+    """
+
+    status_code = 409
+    default_detail = "The request conflicts with the current state of the resource."
+    default_code = "conflict"
 
 
 def _extract_message(exc, code):

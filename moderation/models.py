@@ -126,6 +126,34 @@ class Moderatable(models.Model):
 
     class Meta:
         abstract = True
+        
+    
+    def get_moderation_preview(self):
+        """
+        Return a small, content-type-agnostic preview of this object for
+        the moderator queue API (Part P-038).
+
+        The moderation queue is generic: it does not know whether a row
+        points at a Post, a Reel or a Story. Instead of hardcoding
+        per-type logic in the serializer, the serializer calls this
+        method on ``queue_item.content_object``.
+
+        Contract: return a dict with EXACTLY these two keys:
+            {"preview_text": str, "preview_image_url": str | None}
+
+        This default works with no override (str(self) truncated to 200
+        characters, no image), which keeps the queue API fully usable
+        and testable before any real content type exists.
+
+        Concrete subclasses (Post, Reel, Story — Phases 7/8) SHOULD
+        override this to return something useful to a moderator (the
+        real caption text, the real thumbnail URL). Leaving the generic
+        fallback in production content is a gap, not a design choice.
+        """
+        return {
+            "preview_text": str(self)[:200],
+            "preview_image_url": None,
+        }
 
 
 

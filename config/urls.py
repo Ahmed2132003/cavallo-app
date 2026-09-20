@@ -49,4 +49,8 @@ urlpatterns = [
     # necessarily takes a URL-supplied id even for the owner's own
     # write path (PATCH/DELETE), unlike businesses/me/ above.
     path("api/v1/products/", include("products.urls")),
+    # Part P-038: moderator queue API (list pending, approve, reject).
+    # Every route is gated by HasCapability("can_moderate_content"); see
+    # moderation/views.py.
+    path("api/v1/moderation/", include("moderation.urls")),
 ]
