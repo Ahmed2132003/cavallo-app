@@ -201,6 +201,22 @@ CELERY_TIMEZONE = "UTC"
 
 
 # ---------------------------------------------------------------------------
+# Celery Beat schedule — Part P-039. Architecture Section 17 names
+# check_moderation_sla the single most important background job in the
+# system: without it, a moderation backlog is silently invisible until
+# someone happens to check the queue, and a fast_path (Story) item can
+# expire on its own 24h TTL before a human ever reviews it. Every 5
+# minutes is deliberately tight relative to the 30-minute fast_path
+# threshold, so a breach is caught within one Beat tick of crossing it.
+# ---------------------------------------------------------------------------
+CELERY_BEAT_SCHEDULE = {
+    "check-moderation-sla": {
+        "task": "moderation.check_moderation_sla",
+        "schedule": 300.0,  # every 5 minutes, in seconds
+    },
+}
+
+# ---------------------------------------------------------------------------
 # DRF / JWT
 # ---------------------------------------------------------------------------
 REST_FRAMEWORK = {
