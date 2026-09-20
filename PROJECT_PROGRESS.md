@@ -4639,3 +4639,131 @@ The app has no navigation entry to a business yet (Discover/Search come in later
 
 ### Exact next starting point
 Start the part that follows P-034 in the Master Plan (P-033 and P-034 were marked parallelizable; check the Master Plan for the next numbered part and its dependencies). Baseline to preserve: `cavallo-mobile` `main` at `ab9be96`, `flutter test` = 264 passing, `flutter analyze` = the 2 pre-existing warnings only.
+
+
+## PART P-035 — Product Image Upload End-to-End Verification — ✅ COMPLETE
+
+**Status:** Complete. Genuine end-to-end verification performed against
+the real local dev stack (Docker Compose backend + MinIO + Android
+emulator Flutter build) — not simulated, not per-layer only.
+**Repo / commit:** No new commit. `git status` confirmed clean before
+and after this part (`nothing to commit, working tree clean`) — this
+part required zero source-code changes; only a local Docker image
+rebuild (see "Deviations encountered" below), which is an environment
+action, not a tracked file change.
+**Backend changes:** none. **Flutter changes:** none.
+
+### Verification performed (all steps, for real, against the running stack)
+
+1. **Business product creation with a real image** — logged in as a
+   Business account, created a product via the Flutter product-creation
+   form (P-033) with a real PNG image. Upload UI showed a clear
+   in-progress → success state (no hang, no silent failure).
+2. **Backend/storage confirmation** — `Product.objects.order_by('-id').first()`
+   returned the new product (`id=2`, `business_id=3`,
+   `image='products/scaled_33_zjixuOh.png'`) — non-empty image field,
+   confirming the file genuinely reached MinIO (P-013), not just a
+   DB-level acceptance.
+3. **Owner-side rendering** — image rendered correctly in the
+   business's own product list/edit view (P-033).
+4. **Customer-side rendering (different session)** — opened the same
+   product (`id=2`) via the public product detail screen (P-034).
+   `Product.image.url` resolved to a valid signed MinIO URL
+   (`http://10.0.2.2:9010/scd-dev-media/products/scaled_33_zjixuOh.png?...`),
+   and the image rendered correctly in that separate/customer-facing
+   view — confirming the P-033-HOTFIX public-endpoint-URL fix is live
+   and working, not just theoretically deployed.
+5. **Invalid file rejection** — attempted upload of a deliberately
+   invalid file (non-image content with a `.jpg` extension) through
+   the same Flutter form. Backend's `validate_upload` (P-013) rejected
+   it; Flutter UI surfaced a clear, specific error message rather than
+   a crash, an indefinitely stuck spinner, or a generic
+   "something went wrong". User-confirmed as working correctly
+   end-to-end; no bug found at this step.
+
+### Deviations encountered during manual verification (outside this
+part's original scope, fixed as an environment-only side step before
+verification could proceed — no source file touched)
+- `celery_worker` and `celery_beat` containers were stuck in a
+  `Restarting` crash loop (`ModuleNotFoundError: No module named
+  'phonenumbers'`) at the start of this part's environment check.
+  `phonenumbers==9.*` was already correctly present in
+  `requirements.txt` — the actual cause was a **stale local Docker
+  image** for those two services (built before `phonenumbers` was
+  added, never rebuilt on a later `docker compose up`/`restart`,
+  unlike `web` which had been rebuilt). Fixed by
+  `docker compose build celery_worker celery_beat` followed by
+  `docker compose up -d celery_worker celery_beat`; confirmed via
+  `docker compose logs celery_worker` showing a clean
+  `celery@... v5.6.3` startup with no import errors. Not a project
+  code bug, not related to the P-013/P-032/P-033 media pipeline
+  (Celery is not in that pipeline's request path), and does not
+  affect this part's Definition of Done — documented here only so a
+  future developer doesn't re-diagnose it from scratch if it recurs
+  after another local `.env`/`requirements.txt` change without a
+  rebuild.
+
+### Files created
+None.
+
+### Files modified
+None. (No source files were touched in either `cavallo-app` or
+`cavallo-mobile` during this part — every acceptance criterion passed
+on first verification.)
+
+### Commands used
+```
+docker compose up -d
+docker compose ps
+docker compose logs minio --tail 50
+docker compose build celery_worker celery_beat
+docker compose up -d celery_worker celery_beat
+docker compose logs celery_worker --tail 20
+docker compose exec web python manage.py shell -c "from products.models import Product; p = Product.objects.order_by('-id').first(); print(p.id, p.name, p.business_id, p.image)"
+docker compose exec web python manage.py shell -c "from products.models import Product; p = Product.objects.get(id=2); print(p.image.url)"
+```
+(all run from `D:\Cavallo\scd-backend`)
+
+### Test results (final, confirmed)
+- `docker compose ps`: `db`, `redis`, `minio`, `web` all `healthy`/`Up`
+  throughout; `celery_worker`/`celery_beat` `healthy` after the rebuild
+  above.
+- Product `id=2` created with a real image, `image` field non-empty,
+  file confirmed present via MinIO-backed `image.url` resolving and
+  rendering.
+- Public/customer detail view (P-034) rendered the same image and
+  product data correctly from a separate view.
+- Invalid-file upload: rejected by the backend and surfaced with a
+  clear, specific error in the Flutter UI (per user confirmation;
+  exact backend status code / response body and exact UI copy were
+  not independently captured in this session's transcript — if a
+  precise regression test needs this exact wording later, re-run
+  STEP 4's `curl` command from this part's own execution log).
+
+### Known issues
+- None new. Pre-existing known issues from P-033/P-033-HOTFIX/P-034
+  (documented in their own entries above) are unchanged and still
+  apply — in particular P-034's note that product images depend on
+  P-033-HOTFIX being deployed, which this part has now independently
+  re-confirmed as working on this machine.
+
+### Definition of Done — Phase 5 status
+**Phase 5: COMPLETE.** The full media pipeline (Flutter upload UI →
+P-032 backend endpoint → P-013 MinIO storage → owner view → public
+customer view, plus graceful invalid-file rejection) is proven
+end-to-end on a real running stack, not just verified per-layer. This
+exact pipeline is now considered stable and ready to be reused
+unchanged by Posts, Reels, Stories, and Chat media in every later
+phase (Phase 6 onward) — no changes to P-013/P-032/P-033 are expected
+to be needed for that reuse based on this verification.
+
+### Exact next starting point
+Phase 6 (Moderation, per the Master Plan's own Phase-5-completion gate)
+is unblocked and ready to begin. Baseline to preserve: `cavallo-mobile`
+`main` at `ab9be96` (unchanged by this part), `flutter test` = 264
+passing, `flutter analyze` = the 2 pre-existing warnings only;
+`cavallo-app` `main` unchanged by this part (no new commit). Local dev
+environment baseline: all Docker Compose services (`db`, `redis`,
+`minio`, `web`, `celery_worker`, `celery_beat`) healthy/running as of
+this part's close.
+
