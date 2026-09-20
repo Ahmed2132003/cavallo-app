@@ -5398,3 +5398,158 @@ Nothing for P-040. Optional follow-ups: the backend hardening and ordering/pagin
 
 ### Exact next starting point
 Start **P-041 — content App: Post Model (Moderatable) + CRUD Endpoints** (Phase 7; depends on P-036–P-040, all done). Baselines to preserve: backend `cavallo-app` `main` @ `d019766`, `pytest -q` = 283 passed / 1 skipped, `moderation` migrations at `0002_moderationlog`; Flutter `cavallo-mobile` `main` @ `c90d902`, `flutter analyze` clean, `flutter test` = 364 passed. Rules P-041/P-042 must follow: inherit `Moderatable` without redefining `status`; change status only through `moderation.services.approve()/reject()`; **override `get_moderation_preview()`** (exactly `{"preview_text", "preview_image_url"}`) and expose a `business` attribute so the queue shows the submitter; add a test proving the override reaches the queue API; any Flutter code that builds `User(...)` must pass `isModerator` and `isStaff`. To see real Posts in the moderator UI after P-041, log in with a Moderator-Group account (created via Django Admin Group assignment) — the temporary verification kit (`p040_users.py`, `p040_seed.py`, `manual_p040.py`, `docker-compose.p040.yml`) can be recovered from commit `c64f87f` if a `DummyContent`-style fixture is ever needed again.
+
+## PART P-041 — content App: Post Model (Moderatable) + CRUD Endpoints — ✅ COMPLETE
+
+**Status: COMPLETE — verified against the real Docker Compose dev stack (Postgres 16 + Redis 7 + MinIO) and pushed.**
+(`cavallo-app` `main` @ `36ffe0f`)
+
+### What was implemented
+New top-level Django app `content/` (no `apps/` prefix — same convention
+as `moderation/`/`products/`). First real, non-throwaway consumer of
+Phase 6's `Moderatable` mixin.
+
+- `content/models.py` — `Post(Moderatable, TimestampedModel, SoftDeleteModel)`:
+  `business` (FK to `businesses.BusinessProfile`, `on_delete=PROTECT`,
+  `related_name="posts"` — same on_delete choice as `Product.business`,
+  P-031), `caption` (`TextField`), `image` (`FileField`, plain not
+  `ImageField` — same P-013/P-032 convention, no Pillow dependency).
+  Overrides `get_moderation_preview()` returning
+  `{"preview_text": caption[:200], "preview_image_url": image.url or None}`.
+  Composite index on `business`.
+- `content/serializers.py` — `PostSerializer`: write fields `caption`,
+  `image` only; `id`/`business`/`status`/timestamps all `read_only_fields`
+  (rendered on read, silently dropped from any write). `validate_image()`
+  calls `core.media.validate_upload()` with the same
+  jpeg/png/webp + 5MB limits as `ProductSerializer` (P-032).
+- `content/views.py`:
+  - `PostListCreateView` — GET lists only the authenticated business's
+    own posts (`request.user.business_profile`, real attribute has the
+    underscore); POST always attributes via `serializer.save(business=...)`
+    in `perform_create()`. No business profile → 403 on POST, empty list
+    on GET. `StandardCursorPagination` applied.
+  - `PostDetailView` — GET is `AllowAny` (public). PATCH/DELETE require
+    auth + an explicit `post.business.user_id != request.user.id` check
+    inside `perform_update()`/`perform_destroy()` (defense in depth, same
+    as `ProductDetailView`). DELETE is the inherited soft delete.
+    Object lookup uses a local `_get_post_or_404()` raising DRF's
+    `NotFound` explicitly (not `django.shortcuts.get_object_or_404`), per
+    the P-038 rule — confirmed the error envelope's `code` is `NOT_FOUND`.
+  - No public "list all visible posts" endpoint — deliberately deferred
+    to P-043's shared `published()` manager (Post + Reel).
+- `content/urls.py` / `config/urls.py` — `/api/v1/posts/` (own list/create),
+  `/api/v1/posts/<int:pk>/` (detail). Same include pattern as
+  `products.urls`/`moderation.urls`.
+- `content/admin.py` — `Post` registered, `status` shown as
+  `readonly_fields` (still only ever changed via `moderation.services`).
+
+### Files created
+`content/__init__.py`, `content/apps.py`, `content/models.py`,
+`content/admin.py`, `content/serializers.py`, `content/views.py`,
+`content/urls.py`, `content/migrations/__init__.py`,
+`content/migrations/0001_initial.py`, `content/tests/__init__.py`,
+`content/tests/test_models.py`, `content/tests/test_api.py` — 12 new
+files.
+
+### Files modified
+`config/settings/base.py` (added `"content"` to `INSTALLED_APPS`, after
+`"moderation"`), `config/urls.py` (added
+`path("api/v1/posts/", include("content.urls"))`, after the
+`moderation.urls` include).
+
+### Important implementation details / deviations from the spec
+- **Paths:** the spec says `apps/content/`. Real project convention
+  (unchanged since P-011/P-031/P-036/P-038): top-level `content/`.
+- **`User.objects.create_user()` still requires `username`** (the
+  custom `User` still inherits Django's default `AbstractUser`/
+  `UserManager` unmodified — the USERNAME_FIELD question flagged as
+  unresolved back in P-018 is still open). Every test in this part
+  passes `username=email` explicitly. **Flagging again for whoever
+  eventually resolves the P-018 TODO**: this repo-wide test-authoring
+  gotcha will hit every future part's tests until a custom
+  `UserManager.create_user()` (or a real `USERNAME_FIELD = "email"`
+  migration) removes the requirement.
+- Same FK convention as `Product.business` (P-031): `on_delete=PROTECT`
+  (not CASCADE) — a business is soft-deleted in normal operation, so
+  PROTECT stops an exceptional hard-delete from silently destroying
+  real Posts.
+- `PostDetailView` inherits `RetrieveUpdateDestroyAPIView` as-is (both
+  PUT and PATCH work), matching `ProductDetailView`'s own precedent —
+  not restricted to PATCH-only despite the master plan text saying
+  "GET, PATCH, DELETE" specifically. Flagged, not changed, for
+  consistency with the established pattern.
+
+### Architecture decisions
+- Signal-based auto-enqueue required zero new code in this app — proves
+  P-036's sender-less `post_save` receiver genuinely works for a real
+  model, not just P-036's own `DummyContent` throwaway.
+- `get_moderation_preview()` override is real (not the generic
+  fallback) and verified end-to-end through the actual P-038 queue API,
+  not just at the model level.
+- `status` is unwritable through every path in this app (create body,
+  patch body, admin) — the only way to change it is
+  `moderation.services.approve()`/`reject()`.
+
+### Tests (26 new)
+- `content/tests/test_models.py` (5): default status, exactly-one-queue-
+  row on create, no additional row on edit, `get_moderation_preview()`
+  real data, 200-char truncation.
+- `content/tests/test_api.py` (21): auto-enqueue via the real API,
+  business-field-spoofing, status-spoofing on create, unauthenticated
+  create/list/patch/delete → 401, no-business-profile → 403 on create /
+  empty list on GET, own-list excludes other businesses' posts, public
+  GET works unauthenticated, unknown id → 404 with `NOT_FOUND` envelope
+  code, cross-business PATCH/DELETE → 403 with a DB re-fetch confirming
+  no change, owner PATCH/DELETE succeed (DELETE is soft), status not
+  writable via PATCH, valid/spoofed-extension image upload (reusing
+  `core.tests.test_media`'s `_VALID_PNG_BYTES`/`_DISGUISED_EXE_BYTES`),
+  optional image omitted still valid, and the P-038 integration proof
+  (`test_preview_shows_real_caption_not_generic_fallback`) using the
+  real "Moderator" `Group` seeded by P-019.
+
+### Verification results (real machine, Docker Compose, real Postgres)
+- `makemigrations --check --dry-run content`: "No changes detected".
+- `migrate`: `Applying content.0001_initial... OK`.
+- `manage.py check`: no issues.
+- `pytest content/ -v`: **26 passed**.
+- `pytest moderation/ -v`: **68 passed** (unchanged from P-039 — zero
+  regression from adding a real `Moderatable` consumer).
+- Full project `pytest -q -rs`: **309 passed, 1 skipped** (was 283; the
+  skip is the pre-existing, unrelated `moto` skip).
+
+### Known issues / caveats
+- `User.objects.create_user()` requiring `username` (see above) — not
+  fixed here (out of this part's scope), only newly confirmed and
+  flagged again.
+- No public "list all visible/published posts" endpoint yet — by
+  design, P-043's scope.
+- `PostDetailView` allows PUT as well as PATCH (inherited from
+  `RetrieveUpdateDestroyAPIView`) — spec text only mentions PATCH.
+  Consistent with `ProductDetailView`'s precedent, not treated as a
+  gap.
+- Variant/gallery-style multi-image support was never in this part's
+  scope (single optional `image`, same as `Product`).
+
+### Remaining work
+- **P-042** — Reel model (same shape as Post, plus its own transcoding
+  pipeline). Must inherit `Moderatable` exactly as `Post` does here,
+  override `get_moderation_preview()` with real data, and follow the
+  identical IDOR/ownership pattern.
+- **P-043** — the shared `published()` manager for Post + Reel (filters
+  `status == "published"`), and the first public "browse visible
+  content" endpoint.
+
+### Git reference
+`cavallo-app` `main` — commit `36ffe0f` ("P-041: content app - Post
+model (Moderatable) + CRUD endpoints"), pushed on top of `599c964`.
+14 files changed, 562 insertions(+).
+https://github.com/Ahmed2132003/cavallo-app/commit/36ffe0f
+
+### Exact next starting point
+Start **P-042 — Reel Model (Moderatable) + Transcoding + CRUD
+Endpoints**. Baseline to preserve: `cavallo-app` `main` @ `36ffe0f`,
+`pytest -q` = 309 passed / 1 skipped, `content` migrations at
+`0001_initial`, `moderation` still at `0002_moderationlog` (untouched
+by this part). P-042 must copy this part's exact IDOR/serializer/
+Moderatable pattern, adding only its transcoding-specific pieces on
+top.
