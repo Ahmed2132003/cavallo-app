@@ -4956,3 +4956,70 @@ P-037 (ModerationLog audit-trail model) is unblocked and ready to
 begin. Baseline to preserve: `cavallo-app` `main` @ `9afb710`,
 `docker compose ps` all services healthy, `pytest moderation/` = 8
 passing.
+
+
+### Tests (20 new, in `moderation/tests/test_services.py`)
+Uses P-036's `DummyContent` harness. Every "nothing changed" assertion
+re-queries the database rather than trusting return values.
+- Approve: both statuses updated; log row with `action=approved`, correct
+  reviewer, empty reason; caller's in-memory `queue_item` synced.
+- Reject: both statuses updated; log stores stripped reason and reviewer.
+- Blank reason (`""`, `"   "`, `None`): raises `ValidationError`, queue item
+  and content unchanged, no log row (3 parametrized tests).
+- Double-processing guard: approve twice, reject twice, reject-after-approve,
+  approve-after-reject, and stale in-memory copy — each raises
+  `AlreadyDecidedError` and leaves exactly one log row.
+- Atomicity: log creation forced to fail (monkeypatched) after the queue and
+  content saves, for both `approve` and `reject` — queue item, content and
+  log all unchanged afterward. Missing content object raises and changes
+  nothing.
+- Model: `ModerationLog` has no `is_deleted`/`deleted_at` and no
+  `.all_objects`; a queue item or reviewer with a log entry raises
+  `ProtectedError` on delete.
+
+### Verification results (real machine, Docker Compose, real Postgres)
+- `makemigrations --check --dry-run moderation`: "No changes detected".
+- `migrate moderation`: `Applying moderation.0002_moderationlog... OK`.
+- `showmigrations moderation`: `0001_initial` and `0002_moderationlog` both
+  `[X]`.
+- Table `moderation_moderationlog` confirmed present in the dev database.
+- `pytest moderation/tests/test_services.py -v`: **20 passed**.
+- `pytest moderation/ -v`: **28 passed** (8 from P-036 + 20 new).
+- Full project `pytest -q -rs`: **239 passed, 1 skipped**. The one skip is
+  pre-existing and unrelated to moderation:
+  `core/tests/test_storage_backends.py:31` — `moto` is not installed in the
+  container.
+- `python manage.py check`: no issues.
+
+### Known issues
+- The 1 skipped test (`moto` not installed) predates this part.
+- `core/models.py`'s module docstring still says ModerationLog is
+  "P-060/061". That is a stale comment; it is harmless and was left
+  untouched (out of scope).
+- `ModerationQueue.object_id` is `PositiveIntegerField` while the models
+  use `BigAutoField` IDs (a P-036 decision, unchanged).
+- Failure-injection atomicity is covered by monkeypatching log creation
+  inside the pytest test transaction (savepoint rollback). It was not
+  separately exercised against a non-test database.
+
+### Remaining work
+- **P-038** — moderator review API (list pending, approve, reject), gated by
+  `HasCapability("can_moderate_content")` from P-019. It must be a thin
+  wrapper around `approve()`/`reject()` with **no state-transition logic of
+  its own**. Notifications to the business owner are Phase 13.
+- Phase 7/8 content models (Post, Reel, Story) must inherit `Moderatable`
+  as-is and must follow the rule at the top of this section.
+
+### Git reference
+`cavallo-app` `main` — commit `6c1576b`
+("P-037: ModerationLog audit trail + moderation state-machine service
+(approve/reject)"), pushed on top of `3b03a74`. 4 files changed, 527
+insertions(+), 1 deletion(-).
+https://github.com/Ahmed2132003/cavallo-app/commit/6c1576b
+
+### Exact next starting point
+Start **P-038** (moderator queue API). Baseline to preserve: `cavallo-app`
+`main` @ `6c1576b`, `docker compose ps` all services up, `pytest moderation/`
+= 28 passed, full `pytest -q` = 239 passed / 1 skipped (moto not installed).
+Migration state: `moderation` at `0002_moderationlog`, applied on the dev
+database.
