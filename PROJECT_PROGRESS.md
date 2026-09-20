@@ -5023,3 +5023,91 @@ Start **P-038** (moderator queue API). Baseline to preserve: `cavallo-app`
 = 28 passed, full `pytest -q` = 239 passed / 1 skipped (moto not installed).
 Migration state: `moderation` at `0002_moderationlog`, applied on the dev
 database.
+
+
+---
+
+## PART P-037 — ModerationLog Audit Trail + Moderation State-Machine Service — ✅ COMPLETE
+
+**Status: COMPLETE — verified against the real dev stack (Docker Compose + Postgres) and pushed.**
+(`cavallo-app` `main` @ `6c1576b`)
+
+### 🔒 RULE FOR PHASE 7 (Posts/Reels) AND PHASE 8 (Stories) — DO NOT BREAK
+
+`moderation.services.approve()` and `moderation.services.reject()` are the
+**ONLY sanctioned way** to set a `Moderatable` content object's `status` to
+`published` or `rejected`. Post/Reel/Story models, views, serializers, admin
+actions and Celery tasks must **never write to `status` directly** to publish
+or reject content. Doing so bypasses the `ModerationLog` audit trail and
+reintroduces the Section 28 "moderation bypass" risk. The rule is also
+written at the top of `moderation/services.py`.
+
+### What was implemented
+- `ModerationLog(TimestampedModel)` added to `moderation/models.py`.
+  Deliberately NOT `SoftDeleteModel` (same documented exception and reason as
+  `ModerationQueue`, P-036: a permanent, append-only audit trail).
+  Fields: `queue_item` (FK → `ModerationQueue`, `PROTECT`,
+  `related_name="logs"`), `reviewer` (FK → `settings.AUTH_USER_MODEL`,
+  `PROTECT`, `related_name="moderation_logs"`), `action`
+  (`approved` / `rejected`, via `ModerationLog.Action`), `reason`
+  (`TextField(blank=True)`; required for rejections only at the service
+  layer, NOT as a DB constraint). `db_table = "moderation_moderationlog"`,
+  `ordering = ["-created_at"]`.
+- `moderation/services.py` (new):
+  - `approve(queue_item, reviewer) -> ModerationLog`
+  - `reject(queue_item, reviewer, reason) -> ModerationLog`
+  - `AlreadyDecidedError(ValidationError)` — raised on any attempt to decide
+    an item that is no longer `pending`.
+  - Private helpers `_lock_pending_queue_item()` and
+    `_get_moderatable_content()`.
+- Each function does the whole transition inside ONE `transaction.atomic()`:
+  queue `status` + content object `status` + new `ModerationLog` row, all or
+  nothing.
+
+### Files created (3)
+- `moderation/services.py`
+- `moderation/migrations/0002_moderationlog.py`
+- `moderation/tests/test_services.py`
+
+### Files modified (1)
+- `moderation/models.py` — added `from django.conf import settings` and the
+  `ModerationLog` class at the end of the file.
+
+### Important implementation details
+- **Paths:** the Part spec says `apps/moderation/`; the real project uses
+  top-level `moderation/` (project-wide convention since P-011). Everything
+  lives under `moderation/`, and the validation command is
+  `pytest moderation/`.
+- **Row lock, not a stale-object check:** the double-processing guard
+  re-reads the queue row with `select_for_update()` inside the transaction
+  and checks `status` on that locked row, not on the `queue_item` object the
+  caller passed. A stale in-memory copy (double-tap / two concurrent
+  requests) therefore cannot decide an already-decided item. This is
+  stronger than the spec's minimum and does not change any prior
+  architectural decision.
+- **Guard error type:** `AlreadyDecidedError` subclasses `ValidationError`.
+  P-038 can catch it separately (e.g. map to 409 Conflict) from a
+  blank-reason `ValidationError` (400).
+- **Reject reason:** `reject()` strips the reason and rejects an empty,
+  whitespace-only or `None` reason BEFORE opening any transaction, so an
+  invalid call touches no database rows. The stored reason is the stripped
+  text.
+- **Caller's object:** the passed-in `queue_item.status` is updated in memory
+  only after the transaction commits successfully.
+- **Missing content:** if the generic FK resolves to `None` (content row
+  hard-deleted), or to a non-`Moderatable` object, a `ValidationError` is
+  raised and nothing changes.
+- **No side effects out of scope:** no permission checks, no HTTP, and no
+  notifications in this module (API = P-038, notifications = Phase 13).
+- Saving the content object inside `approve()`/`reject()` fires the existing
+  P-036 `post_save` signal with `created=False`, so it correctly creates no
+  extra queue row.
+
+### Architecture decisions
+- `ModerationLog` restates the P-036 no-`SoftDeleteModel` exception in its
+  own docstring, as P-036 promised.
+- Both FKs use `PROTECT`: a queue item or reviewer account that has a log
+  entry cannot be deleted (covered by tests).
+- No new architecture introduced; same generic-FK/mixin design from P-036.
+
+### Commands (run from `D:\Cavallo\scd-backend`, PowerShell)
