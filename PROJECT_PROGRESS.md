@@ -5710,3 +5710,129 @@ migrations: makemigrations --check --dry-run clean (no drift). Key proof tests:
 Repo: https://github.com/Ahmed2132003/cavallo-app
 Branch: main
 Final commit for this part: 2159e10
+
+---
+
+## P-043 — Central Published-Content Manager (.objects.published())
+
+Status: Done. Full stack verified (Postgres via docker compose). Project-wide
+suite: 367 passed, 1 skipped (skip is the pre-existing moto import skip,
+unrelated to this part). Pushed to origin/main.
+
+Commit: e285ed6 — "P-043: Central Published-Content Manager
+(.objects.published()) for Post/Reel + public list endpoints" (branch: main,
+repo: https://github.com/Ahmed2132003/cavallo-app)
+
+### What was implemented
+- `PublishedManager(models.Manager)` in content/models.py — get_queryset()
+  filters status=Moderatable.Status.PUBLISHED AND is_deleted=False (both
+  conditions together, explicitly re-stated rather than relying only on
+  SoftDeleteModel's own default-manager exclusion). Added as
+  `Post.published_objects`, a second/extra manager alongside the existing
+  default `Post.objects` (SoftDeleteManager) — `.objects` is completely
+  unchanged and still used by every internal/owner-facing view.
+- `ReelPublishedManager(PublishedManager)` — same two conditions via
+  super().get_queryset(), plus a third, Reel-only condition:
+  processing_status=Reel.ProcessingStatus.READY. Documented as
+  belt-and-suspenders (normal flow should never produce
+  approved-but-not-ready, since Reel.auto_enqueue_on_create=False already
+  prevents a Reel entering moderation before processing_status="ready" —
+  see P-042). Added as `Reel.published_objects`.
+- `PostPublicSerializer` / `ReelPublicSerializer` in content/serializers.py —
+  separate, read-only classes (not reused configs of PostSerializer/
+  ReelSerializer). Deliberately omit `status` (both) and
+  `processing_status`/`thumbnail`-pipeline internals (Reel) — no internal
+  moderation metadata exposed to an unauthenticated caller.
+- `PostPublicListView` / `ReelPublicListView` in content/views.py —
+  GET-only, AllowAny, sourced from `Post.published_objects`/
+  `Reel.published_objects` (never `.objects`), optional `?business_id=`
+  filter and StandardCursorPagination — byte-for-byte copy of P-032's
+  ProductPublicListView pattern, per this part's own spec.
+- New routes: `GET /api/v1/posts/public/`, `GET /api/v1/reels/public/` —
+  wired in content/urls.py and content/reel_urls.py respectively
+  ("public/" listed before "<int:pk>/", matching products/urls.py's own
+  convention). config/urls.py required NO changes (both includes already
+  existed from P-041/P-042).
+- Migration: content/migrations/0003_alter_post_managers_alter_reel_managers.py
+  — AlterModelManagers only (manager registration is part of Django's
+  migration state even though it changes no DB column/table; no schema
+  change, no data migration).
+
+### Files created
+- content/migrations/0003_alter_post_managers_alter_reel_managers.py
+- content/tests/test_public_api.py (18 tests — see Tests section below)
+
+### Files modified
+- content/models.py (added PublishedManager, ReelPublishedManager;
+  added published_objects to Post and Reel)
+- content/serializers.py (added PostPublicSerializer, ReelPublicSerializer)
+- content/views.py (added PostPublicListView, ReelPublicListView; import
+  list updated accordingly)
+- content/urls.py (added public/ route)
+- content/reel_urls.py (added public/ route)
+
+### Architecture decisions (read before touching content/ again)
+1. Path convention confirmed again: content/ (no apps/ prefix) — consistent
+   with the note already on record from P-042.
+2. `published_objects` is an ADDITIONAL manager, never the default. Every
+   future public-facing content type (Story — Phase 8, P-047; the unified
+   Feed — Phase 10, P-059) MUST follow this exact same shape: a dedicated
+   `published_objects`/equivalent manager, `.objects` left untouched.
+   >>> P-059's Feed query service should query across
+   >>> Post.published_objects / Reel.published_objects (and Story's own
+   >>> equivalent, once P-047 lands) — flagged explicitly per P-043's own
+   >>> original handoff note.
+3. Public serializers are deliberately SEPARATE classes from the owner-facing
+   PostSerializer/ReelSerializer, not a reused/subset config — this is what
+   keeps `status`/`processing_status` (and any future moderation-metadata
+   field) from ever leaking through the public endpoint by accident. Any
+   future public list endpoint for a new content type should copy this
+   "separate public serializer class" shape, not try to parameterize the
+   existing owner-facing serializer.
+4. ReelPublishedManager's extra processing_status="ready" filter is
+   deliberately redundant with the current invariant (see P-042's
+   auto_enqueue_on_create=False mechanism) — kept as defense in depth, not
+   because normal flow can currently violate it.
+
+### Commands (all verified passing on the real stack)
+  docker compose exec web python manage.py makemigrations content
+  docker compose exec web python manage.py migrate content
+  docker compose exec web python manage.py check
+  docker compose exec web pytest content/tests/test_public_api.py -v
+  docker compose exec web pytest content/ -q
+  docker compose exec web pytest -q -rs
+
+### Tests / Verification results
+content/tests/test_public_api.py: 18 passed (4-state matrix — pending/
+rejected/published/published-then-soft-deleted — for both Post and Reel,
+plus Reel's approved-but-not-ready case, plus business_id filter for both,
+plus proof that PostListCreateView/ReelListCreateView's own-list and the
+pre-existing PostDetailView/ReelDetailView public-by-id routes are
+unaffected and still use the default .objects manager).
+content/ app alone: 79 passed. Project-wide: 367 passed, 1 skipped (skip =
+pre-existing moto import skip, unrelated). migrations: applied cleanly
+(0003_alter_post_managers_alter_reel_managers).
+
+### Known issues
+None newly introduced by this part. All P-042 known issues (orphaned raw
+Reel upload in MinIO, no retry/backoff on transcode_reel, THUMBNAIL_SECOND
+edge case, placeholder video size/bitrate tunables) remain open and
+unrelated to P-043's scope.
+
+### Remaining work / next starting point
+- Next part per the master plan: whichever Phase 7/8 part follows P-043 in
+  the 76/90-part sequence (Story model — Phase 8, P-046/P-047 — is the next
+  content type expected to plug into this same published_objects pattern,
+  per Architecture decision #2 above).
+- Whoever builds Story (P-046/P-047) MUST read: (a) P-042's Architecture
+  decision #1 (auto_enqueue_on_create — Story must NOT set it to False,
+  unlike Reel) and (b) this part's Architecture decision #2 (Story needs
+  its own published_objects-equivalent manager, following this exact
+  shape).
+- Whoever builds the unified Feed (Phase 10, P-059) MUST read this part's
+  Architecture decision #2 in full before starting.
+
+### GitHub references
+Repo: https://github.com/Ahmed2132003/cavallo-app
+Branch: main
+Final commit for this part: e285ed6
