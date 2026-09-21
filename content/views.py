@@ -2,7 +2,12 @@ from rest_framework import generics, permissions
 from rest_framework.exceptions import NotFound, PermissionDenied
 
 from content.models import Post, Reel
-from content.serializers import PostSerializer, ReelSerializer
+from content.serializers import (
+    PostPublicSerializer,
+    PostSerializer,
+    ReelPublicSerializer,
+    ReelSerializer,
+)
 from content.tasks import transcode_reel
 from core.pagination import StandardCursorPagination
 
@@ -92,6 +97,37 @@ class PostDetailView(generics.RetrieveUpdateDestroyAPIView):
         instance.delete()
 
 
+class PostPublicListView(generics.ListAPIView):
+    """
+    Part P-043. GET /api/v1/posts/public/ — public, read-only list of
+    approved-and-visible Posts, optionally narrowed to one business via
+    ?business_id= — the first endpoint a Customer with no account at
+    all can actually use to browse content.
+
+    Sourced from Post.published_objects (never Post.objects) — this is
+    the entire point of this part: a pending or rejected Post, or a
+    soft-deleted-but-approved one, must never appear here, even if
+    requested directly by id (there is no detail route for this view;
+    PostDetailView's own public GET is unaffected and unchanged, and is
+    a separate, pre-existing concern from P-041).
+
+    ?business_id= filter and StandardCursorPagination both copy
+    ProductPublicListView's exact pattern (products/views.py, P-032),
+    per this part's own spec.
+    """
+
+    serializer_class = PostPublicSerializer
+    permission_classes = [permissions.AllowAny]
+    pagination_class = StandardCursorPagination
+
+    def get_queryset(self):
+        queryset = Post.published_objects.all()
+        business_id = self.request.query_params.get("business_id")
+        if business_id is not None:
+            queryset = queryset.filter(business_id=business_id)
+        return queryset
+
+
 class ReelListCreateView(generics.ListCreateAPIView):
     """
     Part P-042. Same ownership/list-create pattern as PostListCreateView
@@ -157,3 +193,24 @@ class ReelDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_destroy(self, instance):
         self._check_ownership(instance)
         instance.delete()
+
+
+class ReelPublicListView(generics.ListAPIView):
+    """
+    Part P-043. GET /api/v1/reels/public/ — same shape as
+    PostPublicListView above, sourced from Reel.published_objects
+    (ReelPublishedManager — also requires processing_status="ready",
+    see content/models.py). Same ?business_id= filter, same
+    StandardCursorPagination.
+    """
+
+    serializer_class = ReelPublicSerializer
+    permission_classes = [permissions.AllowAny]
+    pagination_class = StandardCursorPagination
+
+    def get_queryset(self):
+        queryset = Reel.published_objects.all()
+        business_id = self.request.query_params.get("business_id")
+        if business_id is not None:
+            queryset = queryset.filter(business_id=business_id)
+        return queryset

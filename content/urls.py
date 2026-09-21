@@ -1,8 +1,9 @@
 from django.urls import path
 
-from content.views import PostDetailView, PostListCreateView
+from content.views import PostDetailView, PostListCreateView, PostPublicListView
 
 urlpatterns = [
-    path("", PostListCreateView.as_view(), name="post-list-create"),
+    path("public/", PostPublicListView.as_view(), name="post-public-list"),
     path("<int:pk>/", PostDetailView.as_view(), name="post-detail"),
+    path("", PostListCreateView.as_view(), name="post-list-create"),
 ]

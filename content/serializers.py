@@ -94,3 +94,62 @@ class ReelSerializer(serializers.ModelSerializer):
             max_size_bytes=100 * 1024 * 1024,
         )
         return value
+
+
+class PostPublicSerializer(serializers.ModelSerializer):
+    """
+    Part P-043. Read-only, public-facing representation of a Post —
+    used exclusively by PostPublicListView (GET /api/v1/posts/public/).
+
+    Deliberately a SEPARATE class from PostSerializer above, not a
+    reused/subset config of it: this class exists specifically to keep
+    internal moderation metadata (the `status` field — and, by
+    extension, any future rejection-reason field) off the one endpoint
+    a Customer with no auth at all can hit. Every row PostPublicListView
+    ever returns already has status="published" by construction (via
+    Post.published_objects), so re-exposing that field here would only
+    ever show one constant value while creating a place a future
+    moderation-metadata field could leak through by accident.
+    """
+
+    class Meta:
+        model = Post
+        fields = (
+            "id",
+            "business",
+            "caption",
+            "image",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = fields
+
+
+class ReelPublicSerializer(serializers.ModelSerializer):
+    """
+    Part P-043. Read-only, public-facing representation of a Reel —
+    used exclusively by ReelPublicListView (GET /api/v1/reels/public/).
+
+    Same rationale as PostPublicSerializer above, plus one more
+    exclusion specific to Reel: `processing_status` is also left off.
+    Every row ReelPublicListView ever returns already has
+    processing_status="ready" by construction (via
+    Reel.published_objects / ReelPublishedManager), so — exactly like
+    `status` — it would only ever show one constant value here while
+    needlessly exposing an internal pipeline-state field to an
+    unauthenticated caller.
+    """
+
+    class Meta:
+        model = Reel
+        fields = (
+            "id",
+            "business",
+            "caption",
+            "video",
+            "thumbnail",
+            "duration_seconds",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = fields

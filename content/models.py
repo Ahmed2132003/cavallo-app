@@ -5,6 +5,35 @@ from core.models import SoftDeleteModel, TimestampedModel
 from moderation.models import Moderatable
 
 
+class PublishedManager(models.Manager):
+    """
+    Part P-043 — the single, canonical "what's actually visible"
+    filter every future public-facing content endpoint must use.
+
+    Filters on TWO conditions together, deliberately:
+      - status == Moderatable.Status.PUBLISHED
+      - is_deleted == False (SoftDeleteModel)
+    A soft-deleted-but-approved Post/Reel must never appear here even
+    though `.objects` (SoftDeleteModel's own manager) already excludes
+    soft-deleted rows — this manager re-states that condition
+    explicitly so it never silently depends on which base manager a
+    future subclass happens to keep as `.objects`.
+
+    Added as an EXTRA manager (`published_objects`), never as the
+    default `.objects` — internal code (moderation queue, the owner's
+    own list/edit views from P-041/P-042) legitimately needs to see
+    pending/rejected items too, and making this the default would
+    force every internal query to remember to override it, i.e. the
+    exact bug-prone pattern this manager exists to prevent, inverted.
+    """
+
+    def get_queryset(self):
+        return super().get_queryset().filter(
+            status=Moderatable.Status.PUBLISHED,
+            is_deleted=False,
+        )
+
+
 class Post(Moderatable, TimestampedModel, SoftDeleteModel):
     """
     A trader/factory's social content item (caption + image), the first
@@ -23,6 +52,7 @@ class Post(Moderatable, TimestampedModel, SoftDeleteModel):
         on_delete=models.PROTECT,
         related_name="posts",
     )
+    published_objects = PublishedManager()
     caption = models.TextField()
     image = models.FileField(upload_to="posts/", null=True, blank=True)
 
@@ -39,6 +69,28 @@ class Post(Moderatable, TimestampedModel, SoftDeleteModel):
             "preview_text": self.caption[:200],
             "preview_image_url": self.image.url if self.image else None,
         }
+
+
+class ReelPublishedManager(PublishedManager):
+    """
+    Part P-043. Reel-only extra condition: also require
+    processing_status == Reel.ProcessingStatus.READY.
+
+    Belt-and-suspenders — normal flow should never produce an
+    approved-but-still-processing Reel (Reel.auto_enqueue_on_create is
+    False specifically so nothing gets queued for moderation before
+    transcode_reel() reaches "ready" and creates the ModerationQueue
+    row itself — see content/models.py's Reel docstring and
+    moderation/models.py's Moderatable docstring). This condition
+    exists purely as a second line of defense against that invariant
+    ever being violated by a future bug, not because the normal flow
+    can currently produce that state.
+    """
+
+    def get_queryset(self):
+        return super().get_queryset().filter(
+            processing_status=Reel.ProcessingStatus.READY,
+        )
 
 
 class Reel(Moderatable, TimestampedModel, SoftDeleteModel):
@@ -113,6 +165,7 @@ class Reel(Moderatable, TimestampedModel, SoftDeleteModel):
         choices=ProcessingStatus.choices,
         default=ProcessingStatus.UPLOADED,
     )
+    published_objects = ReelPublishedManager()
 
     class Meta:
         indexes = [
