@@ -5553,3 +5553,160 @@ Endpoints**. Baseline to preserve: `cavallo-app` `main` @ `36ffe0f`,
 by this part). P-042 must copy this part's exact IDOR/serializer/
 Moderatable pattern, adding only its transcoding-specific pieces on
 top.
+
+PROGRESS UPDATE
+
+Add this section after the P-041 entry (Post model):
+
+## P-042 — content App: Reel Model (Moderatable) + Video Transcoding Pipeline — COMPLETE
+
+Status: Done. Full stack verified (Postgres, Redis/Celery, MinIO, real ffmpeg) —
+project-wide suite: 349 passed, 1 skipped (skip is the pre-existing moto import
+skip, unrelated to this part). Pushed to origin/main.
+
+Commit: 2159e10 — "P-042: Reel model (Moderatable) + real ffmpeg video
+transcoding pipeline" (branch: main, repo:
+https://github.com/Ahmed2132003/cavallo-app)
+(Note: this amended and force-pushed an earlier same-session commit 9552545,
+which briefly held the message "update" and accidentally included the
+Celery Beat runtime file `celerybeat-schedule`. 2159e10 is the sole,
+correct, final record of this part on origin/main — 9552545 no longer
+exists on the remote after the force-with-lease push. `celerybeat-schedule`
+is now in .gitignore.)
+
+### What was implemented
+- `Reel(Moderatable, TimestampedModel, SoftDeleteModel)` in content/models.py:
+  business (FK, PROTECT, related_name="reels"), caption, video (FileField,
+  required), thumbnail (FileField, null/blank), duration_seconds
+  (PositiveIntegerField, null/blank), processing_status (uploaded/processing/
+  ready/failed, default uploaded).
+- content/tasks.py::transcode_reel(reel_id) — real ffmpeg/ffprobe via subprocess:
+  downloads raw upload from MediaStorage -> normalizes to max 1080p height
+  (never upscales) + 2M video bitrate / 128k AAC audio -> extracts a thumbnail
+  frame at 1s in from the NORMALIZED output -> real duration via ffprobe ->
+  saves both back through MediaStorage -> processing_status="ready" -> creates
+  exactly one ModerationQueue row (get_or_create, sequential-retry-safe). On any
+  exception: processing_status="failed", logged via logger.exception(), NO queue
+  row created. Missing Reel (DoesNotExist) logs a warning and returns cleanly.
+- Full REST API: ReelSerializer (write: caption, video only — thumbnail/
+  duration_seconds/processing_status/status/business all read-only),
+  ReelListCreateView + ReelDetailView, byte-for-byte the same ownership/IDOR
+  pattern as PostListCreateView/PostDetailView (P-041). perform_create()
+  dispatches transcode_reel.delay(reel.id) after save.
+- New urlconf: content/reel_urls.py, included at api/v1/reels/ in config/urls.py
+  (separate from content.urls's api/v1/posts/ — see files section below for why).
+
+### Files created
+- content/tasks.py
+- content/tests/test_tasks.py
+- content/tests/fixtures/small_test_reel.mp4 (real 3s/160x120 mp4 fixture,
+  committed — DO NOT delete; content/tests/test_tasks.py and test_api.py both
+  read it)
+- content/reel_urls.py
+- content/migrations/0002_reel.py
+
+### Files modified
+- Dockerfile (added ffmpeg system package)
+- moderation/models.py (added Moderatable.auto_enqueue_on_create = True hook)
+- moderation/signals.py (post_save receiver now checks
+  getattr(instance, "auto_enqueue_on_create", True) before creating a
+  ModerationQueue row)
+- moderation/tests/testapp/models.py (added DummyDeferredContent, throwaway
+  model proving the hook before Reel existed)
+- moderation/tests/test_models.py (added TestDeferredEnqueueHook, 5 tests)
+- content/models.py (added Reel)
+- content/admin.py (registered ReelAdmin)
+- content/tests/test_models.py (added TestReelModel, 7 tests)
+- content/serializers.py (added ReelSerializer)
+- content/views.py (added ReelListCreateView, ReelDetailView,
+  _get_reel_or_404)
+- config/urls.py (added api/v1/reels/ include)
+- content/tests/test_api.py (added TestReelCreate/TestReelOwnList/
+  TestReelDetailIDOR, 22 tests)
+- .gitignore (added celerybeat-schedule — Celery Beat's local runtime
+  scheduler file, not project code, should never have been tracked)
+
+### Architecture decisions (read before touching moderation/ or content/ again)
+1. DEFERRED-ENQUEUE MECHANISM (the core decision of this part): implemented as
+   a class attribute `auto_enqueue_on_create` (default True) on the Moderatable
+   mixin itself, checked via getattr() in moderation/signals.py's post_save
+   receiver. Reel sets it to False and content/tasks.py's transcode_reel()
+   creates the ModerationQueue row manually once processing_status == "ready".
+   Chosen deliberately over excluding Reel by isinstance() in the signal,
+   because that would force moderation/ to import content.models — exactly what
+   the generic signal was built to avoid. Default True means Post's (and any
+   future opted-in model's) behavior is completely unchanged.
+   >>> STORIES (Phase 8, P-047) DO NOT NEED THIS EXCEPTION. Per the fast_path
+   >>> requirement, Stories must auto-enqueue immediately on creation exactly
+   >>> like Post — leave auto_enqueue_on_create at its default True on the
+   >>> Story model. Do not copy Reel's pattern there.
+2. Path convention: content/, moderation/ (top-level apps, no apps/ prefix) —
+   confirmed against the real repo, not the apps/content/ paths an older
+   planning doc assumed. Consistent with every part since P-011.
+3. Reel.thumbnail is a plain FileField, not ImageField — same P-013/P-041
+   convention as Post.image (no Pillow dependency; real content-type checking
+   happens in ReelSerializer.validate_video() via core.media.validate_upload(),
+   same choke point as Post).
+4. Reel API routes live in a separate urlconf module (content/reel_urls.py,
+   included at api/v1/reels/) rather than inside content/urls.py (which is
+   hardwired under api/v1/posts/ by config/urls.py and has 21 existing tests
+   hardcoding that path) — avoids any risk to Post's existing routes.
+5. Task tests call transcode_reel(reel_id) as a plain function, not via
+   .delay()/eager mode — same convention already established by
+   moderation/tests/test_tasks.py for P-039's check_moderation_sla (this
+   project has no CELERY_TASK_ALWAYS_EAGER setting). Functionally equivalent:
+   real, synchronous, non-mocked execution.
+6. ModerationQueue.objects.get_or_create() (not .create()) in transcode_reel —
+   makes a sequential re-run after an earlier failure safe against a duplicate
+   row.
+
+### Commands (all verified passing on the real stack)
+  docker compose build web celery_worker celery_beat
+  docker compose up -d web celery_worker celery_beat
+  docker compose exec web python manage.py migrate content
+  docker compose exec web python manage.py check
+  docker compose exec web python manage.py makemigrations --check --dry-run
+  docker compose exec web pytest -q -rs
+
+### Tests / Verification results
+Project-wide: 349 passed, 1 skipped (skip = pre-existing moto import skip,
+unrelated). content/ app alone: 61 passed. moderation/ app alone: 73 passed.
+migrations: makemigrations --check --dry-run clean (no drift). Key proof tests:
+- content/tests/test_models.py::TestReelModel::test_creating_reel_does_not_create_a_moderation_queue_row
+- content/tests/test_api.py::TestReelCreate::test_create_reel_does_not_auto_enqueue_moderation
+- content/tests/test_tasks.py::TestTranscodeReelSuccess::test_exactly_one_queue_row_exists_after_success
+  (the end-to-end opposite: real ffmpeg run, then the queue row appears)
+
+### Known issues (flagged, not silently fixed — decide explicitly before P-043)
+- PATCHing `video` on an existing Reel replaces the file but does NOT
+  re-trigger transcode_reel — thumbnail/duration_seconds/processing_status
+  would go stale against the new file. Out of this part's scope (create-time
+  pipeline only).
+- The original raw upload is left orphaned in MinIO storage once transcode_reel
+  overwrites reel.video with the transcoded file (file_overwrite=False means
+  the old key is never deleted). No cleanup job exists yet.
+- THUMBNAIL_SECOND=1 (content/tasks.py) will fail thumbnail extraction on a
+  video shorter than 1 second — not covered by current tests, no fallback
+  implemented.
+- 100 MB max video size, 2M video bitrate, 1080p cap, veryfast preset — all
+  placeholder tunables in content/tasks.py/serializers.py, not confirmed real
+  product requirements.
+- No Celery retry/backoff configured on transcode_reel — a transient storage
+  hiccup currently just fails the Reel permanently (processing_status=failed),
+  same as a genuinely corrupt file. No retry-vs-permanent-failure distinction
+  exists yet.
+
+### Remaining work / next starting point
+- Next part per the master plan: P-043 — the shared published() manager
+  (filters status == "published") that both Post and Reel will use for their
+  public "visible content" list endpoints. Read Moderatable's status field
+  docstring in moderation/models.py before starting — it already documents
+  this exact contract.
+- Whoever starts P-047 (Stories, Phase 8) MUST read Architecture decision #1
+  above first — the fast_path/immediate-enqueue requirement means Stories must
+  NOT set auto_enqueue_on_create = False.
+
+### GitHub references
+Repo: https://github.com/Ahmed2132003/cavallo-app
+Branch: main
+Final commit for this part: 2159e10
