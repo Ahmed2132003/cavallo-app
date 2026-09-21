@@ -54,4 +54,8 @@ urlpatterns = [
     # moderation/views.py.
     path("api/v1/moderation/", include("moderation.urls")),
     path("api/v1/posts/", include("content.urls")),
+    # Part P-042: Reel — same content app, own urlconf module and own
+    # prefix (see content/reel_urls.py for why this isn't folded into
+    # content.urls above).
+    path("api/v1/reels/", include("content.reel_urls")),
 ]

@@ -1,3 +1,6 @@
+import os
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.contrib.contenttypes.models import ContentType
@@ -6,11 +9,15 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from businesses.services import create_business_profile
-from content.models import Post
+from content.models import Post, Reel
 from core.tests.test_media import _DISGUISED_EXE_BYTES, _VALID_PNG_BYTES
 from moderation.models import ModerationQueue
 
 User = get_user_model()
+
+_FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
+with open(os.path.join(_FIXTURES_DIR, "small_test_reel.mp4"), "rb") as _f:
+    _VALID_MP4_BYTES = _f.read()
 
 
 def _make_business_user(email, business_name):
@@ -274,3 +281,261 @@ class TestPostModerationPreview(APITestCase):
             "A very specific caption for the moderator to see",
         )
         self.assertEqual(item["submitter"]["business_name"], "Trader Preview")
+
+
+# ---------------------------------------------------------------------------
+# Part P-042: Reel API tests below. Same IDOR/ownership pattern proven
+# above for Post, applied byte-for-byte to Reel, plus two things unique
+# to Reel: transcode_reel dispatch on create, and (unlike Post) NO
+# moderation queue row immediately after create — see
+# TestReelCreateDoesNotAutoEnqueue below, the direct API-level proof of
+# this whole part's point.
+# ---------------------------------------------------------------------------
+
+
+def _make_video_upload(name="raw.mp4"):
+    return SimpleUploadedFile(name, _VALID_MP4_BYTES, content_type="video/mp4")
+
+
+class TestReelCreate(APITestCase):
+    def setUp(self):
+        self.user, self.business = _make_business_user(
+            "trader-reel-a@example.com", "Trader Reel A"
+        )
+
+    @patch("content.views.transcode_reel.delay")
+    def test_create_reel_dispatches_transcode_task(self, mock_delay):
+        self.client.force_authenticate(self.user)
+        response = self.client.post(
+            "/api/v1/reels/",
+            {"caption": "hi", "video": _make_video_upload()},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        mock_delay.assert_called_once_with(response.data["id"])
+
+    @patch("content.views.transcode_reel.delay")
+    def test_create_reel_starts_at_processing_status_uploaded(self, mock_delay):
+        self.client.force_authenticate(self.user)
+        response = self.client.post(
+            "/api/v1/reels/",
+            {"caption": "hi", "video": _make_video_upload()},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["processing_status"], "uploaded")
+
+    @patch("content.views.transcode_reel.delay")
+    def test_create_reel_does_not_auto_enqueue_moderation(self, mock_delay):
+        # THE key API-level proof for this whole part: unlike Post,
+        # creating a Reel must NOT create a ModerationQueue row
+        # immediately — that only happens once transcode_reel (mocked
+        # away here on purpose — its own real-ffmpeg correctness is
+        # proven separately in content/tests/test_tasks.py) actually
+        # runs and reaches "ready".
+        self.client.force_authenticate(self.user)
+        response = self.client.post(
+            "/api/v1/reels/",
+            {"caption": "hi", "video": _make_video_upload()},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        count = ModerationQueue.objects.filter(
+            content_type=ContentType.objects.get_for_model(Reel),
+            object_id=response.data["id"],
+        ).count()
+        self.assertEqual(count, 0)
+
+    @patch("content.views.transcode_reel.delay")
+    def test_business_field_in_body_is_ignored_not_honored(self, mock_delay):
+        self.client.force_authenticate(self.user)
+        response = self.client.post(
+            "/api/v1/reels/",
+            {"caption": "hi", "business": 999999, "video": _make_video_upload()},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        reel = Reel.objects.get(pk=response.data["id"])
+        self.assertEqual(reel.business_id, self.business.id)
+
+    @patch("content.views.transcode_reel.delay")
+    def test_processing_status_in_body_is_ignored_on_create(self, mock_delay):
+        self.client.force_authenticate(self.user)
+        response = self.client.post(
+            "/api/v1/reels/",
+            {
+                "caption": "hi",
+                "processing_status": "ready",
+                "video": _make_video_upload(),
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        reel = Reel.objects.get(pk=response.data["id"])
+        self.assertEqual(reel.processing_status, "uploaded")
+
+    def test_unauthenticated_create_rejected(self):
+        response = self.client.post(
+            "/api/v1/reels/",
+            {"caption": "hi", "video": _make_video_upload()},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_customer_without_business_profile_gets_403_on_create(self):
+        customer = _make_customer("customer-reel-a@example.com")
+        self.client.force_authenticate(customer)
+        response = self.client.post(
+            "/api/v1/reels/",
+            {"caption": "hi", "video": _make_video_upload()},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_creating_reel_without_a_video_is_rejected(self):
+        # Unlike Post.image (null=True/blank=True), Reel.video is
+        # mandatory — there is nothing to transcode without it.
+        self.client.force_authenticate(self.user)
+        response = self.client.post(
+            "/api/v1/reels/", {"caption": "no video"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_spoofed_extension_video_is_rejected(self):
+        self.client.force_authenticate(self.user)
+        fake_video = SimpleUploadedFile(
+            "raw.mp4", _DISGUISED_EXE_BYTES, content_type="video/mp4"
+        )
+        response = self.client.post(
+            "/api/v1/reels/",
+            {"caption": "bad video", "video": fake_video},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class TestReelOwnList(APITestCase):
+    def setUp(self):
+        self.user_a, self.business_a = _make_business_user(
+            "trader-reel-b@example.com", "Trader Reel B"
+        )
+        self.user_b, self.business_b = _make_business_user(
+            "trader-reel-c@example.com", "Trader Reel C"
+        )
+        self.reel_a = Reel.objects.create(
+            business=self.business_a, caption="A's reel", video=_make_video_upload()
+        )
+        self.reel_b = Reel.objects.create(
+            business=self.business_b, caption="B's reel", video=_make_video_upload()
+        )
+
+    def test_own_list_excludes_other_business_reels(self):
+        self.client.force_authenticate(self.user_a)
+        response = self.client.get("/api/v1/reels/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [item["id"] for item in response.data["results"]]
+        self.assertIn(self.reel_a.id, ids)
+        self.assertNotIn(self.reel_b.id, ids)
+
+    def test_customer_without_business_profile_sees_empty_list(self):
+        customer = _make_customer("customer-reel-b@example.com")
+        self.client.force_authenticate(customer)
+        response = self.client.get("/api/v1/reels/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["results"], [])
+
+    def test_unauthenticated_list_rejected(self):
+        response = self.client.get("/api/v1/reels/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class TestReelDetailIDOR(APITestCase):
+    def setUp(self):
+        self.user_a, self.business_a = _make_business_user(
+            "trader-reel-d@example.com", "Trader Reel D"
+        )
+        self.user_b, self.business_b = _make_business_user(
+            "trader-reel-e@example.com", "Trader Reel E"
+        )
+        self.reel = Reel.objects.create(
+            business=self.business_a,
+            caption="original caption",
+            video=_make_video_upload(),
+        )
+
+    def test_public_get_requires_no_auth(self):
+        response = self.client.get(f"/api/v1/reels/{self.reel.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_unknown_id_returns_404_not_found_code(self):
+        response = self.client.get("/api/v1/reels/999999/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.data["error"]["code"], "NOT_FOUND")
+
+    def test_other_business_cannot_patch_reel(self):
+        self.client.force_authenticate(self.user_b)
+        response = self.client.patch(
+            f"/api/v1/reels/{self.reel.id}/",
+            {"caption": "hijacked"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.reel.refresh_from_db()
+        self.assertEqual(self.reel.caption, "original caption")
+
+    def test_other_business_cannot_delete_reel(self):
+        self.client.force_authenticate(self.user_b)
+        response = self.client.delete(f"/api/v1/reels/{self.reel.id}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.reel.refresh_from_db()
+        self.assertFalse(self.reel.is_deleted)
+
+    def test_owner_can_patch_caption(self):
+        self.client.force_authenticate(self.user_a)
+        response = self.client.patch(
+            f"/api/v1/reels/{self.reel.id}/",
+            {"caption": "updated caption"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.reel.refresh_from_db()
+        self.assertEqual(self.reel.caption, "updated caption")
+
+    def test_processing_status_not_writable_via_patch(self):
+        self.client.force_authenticate(self.user_a)
+        response = self.client.patch(
+            f"/api/v1/reels/{self.reel.id}/",
+            {"processing_status": "ready"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.reel.refresh_from_db()
+        self.assertEqual(self.reel.processing_status, "uploaded")
+
+    def test_status_not_writable_via_patch(self):
+        self.client.force_authenticate(self.user_a)
+        response = self.client.patch(
+            f"/api/v1/reels/{self.reel.id}/",
+            {"status": "published"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.reel.refresh_from_db()
+        self.assertEqual(self.reel.status, "pending_review")
+
+    def test_owner_delete_is_soft_delete(self):
+        self.client.force_authenticate(self.user_a)
+        response = self.client.delete(f"/api/v1/reels/{self.reel.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.reel.refresh_from_db()
+        self.assertTrue(self.reel.is_deleted)
+
+    def test_unauthenticated_patch_rejected(self):
+        response = self.client.patch(
+            f"/api/v1/reels/{self.reel.id}/", {"caption": "x"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_unauthenticated_delete_rejected(self):
+        response = self.client.delete(f"/api/v1/reels/{self.reel.id}/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)

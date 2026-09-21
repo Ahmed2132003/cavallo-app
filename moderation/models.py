@@ -111,6 +111,37 @@ class Moderatable(models.Model):
     Enqueueing a new ModerationQueue row on first creation is handled by
     a post_save signal receiver (moderation/signals.py), not a save()
     override on this mixin — see that module's docstring for why.
+
+    ``auto_enqueue_on_create`` (Part P-042) — DEFERRED-ENQUEUE HOOK:
+    By default (``True``), the signal in moderation/signals.py creates
+    exactly one ModerationQueue row the first time any Moderatable
+    subclass is saved (see that module's docstring). This is correct
+    for content that is meaningful to review immediately on creation
+    (e.g. Post: a caption + an already-usable image).
+
+    It is NOT correct for content whose first save merely represents
+    "raw input received, not yet processed" — Reel (P-042) is the first
+    such case: a freshly-uploaded raw video is not something a moderator
+    should ever see; it must be transcoded first. A concrete subclass
+    that needs this sets the class attribute:
+
+        class Reel(Moderatable, ...):
+            auto_enqueue_on_create = False
+
+    and is then responsible for calling
+    ``ModerationQueue.objects.create(...)`` itself, explicitly, once the
+    object actually reaches a reviewable state (see
+    content/tasks.py's ``transcode_reel``).
+
+    This is deliberately a class attribute on the mixin (checked via
+    ``getattr(instance, "auto_enqueue_on_create", True)`` in the
+    signal), NOT a change to the signal's ``isinstance`` check for a
+    named model. moderation/ must never import or know about a specific
+    content type (Post/Reel/Story) — that is exactly what the generic,
+    sender-less signal was built to avoid (see signals.py). The default
+    of ``True`` means every model that inherits Moderatable today
+    (Post, DummyContent) keeps its exact existing behavior unchanged;
+    only a subclass that explicitly opts out is affected.
     """
 
     class Status(models.TextChoices):
@@ -123,6 +154,11 @@ class Moderatable(models.Model):
         choices=Status.choices,
         default=Status.PENDING_REVIEW,
     )
+
+    # See the class docstring's "DEFERRED-ENQUEUE HOOK" section (P-042).
+    # Not a model field on purpose — it must never appear as a DB column
+    # or migration; it is read only by moderation/signals.py via getattr().
+    auto_enqueue_on_create = True
 
     class Meta:
         abstract = True

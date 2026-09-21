@@ -14,7 +14,7 @@ import pytest
 from django.contrib.contenttypes.models import ContentType
 
 from moderation.models import ModerationQueue
-from moderation.tests.testapp.models import DummyContent
+from moderation.tests.testapp.models import DummyContent, DummyDeferredContent
 
 
 @pytest.mark.django_db
@@ -97,3 +97,75 @@ class TestModerationQueueIsNotSoftDeletable:
         # deliberately does not inherit SoftDeleteModel at all (see
         # models.py's docstring), so this manager should not exist here.
         assert not hasattr(ModerationQueue, "all_objects")
+
+
+@pytest.mark.django_db
+class TestDeferredEnqueueHook:
+    """
+    Part P-042's auto_enqueue_on_create hook, proven here against a
+    throwaway model (DummyDeferredContent) before Reel exists, exactly
+    the way P-036's own DummyContent proved the base signal before Post
+    existed.
+    """
+
+    def test_default_hook_value_is_true_on_the_mixin(self):
+        # Regression guard: DummyContent does not set the attribute at
+        # all, so it must inherit True from Moderatable directly.
+        assert DummyContent.auto_enqueue_on_create is True
+
+    def test_opted_out_model_does_not_get_a_queue_row_on_create(self):
+        item = DummyDeferredContent.objects.create(title="raw upload")
+
+        content_type = ContentType.objects.get_for_model(DummyDeferredContent)
+        rows = ModerationQueue.objects.filter(
+            content_type=content_type, object_id=item.pk
+        )
+
+        assert rows.count() == 0
+
+    def test_opted_out_model_still_defaults_to_pending_review_status(self):
+        # The hook only defers the queue side-effect; Moderatable's own
+        # `status` field default must be completely unaffected.
+        item = DummyDeferredContent.objects.create(title="raw upload")
+
+        assert item.status == DummyDeferredContent.Status.PENDING_REVIEW
+
+    def test_manually_creating_the_queue_row_afterwards_works_normally(self):
+        # Mirrors exactly what content/tasks.py's transcode_reel will do
+        # for a real Reel once processing_status reaches "ready".
+        item = DummyDeferredContent.objects.create(title="raw upload")
+        content_type = ContentType.objects.get_for_model(DummyDeferredContent)
+
+        assert ModerationQueue.objects.filter(
+            content_type=content_type, object_id=item.pk
+        ).count() == 0
+
+        ModerationQueue.objects.create(
+            content_type=content_type,
+            object_id=item.pk,
+        )
+
+        rows = ModerationQueue.objects.filter(
+            content_type=content_type, object_id=item.pk
+        )
+        assert rows.count() == 1
+        assert rows.first().content_object == item
+
+    def test_opting_out_does_not_affect_the_normal_opted_in_model(self):
+        # Cross-check in the same test run: DummyContent (opted in) and
+        # DummyDeferredContent (opted out) must not interfere with each
+        # other's enqueue behavior.
+        normal = DummyContent.objects.create(title="normal")
+        deferred = DummyDeferredContent.objects.create(title="deferred")
+
+        normal_rows = ModerationQueue.objects.filter(
+            content_type=ContentType.objects.get_for_model(DummyContent),
+            object_id=normal.pk,
+        )
+        deferred_rows = ModerationQueue.objects.filter(
+            content_type=ContentType.objects.get_for_model(DummyDeferredContent),
+            object_id=deferred.pk,
+        )
+
+        assert normal_rows.count() == 1
+        assert deferred_rows.count() == 0

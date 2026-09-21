@@ -20,3 +20,22 @@ class DummyContent(Moderatable):
 
     class Meta:
         app_label = "moderation_testapp"
+
+
+class DummyDeferredContent(Moderatable):
+    """
+    Same rationale as DummyContent above, but exercises Part P-042's
+    ``auto_enqueue_on_create = False`` hook end-to-end against a real
+    table, standing in for Reel before Reel exists (P-042's own model
+    is the first real, non-throwaway consumer of this hook).
+
+    A test-only model creating its own ModerationQueue row (mirroring
+    what content/tasks.py's transcode_reel will do for a real Reel) is
+    exercised directly in moderation/tests/test_models.py, not here.
+    """
+
+    title = models.CharField(max_length=50, default="dummy deferred content")
+    auto_enqueue_on_create = False
+
+    class Meta:
+        app_label = "moderation_testapp"

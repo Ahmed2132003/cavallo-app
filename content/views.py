@@ -1,8 +1,9 @@
 from rest_framework import generics, permissions
 from rest_framework.exceptions import NotFound, PermissionDenied
 
-from content.models import Post
-from content.serializers import PostSerializer
+from content.models import Post, Reel
+from content.serializers import PostSerializer, ReelSerializer
+from content.tasks import transcode_reel
 from core.pagination import StandardCursorPagination
 
 
@@ -16,6 +17,13 @@ def _get_post_or_404(pk):
     if post is None:
         raise NotFound("Post not found.")
     return post
+
+
+def _get_reel_or_404(pk):
+    reel = Reel.objects.filter(pk=pk).first()
+    if reel is None:
+        raise NotFound("Reel not found.")
+    return reel
 
 
 class PostListCreateView(generics.ListCreateAPIView):
@@ -74,6 +82,73 @@ class PostDetailView(generics.RetrieveUpdateDestroyAPIView):
     def _check_ownership(self, post):
         if post.business.user_id != self.request.user.id:
             raise PermissionDenied("You do not own this post.")
+
+    def perform_update(self, serializer):
+        self._check_ownership(serializer.instance)
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._check_ownership(instance)
+        instance.delete()
+
+
+class ReelListCreateView(generics.ListCreateAPIView):
+    """
+    Part P-042. Same ownership/list-create pattern as PostListCreateView
+    above, byte-for-byte, with exactly one addition in perform_create():
+    dispatching content.tasks.transcode_reel via .delay() once the raw
+    upload is saved. The Reel is created with processing_status=
+    "uploaded" (the model field's own default) and — because
+    Reel.auto_enqueue_on_create is False — with NO ModerationQueue row
+    yet; the dispatched task is what eventually creates that row, once
+    (and only if) transcoding reaches "ready". See content/tasks.py and
+    content/models.py's Reel docstring for the full mechanism.
+    """
+
+    serializer_class = ReelSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = StandardCursorPagination
+
+    def get_queryset(self):
+        business = getattr(self.request.user, "business_profile", None)
+        if business is None:
+            return Reel.objects.none()
+        return Reel.objects.filter(business=business)
+
+    def perform_create(self, serializer):
+        business = getattr(self.request.user, "business_profile", None)
+        if business is None:
+            raise PermissionDenied(
+                "Only an authenticated business account can create reels."
+            )
+        reel = serializer.save(business=business)
+        transcode_reel.delay(reel.id)
+
+
+class ReelDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    Part P-042. Same public-GET / owner-only-PATCH-DELETE pattern as
+    PostDetailView above, byte-for-byte. See ReelSerializer's docstring
+    for the one known, deliberately out-of-scope limitation: PATCHing
+    `video` here does not re-trigger transcode_reel.
+    """
+
+    serializer_class = ReelSerializer
+    queryset = Reel.objects.all()
+
+    def get_permissions(self):
+        if self.request.method in ("PATCH", "PUT", "DELETE"):
+            return [permissions.IsAuthenticated()]
+        return [permissions.AllowAny()]
+
+    def get_object(self):
+        reel = _get_reel_or_404(self.kwargs["pk"])
+        self.check_object_permissions(self.request, reel)
+        return reel
+
+    def _check_ownership(self, reel):
+        if reel.business.user_id != self.request.user.id:
+            raise PermissionDenied("You do not own this reel.")
 
     def perform_update(self, serializer):
         self._check_ownership(serializer.instance)
