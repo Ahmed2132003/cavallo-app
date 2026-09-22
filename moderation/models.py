@@ -142,6 +142,26 @@ class Moderatable(models.Model):
     of ``True`` means every model that inherits Moderatable today
     (Post, DummyContent) keeps its exact existing behavior unchanged;
     only a subclass that explicitly opts out is affected.
+
+    ``moderation_priority`` (Part P-046) — FAST_PATH PRIORITY HOOK:
+    By default (``ModerationQueue.Priority.NORMAL``), the signal in
+    moderation/signals.py creates the auto-enqueued ModerationQueue row
+    with ``priority="normal"`` — the same behavior as before this hook
+    existed. A concrete subclass whose content has a short lifetime and
+    must be reviewed urgently sets the class attribute:
+
+        class Story(Moderatable, ...):
+            moderation_priority = ModerationQueue.Priority.FAST_PATH
+
+    This is a genuinely different kind of deviation from
+    ``auto_enqueue_on_create``: Story does NOT defer its enqueue (it
+    keeps the default immediate enqueue-on-create), it only changes the
+    priority value that immediate enqueue uses. Like
+    ``auto_enqueue_on_create``, this is read via
+    ``getattr(instance, "moderation_priority", ModerationQueue.Priority.NORMAL)``
+    in the signal, NOT a change to the signal's generic isinstance
+    check, and NOT a model field (it must never appear as a DB column
+    or migration).
     """
 
     class Status(models.TextChoices):
@@ -159,6 +179,24 @@ class Moderatable(models.Model):
     # Not a model field on purpose — it must never appear as a DB column
     # or migration; it is read only by moderation/signals.py via getattr().
     auto_enqueue_on_create = True
+
+    # PRIORITY HOOK (Part P-046) — same pattern as auto_enqueue_on_create
+    # above: a plain class attribute, read via getattr() in
+    # moderation/signals.py, NOT a model field and NOT a change to this
+    # module's isinstance-only, content-type-agnostic signal logic.
+    # moderation/ must still never import or know about a specific
+    # content type (Post/Reel/Story).
+    #
+    # Default is ModerationQueue.Priority.NORMAL, matching the
+    # ModerationQueue.priority field's own default — every model that
+    # inherits Moderatable today (Post, Reel, DummyContent) keeps its
+    # exact existing behavior, 'normal' priority, completely unchanged.
+    # Story (Phase 8, P-046) is the first concrete subclass to override
+    # this, to ModerationQueue.Priority.FAST_PATH, because of its 24h
+    # TTL (architecture Section 6's named risk: a Story can expire
+    # before a human ever reviews it if moderation is slow). See this
+    # class's own docstring above for the full rationale.
+    moderation_priority = ModerationQueue.Priority.NORMAL
 
     class Meta:
         abstract = True

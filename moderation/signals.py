@@ -41,6 +41,13 @@ def enqueue_new_moderatable_content(sender, instance, created, **kwargs):
     only, not on every edit" — re-review-on-edit policy is explicitly
     out of scope for this part (see models.py's Moderatable docstring
     and this part's spec) and is NOT silently implemented here.
+
+    Part P-046 adds a second, independent getattr() hook here —
+    ``moderation_priority`` — read the same way as
+    ``auto_enqueue_on_create`` above, to let a Moderatable subclass
+    (Story) request ``priority="fast_path"`` on its auto-created queue
+    row instead of the default ``"normal"``. See Moderatable's own
+    docstring in models.py for the full rationale.
     """
 
     if not created:
@@ -50,7 +57,12 @@ def enqueue_new_moderatable_content(sender, instance, created, **kwargs):
     if not getattr(instance, "auto_enqueue_on_create", True):
         return
 
+    priority = getattr(
+        instance, "moderation_priority", ModerationQueue.Priority.NORMAL
+    )
+
     ModerationQueue.objects.create(
         content_type=ContentType.objects.get_for_model(instance),
         object_id=instance.pk,
+        priority=priority,
     )

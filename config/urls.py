@@ -58,4 +58,9 @@ urlpatterns = [
     # prefix (see content/reel_urls.py for why this isn't folded into
     # content.urls above).
     path("api/v1/reels/", include("content.reel_urls")),
+    # Part P-046: Story — its own top-level app (ADR-002), own urlconf
+    # module and own prefix, same shape as reels above. Owner-only
+    # create/list for now; no public endpoint yet (see stories/views.py
+    # and this part's own "Out of Scope" note).
+    path("api/v1/stories/", include("stories.urls")),
 ]

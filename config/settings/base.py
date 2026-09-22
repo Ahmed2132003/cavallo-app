@@ -67,6 +67,7 @@ INSTALLED_APPS = [
     "products",  # Part P-031: Product + ProductVariant (non-transactional).
     "moderation",  # Part P-036: ModerationQueue + Moderatable mixin.
     "content",
+    "stories",  # Part P-046: Story (Moderatable, 24h expiry, fast_path).
 
 
 ]

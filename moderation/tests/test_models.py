@@ -14,7 +14,11 @@ import pytest
 from django.contrib.contenttypes.models import ContentType
 
 from moderation.models import ModerationQueue
-from moderation.tests.testapp.models import DummyContent, DummyDeferredContent
+from moderation.tests.testapp.models import (
+    DummyContent,
+    DummyDeferredContent,
+    DummyFastPathContent,
+)
 
 
 @pytest.mark.django_db
@@ -169,3 +173,45 @@ class TestDeferredEnqueueHook:
 
         assert normal_rows.count() == 1
         assert deferred_rows.count() == 0
+
+
+@pytest.mark.django_db
+class TestFastPathPriorityHook:
+    """
+    Part P-046's moderation_priority hook, proven here against a
+    throwaway model (DummyFastPathContent) before Story exists, exactly
+    the way DummyDeferredContent proved P-042's auto_enqueue_on_create
+    hook before Reel existed.
+    """
+
+    def test_default_hook_value_is_normal_on_the_mixin(self):
+        # Regression guard: DummyContent does not set the attribute at
+        # all, so it must inherit ModerationQueue.Priority.NORMAL
+        # directly from Moderatable.
+        assert DummyContent.moderation_priority == ModerationQueue.Priority.NORMAL
+
+    def test_opted_in_model_gets_fast_path_priority_on_its_queue_row(self):
+        item = DummyFastPathContent.objects.create(title="urgent")
+
+        row = ModerationQueue.objects.get(
+            content_type=ContentType.objects.get_for_model(DummyFastPathContent),
+            object_id=item.pk,
+        )
+
+        assert row.priority == ModerationQueue.Priority.FAST_PATH
+
+    def test_overriding_priority_does_not_affect_the_normal_opted_in_model(self):
+        normal = DummyContent.objects.create(title="normal")
+        fast = DummyFastPathContent.objects.create(title="fast")
+
+        normal_row = ModerationQueue.objects.get(
+            content_type=ContentType.objects.get_for_model(DummyContent),
+            object_id=normal.pk,
+        )
+        fast_row = ModerationQueue.objects.get(
+            content_type=ContentType.objects.get_for_model(DummyFastPathContent),
+            object_id=fast.pk,
+        )
+
+        assert normal_row.priority == ModerationQueue.Priority.NORMAL
+        assert fast_row.priority == ModerationQueue.Priority.FAST_PATH

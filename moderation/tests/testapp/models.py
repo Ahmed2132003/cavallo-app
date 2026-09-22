@@ -1,6 +1,6 @@
 from django.db import models
 
-from moderation.models import Moderatable
+from moderation.models import ModerationQueue, Moderatable
 
 
 class DummyContent(Moderatable):
@@ -36,6 +36,21 @@ class DummyDeferredContent(Moderatable):
 
     title = models.CharField(max_length=50, default="dummy deferred content")
     auto_enqueue_on_create = False
+
+    class Meta:
+        app_label = "moderation_testapp"
+
+
+class DummyFastPathContent(Moderatable):
+    """
+    Part P-046. Same rationale as DummyDeferredContent above, but
+    exercises the ``moderation_priority`` hook end-to-end against a
+    real table, standing in for Story before Story exists — exactly
+    the same relationship DummyDeferredContent has to Reel (P-042).
+    """
+
+    title = models.CharField(max_length=50, default="dummy fast path content")
+    moderation_priority = ModerationQueue.Priority.FAST_PATH
 
     class Meta:
         app_label = "moderation_testapp"
