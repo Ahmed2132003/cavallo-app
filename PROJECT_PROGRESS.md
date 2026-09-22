@@ -6496,3 +6496,240 @@ public, expiry-aware "stories visible to customers now" endpoint
 alongside its sweep logic (per this part's own "Out of Scope" section),
 using the same `expires_at > now()` condition the sweep job needs.
 
+
+## Part P-048 — Story Expiry Celery Beat Job + Public Story-Viewing Endpoint — ✅ COMPLETE
+
+**Status:** COMPLETE, pushed to `main` across two commits (initial
+implementation + one follow-up fix — see "Known Issues Hit & Fixed"
+below).
+
+**GitHub References:**
+- Repo: `cavallo-app`, branch `main`.
+- Commit `1ca8c94` — Story.archived_at field + migration,
+  stories/tasks.py (expire_stale_stories), StoryPublicListView +
+  urls.py wiring, stories/tests/test_tasks.py (new), 6 new tests in
+  stories/tests/test_api.py (TestStoryPublicList), black-reformatted.
+- Commit `add5555` — follow-up fix: registered
+  "expire-stale-stories" in config/settings/base.py's
+  CELERY_BEAT_SCHEDULE (missed in the initial commit — see Known
+  Issues below).
+- Both pushed to `origin/main` successfully, no conflicts,
+  fast-forward merges.
+
+### What Was Implemented
+
+**1. `stories/models.py` — `Story.archived_at` field (bookkeeping only)**
+- New nullable `DateTimeField`, set ONLY by `expire_stale_stories()`
+  below. Field docstring explicitly states it must NEVER be checked
+  by any visibility/query logic — only `status` and `expires_at`
+  determine whether a Story is visible.
+- Migration: `stories/migrations/0002_story_archived_at.py`.
+- Genuinely separate from `SoftDeleteModel.deleted_at` (core/models.py)
+  — confirmed by inspection before adding, per this part's own
+  "BEFORE CODING" instruction. No conflict, no reuse.
+
+**2. `stories/tasks.py` (new) — `expire_stale_stories()` Celery Beat task**
+- Single idempotent bulk `.update()`:
+  `Story.objects.filter(expires_at__lte=now, archived_at__isnull=True)
+  .update(archived_at=now)`. No per-row Python loop.
+- Deliberately never touches `status` or `is_deleted` — module
+  docstring states explicitly why (an expired-but-published Story is
+  simply invisible via the query condition; conflating "expired" with
+  "rejected"/"deleted" would corrupt those fields' meaning elsewhere).
+- Registered in `config/settings/base.py`'s `CELERY_BEAT_SCHEDULE` as
+  `"expire-stale-stories"`, task name `"stories.expire_stale_stories"`,
+  every 1200 seconds (20 minutes — midpoint of the spec's 15-30 minute
+  range; no real-time pressure on the exact value since visibility
+  never depends on this job having run).
+
+**3. `stories/views.py` — `StoryPublicListView` (new, alongside existing `StoryListCreateView`)**
+- `GET /api/v1/stories/public/`, `AllowAny`, `StandardCursorPagination`.
+- Queryset: `Story.objects.filter(status=Story.Status.PUBLISHED,
+  expires_at__gt=timezone.now())` — evaluated fresh on every request.
+  `archived_at` is never referenced in this queryset.
+- Optional `?business_id=<id>` filter narrows to one business's
+  stories (Business Profile page's story ring, per the presentation
+  deck).
+- `StoryListCreateView` (owner's own list, P-046/P-047) is completely
+  unchanged — still `IsAuthenticated`, still owner-filtered, still not
+  a public feed.
+
+**4. `stories/urls.py`**
+- Added `path("public/", StoryPublicListView.as_view(),
+  name="story-public-list")` alongside the existing `""` route.
+  `config/urls.py` required NO change — the existing
+  `path("api/v1/stories/", include("stories.urls"))` from P-046
+  already covers the new nested route automatically.
+
+**5. Tests**
+- `stories/tests/test_tasks.py` (new, 6 tests):
+  `TestExpireStaleStoriesArchival` (expired story gets archived_at
+  set; not-yet-expired story left untouched; archiving does NOT
+  change status/is_deleted; already-archived story not reprocessed)
+  + `TestExpireStaleStoriesIdempotency` (running twice in a row is a
+  no-op the second time; running with nothing expired is a no-op).
+- `stories/tests/test_api.py` — new `TestStoryPublicList` class
+  (6 tests): published+not-yet-expired story visible;
+  **`test_expired_published_story_is_invisible_without_running_sweep_job`
+  — THE CRITICAL TEST**, proves query-driven visibility by creating a
+  published Story, backdating `expires_at` via a direct `.update()`
+  call, and confirming the public endpoint excludes it WITHOUT ever
+  importing or calling `expire_stale_stories()` anywhere in the test
+  (also asserts `archived_at` stayed `None`, proving invisibility came
+  from the query condition, not from bookkeeping); pending_review
+  story never public even if not expired; rejected story never public
+  even if not expired; unauthenticated request allowed (200, not 401);
+  `business_id` filter excludes other businesses' stories.
+- `TestStoryCreate` and `TestStoryOwnList` (P-046/P-047) — unchanged,
+  all still passing (zero regression).
+
+### Test Results (final, verified)
+
+- `stories/tests/test_tasks.py`: **6 passed**, 0 failed.
+- `stories/tests/test_api.py`: **16 passed** (10 pre-existing + 6 new
+  `TestStoryPublicList`), 0 failed.
+- `stories/` full suite: **31 passed** (9 model + 16 API + 6 task),
+  0 failed.
+- Full project suite (`pytest -q -rs`): **405 passed, 1 skipped, 0
+  failed**. (The 1 skip is the pre-existing, unrelated `moto` import
+  skip in `core/tests/test_storage_backends.py` — untouched by this
+  part.)
+- `manage.py check`: 0 issues (verified after both commits).
+- `manage.py makemigrations --check --dry-run`: "No changes detected".
+- `flake8 stories/`: 0 issues (after `black stories/` fixed W292
+  missing-EOF-newline across all 6 new/modified files — same recurring
+  issue as P-046/P-047).
+- `black --check stories/`: 15/15 files unchanged (final state).
+- Manual verification: `settings.CELERY_BEAT_SCHEDULE` (via
+  `manage.py shell`) confirmed to contain both
+  `"check-moderation-sla"` and `"expire-stale-stories"` after the
+  follow-up fix — not just present in the file's text, but actually
+  loaded into Django's runtime settings.
+
+### The Critical Architectural Proof (Definition of Done, explicitly verified)
+
+`test_expired_published_story_is_invisible_without_running_sweep_job`
+passes: a Story published then backdated 1 second past its
+`expires_at` is immediately excluded from
+`GET /api/v1/stories/public/`, with `stories.tasks.expire_stale_stories`
+never imported or called anywhere in that test. This is the concrete,
+tested proof (not just architectural intent) that Story visibility is
+query-driven (Section 9) and NOT job-driven — the sweep job is
+verified to be bookkeeping-only, exactly as this part required.
+
+### Known Issues Hit & Fixed (both caught before final sign-off, not left latent)
+
+1. **W292 (missing EOF newline) across all 6 new/modified files** —
+   same recurring issue as P-046/P-047 (hand-written files, not an
+   editor/tooling regression). Fixed via `black stories/`; confirmed
+   clean with a second `flake8 stories/` (0 output) and
+   `black --check stories/` ("15 files would be left unchanged") pass.
+2. **`CELERY_BEAT_SCHEDULE` registration silently missing from the
+   initial commit (`1ca8c94`).** The `stories.expire_stale_stories`
+   task was confirmed working when called directly
+   (`manage.py shell -c "from stories.tasks import
+   expire_stale_stories; print(expire_stale_stories())"` →
+   `{'archived_count': 0}`), and `StoryPublicListView` was confirmed
+   working manually — but the edit to `config/settings/base.py`
+   adding the `"expire-stale-stories"` entry to `CELERY_BEAT_SCHEDULE`
+   was never actually written to disk before the initial commit
+   (`git status` at commit time showed only 7 files, `base.py` was
+   not among them, and `git log -1 --stat` on `1ca8c94` confirmed it).
+   **Fix**: re-applied the edit, verified it landed via `cat` AND via
+   `manage.py shell -c "from django.conf import settings;
+   print(settings.CELERY_BEAT_SCHEDULE)"` (confirming it's actually
+   loaded into Django's runtime config, not just present in the file's
+   text), then committed separately as `add5555` — a genuine two-commit
+   part, not a squash/amend, matching the project's existing
+   "fix commit on top" pattern from P-046's index-name fix.
+   **Process note for whoever runs the next part this way**: verify a
+   settings.py edit landed via `cat` (or better, via
+   `manage.py shell` reading the actual loaded setting) IMMEDIATELY
+   after making it, before moving to the next file — don't wait until
+   `git status`/`git log --stat` at commit time to discover a
+   settings-file edit silently didn't take. The same failure mode hit
+   `stories/views.py`/`stories/urls.py` mid-part (STEP 3) and was
+   caught the same way, before any commit; this time it wasn't caught
+   until after the first commit, hence the follow-up fix commit.
+3. **`celerybeat-schedule` (the binary runtime state file) shows as
+   modified in `git status` after every task run** — same pre-existing,
+   already-flagged-in-P-039 situation (not tracked/ignored properly).
+   Deliberately left OUT of both P-048 commits (never `git add`ed) —
+   consistent with P-039's own note that this file "probably shouldn't
+   be tracked in git" and is a follow-up `.gitignore` decision, not
+   this part's scope.
+
+### Files Created
+- `stories/tasks.py`
+- `stories/migrations/0002_story_archived_at.py`
+- `stories/tests/test_tasks.py`
+
+### Files Modified
+- `stories/models.py` — added `archived_at` field + docstring.
+- `stories/views.py` — added `StoryPublicListView`.
+- `stories/urls.py` — added `public/` route.
+- `stories/tests/test_api.py` — added `TestStoryPublicList` (6 tests).
+- `config/settings/base.py` — added `"expire-stale-stories"` to
+  `CELERY_BEAT_SCHEDULE` (commit `add5555`, follow-up).
+
+### Commands (full sequence, for reference/reruns)
+
+From `D:\Cavallo\scd-backend`:
+
+```powershell
+docker compose exec web python manage.py makemigrations stories
+docker compose exec web python manage.py migrate stories
+docker compose exec web python manage.py makemigrations --check --dry-run
+docker compose exec web python manage.py check
+docker compose exec web python manage.py shell -c "from stories.tasks import expire_stale_stories; print(expire_stale_stories())"
+docker compose exec web python manage.py shell -c "from django.conf import settings; print(settings.CELERY_BEAT_SCHEDULE)"
+docker compose exec web pytest stories/ -v
+docker compose exec web pytest -q -rs
+docker compose exec web black stories/
+docker compose exec web flake8 stories/
+docker compose exec web black --check stories/
+```
+
+### Architecture Decisions Confirmed/Reinforced
+- Section 9 (query-driven visibility) is now concretely tested, not
+  just architecturally intended — see "The Critical Architectural
+  Proof" above.
+- `archived_at` vs. `deleted_at` (SoftDeleteModel) vs. `status`
+  (Moderatable) remain three genuinely distinct fields with three
+  distinct owners (P-048's sweep task / SoftDeleteModel.delete() /
+  moderation.services.approve()-reject() respectively) — no field
+  conflation introduced.
+- Top-level app convention (`stories/tasks.py`, not
+  `apps/stories/tasks.py`) applied consistently, per P-046's
+  established deviation from the spec's literal paths.
+- Celery Beat registration pattern from P-039 reused as-is (same
+  `CELERY_BEAT_SCHEDULE` dict shape, same `@shared_task(name=...,
+  ignore_result=True)` convention in `stories/tasks.py`).
+
+### Known Gaps / Left Open (deliberately, not oversights)
+1. Caption/text-overlay/product-link fields on `Story` — still open,
+   unchanged from P-046/P-047 (not in this part's scope).
+2. `rejection_reason` field on `Story` — still open, unchanged.
+3. `celerybeat-schedule` binary file tracked in git — still open
+   (flagged since P-039), a `.gitignore` follow-up.
+4. No real-world tuning applied to the 20-minute sweep interval —
+   deliberately the spec's range midpoint; revisit only if operational
+   experience suggests otherwise (no urgency, since visibility never
+   depends on this job's timing).
+
+### Exact Next Starting Point
+
+**Part P-049** (Story view-tracking analytics) — explicitly out of
+this part's scope per its own "Out of Scope" section. P-049 can build
+directly on `StoryPublicListView` (P-048) as the read path it should
+instrument, and on the same `expires_at`/`status` fields — no schema
+change to `Story` should be needed for view-tracking itself beyond
+whatever P-049's own spec adds (e.g. a `StoryView` model).
+
+**Part P-050** (Flutter Story viewer) also depends on this part:
+it should consume `GET /api/v1/stories/public/` (optionally with
+`?business_id=`) as its "visible stories right now" data source, and
+per this part's own Handoff Notes, never needs to reason about the
+sweep job's timing — visibility is already correctly real-time from
+the query itself.
+═══════════════════════════════════════════════════════════════
