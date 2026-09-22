@@ -6413,3 +6413,86 @@ depend on this part's `expires_at` strategy and the composite index —
 both are ready to build on top of what's in `stories/models.py` now,
 with no changes needed to this part's schema.
 ═══════════════════════════════════════════════════════════════
+
+
+## Part P-047 — Story Creation Endpoint (Fast-Path Registration) — COMPLETE
+
+**Status:** COMPLETE, pushed to `main`.
+
+**What was implemented:** P-046's already-committed StorySerializer/
+StoryCreateView already satisfied nearly the entirety of P-047's stated
+scope (media validation via core.media.validate_upload(), ownership
+resolved server-side from request.user.business_profile, business/status
+fields ignored from client input, owner's own list across all statuses,
+most-recent-first ordering already provided by StandardCursorPagination's
+built-in `-created_at` ordering). The one real gap was naming: the view
+was renamed from `StoryCreateView` to `StoryListCreateView` to match the
+PostListCreateView/ReelListCreateView convention and this part's own spec
+wording. No serializer, model, or URL-registration changes were needed —
+`config/urls.py`'s existing `path("api/v1/stories/",
+include("stories.urls"))` from P-046 required no change.
+
+**Files Modified:** `stories/views.py`, `stories/urls.py` (rename only,
+zero behavior change).
+
+**Files Created:** None.
+
+**Exact allowed media types/size for P-051 (Flutter creation flow) to
+consume:** `image/jpeg`, `image/png`, `image/webp`, `video/mp4`,
+`video/quicktime`, `video/webm`; max 100 MB (Reel's ceiling, reused —
+flagged in P-046 as a placeholder pending real product limits, still
+true here). Validation is fully synchronous: an invalid upload returns
+`400` immediately in the same request cycle, never a background/async
+failure — P-051's retry UX can rely on this.
+
+**Architecture decisions confirmed:** No new architecture decisions;
+this part reused every P-046 pattern as-is. Confirms (again) that a
+part's literal file-list/class-name wording in the master plan can lag
+what a prior part already built — always diff against the actual repo
+before assuming work is still needed.
+
+**Commands run:** `manage.py check`; `pytest stories/ -v`;
+`makemigrations --check --dry-run`; `pytest -q -rs`; `flake8 stories/`;
+`black --check stories/` / `black stories/`.
+
+**Tests:** `stories/` — 19 passed, 0 failed (identical count before/after
+the rename). Full suite — 393 passed, 1 skipped, 0 failed (same baseline
+as P-046; zero cross-app regression). `flake8 stories/` — 0 issues (after
+fixing a W292 missing-EOF-newline on both touched files via `black`).
+`black --check stories/` — 12/12 files unchanged.
+
+**Known Issues Hit & Fixed:** The first hand-written version of
+`stories/views.py`/`stories/urls.py` was missing trailing EOF newlines
+(W292), caught by `flake8 stories/` before commit. Fixed by running
+`black stories/` (auto-formats + adds the missing newline), verified with
+a second `flake8`/`black --check` pass, then re-committed. Two commits
+exist on `main` for this part as a result:
+- `69e72db` — the StoryCreateView → StoryListCreateView rename
+  (pre-`black`, has the W292 issue).
+- `b5563a2` — `black`-reformats the same two files, fixing W292. This is
+  the commit that leaves `stories/` in its final clean state.
+
+**Known Gaps / Left Open (unchanged from P-046, still real):**
+1. Caption / text-overlay / product-link fields — still not on `Story`
+   (presentation-deck vs. this part's/P-046's own written scope gap,
+   still unresolved, still flagged for Ahmed before P-050/P-051 or any
+   Story-editing part assumes they exist).
+2. `rejection_reason` field — Story still doesn't have it (Post/Reel got
+   it in P-044).
+3. No public/expiry-aware Story feed — still deferred to P-048.
+
+**GitHub References:**
+- Repo: `cavallo-app`, branch `main`.
+- Commit `69e72db` — rename StoryCreateView → StoryListCreateView.
+- Commit `b5563a2` — black reformat (fixes W292 on both touched files).
+- Both pushed to `origin/main` successfully, no conflicts, fast-forward
+  merges.
+
+**Exact Next Starting Point:** **Part P-048** (expiry-sweep job) — no
+changes needed to `stories/models.py`'s `expires_at` strategy or its
+composite index (`story_biz_status_exp_idx`) before starting it, per
+P-046's own note, still true after P-047. P-048 should build the
+public, expiry-aware "stories visible to customers now" endpoint
+alongside its sweep logic (per this part's own "Out of Scope" section),
+using the same `expires_at > now()` condition the sweep job needs.
+
