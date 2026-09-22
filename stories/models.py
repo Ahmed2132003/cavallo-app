@@ -108,9 +108,17 @@ class Story(Moderatable, TimestampedModel, SoftDeleteModel):
             # Story specifically — backs both a future expiry sweep
             # query and any "still-visible stories for this business"
             # check.
+            #
+            # Part P-046 FIX: named "story_biz_status_exp_idx" (24
+            # chars), not "stories_story_biz_status_exp_idx" (32
+            # chars) — Django's models.E034 enforces a hard 30-char
+            # ceiling on every index/constraint name regardless of the
+            # actual database backend in use (kept portable to Oracle),
+            # so the original name failed `manage.py check` before any
+            # migration could even be generated.
             models.Index(
                 fields=["business", "status", "expires_at"],
-                name="stories_story_biz_status_exp_idx",
+                name="story_biz_status_exp_idx",
             ),
         ]
 

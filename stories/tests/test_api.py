@@ -1,4 +1,4 @@
-import os
+from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
@@ -104,9 +104,7 @@ class TestStoryCreate(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         story = Story.objects.get(pk=response.data["id"])
-        self.assertEqual(
-            story.expires_at - story.published_at, __import__("datetime").timedelta(hours=24)
-        )
+        self.assertEqual(story.expires_at - story.published_at, timedelta(hours=24))
 
     def test_disguised_exe_upload_is_rejected(self):
         self.client.force_authenticate(self.user)
