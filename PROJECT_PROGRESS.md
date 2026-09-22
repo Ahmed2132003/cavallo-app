@@ -6088,3 +6088,328 @@ GITHUB: كل الـ commits اتعملت push على cavallo-mobile main branch.
 commit مؤكَّد فعليًا: "P-045 STEP 8: PostDetailScreen/ReelDetailScreen
 widget tests — Part P-045 complete" — commit 2f9c0cd (بعد 04fad6e). الـ
 Part مقفول بالكامل على GitHub، مفيش عمل متبقي غير موثّق.
+
+Add this section after: [Phase 7 / P-041–P-045 entry — Phase 8 starts here]
+
+═══════════════════════════════════════════════════════════════
+PART P-046 — stories App: Story Model (Moderatable, expires_at Strategy)
+STATUS: ✅ COMPLETE
+═══════════════════════════════════════════════════════════════
+
+## What Was Implemented
+
+Phase 8's first part. Built the `stories` app end-to-end: a new,
+genuinely separate Django app (ADR-002 respected — not merged into
+`content`), with the `Story` model, a fast_path moderation-priority
+mechanism (new, generic, added to `moderation/` itself), and a minimal
+authenticated create/list API.
+
+Three-step build, done in strict order (model mechanism → model →
+API), each step tested in isolation before moving to the next:
+
+### STEP 1 — Generic `moderation_priority` hook on `Moderatable`
+
+Before touching Story at all, added a second hook to
+`moderation.models.Moderatable`, alongside P-042's existing
+`auto_enqueue_on_create`:
+
+- `Moderatable.moderation_priority` — class attribute, default
+  `ModerationQueue.Priority.NORMAL`. Read via `getattr()` in
+  `moderation/signals.py`'s `enqueue_new_moderatable_content`, exactly
+  the same pattern as `auto_enqueue_on_create`. `moderation/` still
+  never imports or knows about a specific content type (Post/Reel/
+  Story) — the isinstance/getattr generic-signal design from P-036/
+  P-042 is fully preserved.
+- Proven end-to-end via a throwaway model, `DummyFastPathContent`, in
+  `moderation/tests/testapp/models.py` — same relationship
+  `DummyDeferredContent` has to Reel (P-042): the mechanism is proven
+  BEFORE the real consumer (Story) exists.
+- New test class `TestFastPathPriorityHook` in
+  `moderation/tests/test_models.py` (3 tests): default value is
+  NORMAL, opted-in model gets FAST_PATH on its queue row, opting in
+  doesn't affect a sibling NORMAL model's priority.
+- Zero new model fields (`moderation_priority` is a plain class
+  attribute, never a DB column) → confirmed via
+  `makemigrations moderation --check --dry-run` → "No changes
+  detected".
+- Zero change to Post/Reel/DummyContent's existing 'normal' priority
+  behavior — confirmed by re-running `moderation/` and `content/` test
+  suites after the change.
+
+Files touched: `moderation/models.py`, `moderation/signals.py`,
+`moderation/tests/testapp/models.py`, `moderation/tests/test_models.py`.
+
+### STEP 2 — `stories` app + `Story` model
+
+Created `stories/` at the project's top level (NOT `apps/stories/` —
+the spec document's own file paths use an `apps/` prefix, but the
+project's real convention since P-011 is top-level apps; this was
+adapted, not a deviation requiring a decision).
+
+`Story(Moderatable, TimestampedModel, SoftDeleteModel)`:
+- `business` — FK to `businesses.BusinessProfile`, `on_delete=PROTECT`
+  (same convention as Post/Reel/Product).
+- `media` — plain `FileField` (not `ImageField`), same no-Pillow
+  convention as Post.image/Reel.video. Accepts image or video per the
+  presentation deck's Story description; real content-type/size
+  validation lives in the serializer (STEP 3).
+- `published_at`, `expires_at` — both plain `DateTimeField` (no
+  `auto_now_add`), set together in an overridden `save()` from a
+  single `timezone.now()` call, ONLY on first creation
+  (`self._state.adding` guard — never `self.pk is None`). Never
+  recomputed on subsequent saves (verified by a dedicated test:
+  approving/editing a Story after creation must not push
+  `expires_at` forward).
+- `moderation_priority = ModerationQueue.Priority.FAST_PATH` — the
+  ONE deviation from Post/Reel, using STEP 1's hook. This is Story's
+  core acceptance criterion (architecture Section 6's named risk: a
+  24h-TTL item in a normal-priority queue can expire before a human
+  ever reviews it).
+- `auto_enqueue_on_create` — left at the Moderatable default (`True`).
+  Story enqueues IMMEDIATELY on creation, unlike Reel's deferred
+  pattern (P-042) — confirmed no transcoding step is needed for
+  MVP-scope Story video (finding from the presentation deck, flagged
+  explicitly in the model's module docstring as a scope call, not
+  silently decided).
+- Deliberately NO comments field/relationship at all (architecture-
+  mandated difference from Post/Reel) — verified by a dedicated test.
+- Composite index on `(business, status, expires_at)`, per
+  architecture Section 9 — **named `story_biz_status_exp_idx` (24
+  chars)**, NOT the spec's literal `stories_story_biz_status_exp_idx`
+  (32 chars) — see "Known Issues Fixed" below.
+- `get_moderation_preview()` — returns business name + media URL.
+
+**SCOPE GAP FLAGGED, NOT SILENTLY DECIDED**: the presentation deck
+lists "Add Text" and "Add Product / Link" as Trader capabilities for
+Stories, but this part's own written scope (Detailed Implementation
+section) enumerates Story's fields exhaustively as
+business/media/published_at/expires_at/status only — no caption/
+text-overlay/product-link field. Since the part's own scope is the
+more specific source, NO such field was added here. This is a real,
+open gap between the presentation deck and this part's scope,
+documented in `stories/models.py`'s module docstring, left for Ahmed
+to resolve before any future part (Flutter P-050/P-051, or a
+dedicated Story-editing part) assumes those fields exist.
+
+Also created: `stories/apps.py`, `stories/admin.py` (registered,
+`status`/`published_at`/`expires_at` read-only), migration
+`stories/migrations/0001_initial.py`. Registered `"stories"` in
+`INSTALLED_APPS` (`config/settings/base.py`), after `"content"`.
+
+9 model tests in `stories/tests/test_models.py`, all passing —
+including the core proof: `test_creating_story_queue_row_has_
+fast_path_priority`.
+
+### STEP 3 — API layer (serializer, view, urls)
+
+- `stories/serializers.py` — `StorySerializer`: only `media` is
+  writable. `business`/`published_at`/`expires_at`/`status` are all
+  read-only (business resolved server-side in the view; timestamps
+  computed by the model; status exclusively managed by
+  `moderation.services`). `validate_media()` accepts image AND video
+  MIME types, 100 MB ceiling (Reel's number, not Post's — a video
+  Story must fit under it; explicitly flagged as a placeholder pending
+  real product limits, same caveat ReelSerializer's own docstring
+  carries). Deliberately no `rejection_reason` field (P-044 gave
+  Post/Reel that; out of this part's own Definition of Done — a gap,
+  not an oversight).
+- `stories/views.py` — `StoryCreateView(ListCreateAPIView)`. POST:
+  authenticated business only, `business` always resolved from
+  `request.user.business_profile` in `perform_create()` (never
+  request-body-supplied). GET: owner's own stories only (same
+  ownership-filtering pattern as PostListCreateView/
+  ReelListCreateView) — NOT a public feed. A public, expiry-aware
+  "visible to customers now" listing is explicitly out of scope (spec's
+  own "Out of Scope" section) — belongs to a future part once the
+  expiry-sweep mechanism (P-048) exists.
+- `stories/urls.py` — single route, `story-list-create`.
+- Registered in `config/urls.py`: `path("api/v1/stories/",
+  include("stories.urls"))`, right after reels.
+
+10 API tests in `stories/tests/test_api.py`, all passing — including
+the true end-to-end proof:
+`test_create_story_auto_enqueues_moderation_with_fast_path_priority`
+(via the real HTTP endpoint, not just the model layer).
+
+## Known Issues Hit & Fixed (post-STEP-3, before sign-off)
+
+1. **`models.E034` — index name too long.** The spec's literal index
+   name `stories_story_biz_status_exp_idx` is 32 characters; Django
+   enforces a hard 30-char ceiling on every index/constraint name
+   (kept portable to Oracle), regardless of the actual DB backend in
+   use. `manage.py check` failed before any migration could even be
+   generated. **Fix**: renamed to `story_biz_status_exp_idx` (24
+   chars) in `Meta.indexes`. This is the only difference from the
+   original STEP 2 spec text pasted into this project.
+2. **Cascading test failures were a symptom, not a separate bug.**
+   Because `check` failed, `stories/migrations/0001_initial.py` was
+   never generated in the first attempted run. An app with no
+   migrations gets `sync_apps`-style direct table creation instead of
+   proper `migrate`, which broke FK-dependency ordering against
+   `businesses_businessprofile` in the test DB — surfacing as 19/19
+   `stories/` tests erroring with "relation businesses_businessprofile
+   does not exist". Fixing the index name and then genuinely running
+   `makemigrations stories` (which had never actually succeeded
+   before) resolved both issues together.
+3. **Linting tools (`flake8`, `black`) were not installed in the
+   `web` container image at all** — not a regression, just never
+   present. Installed ad-hoc via
+   `pip install flake8 black --break-system-packages` (container-
+   runtime-only; NOT persisted to `requirements.txt` or the Docker
+   image — will need reinstalling after any `docker compose up
+   --build`, or added to requirements.txt as a deliberate follow-up
+   if the team wants it always available). Once available:
+   - `flake8 stories/` initially reported: missing trailing newlines
+     (W292) across nearly every new file, one unused import (`F401`,
+     `import os` in `test_api.py`, left over from an earlier draft),
+     and one line-too-long (`E501`, the `__import__("datetime")`
+     workaround line in a test).
+   - Fixed the two non-cosmetic issues by hand (removed the unused
+     `import os`; replaced `__import__("datetime").timedelta(...)`
+     with a proper `from datetime import timedelta` at the top of
+     `stories/tests/test_api.py`).
+   - Ran `black stories/` to auto-fix all formatting/newline issues
+     across the other 8 files + the migration.
+   - Final state: `flake8 stories/` → zero output. `black --check
+     stories/` → "12 files would be left unchanged".
+
+## Files Created
+
+- `stories/__init__.py`
+- `stories/apps.py`
+- `stories/models.py`
+- `stories/admin.py`
+- `stories/serializers.py`
+- `stories/views.py`
+- `stories/urls.py`
+- `stories/migrations/__init__.py`
+- `stories/migrations/0001_initial.py`
+- `stories/tests/__init__.py`
+- `stories/tests/test_models.py`
+- `stories/tests/test_api.py`
+
+## Files Modified
+
+- `moderation/models.py` — added `moderation_priority` class attribute
+  + docstring section on `Moderatable`.
+- `moderation/signals.py` — reads `moderation_priority` via `getattr`,
+  passes it to `ModerationQueue.objects.create(priority=...)`; added
+  docstring note.
+- `moderation/tests/testapp/models.py` — added `DummyFastPathContent`.
+- `moderation/tests/test_models.py` — added `TestFastPathPriorityHook`
+  (3 tests).
+- `config/settings/base.py` — added `"stories"` to `INSTALLED_APPS`.
+- `config/urls.py` — added `api/v1/stories/` route.
+
+## Commands (full sequence, for reference/reruns)
+
+From `D:\Cavallo\scd-backend`:
+
+```powershell
+docker compose exec web python manage.py check
+docker compose exec web python manage.py makemigrations stories
+docker compose exec web python manage.py migrate stories
+docker compose exec web python manage.py makemigrations --check --dry-run
+docker compose exec web pip install flake8 black --break-system-packages
+docker compose exec web black stories/
+docker compose exec web flake8 stories/
+docker compose exec web black --check stories/
+docker compose exec web pytest moderation/ -v
+docker compose exec web pytest stories/ -v
+docker compose exec web pytest -q -rs
+```
+
+## Test Results (final, verified)
+
+- `moderation/` suite: 76 passed (28+ pre-existing + 3 new fast_path-
+  hook tests + earlier Phase 7 additions), 0 failed.
+- `stories/` suite: **19 passed** (9 model tests + 10 API tests), 0
+  failed, 0 errors.
+- Full project suite (`pytest -q -rs`): **393 passed, 1 skipped, 0
+  failed**. (The 1 skip is the pre-existing, unrelated `moto` import
+  skip in `core/tests/test_storage_backends.py` — untouched by this
+  part.)
+- `manage.py check`: 0 issues.
+- `manage.py makemigrations --check --dry-run`: "No changes detected"
+  (model and migration are in sync; no other app was accidentally
+  touched).
+- `flake8 stories/`: 0 issues.
+- `black --check stories/`: 0 files would be reformatted (12/12
+  unchanged).
+
+## Verification (how to confirm P-046 end-to-end from scratch)
+
+1. `docker compose exec web python manage.py migrate` — `stories.
+   0001_initial` should show as already applied (or apply cleanly).
+2. `docker compose exec web pytest stories/ moderation/ -v` — all
+   green.
+3. Manually: authenticate as a business user, `POST
+   /api/v1/stories/` with a `media` file (multipart) → expect `201`,
+   response includes `expires_at` exactly 24h after `published_at`.
+   Check Django Admin → Moderation → the auto-created
+   `ModerationQueue` row for that Story has `priority=fast_path`
+   (NOT `normal`).
+4. `GET /api/v1/stories/` as that same business → see only that
+   business's own Stories, never another business's.
+
+## Architecture Decisions Confirmed/Reinforced
+
+- ADR-002 respected: `Story` lives in its own app/table, no
+  discriminator field added to `content.Post`.
+- `moderation/` remains genuinely content-type-agnostic: the new
+  `moderation_priority` hook is read via `getattr()`, same as
+  `auto_enqueue_on_create` — zero `isinstance(instance, Story)`-style
+  special-casing anywhere in `moderation/`.
+- Top-level app convention (no `apps/` package) applied to `stories/`,
+  consistent with every app since P-011.
+
+## Known Gaps / Left Open (deliberately, not oversights)
+
+1. **Caption / text-overlay / product-link fields** — presentation
+   deck implies them for Stories; this part's own written scope does
+   not include them, so they were not added. Needs a decision before
+   Flutter P-050/P-051 or any Story-editing part assumes they exist.
+2. **`rejection_reason` field** — Post/Reel got this in P-044; Story
+   does not have it yet. Out of P-046's Definition of Done.
+3. **No public/expiry-aware Story feed** — only owner's own
+   create/list exists. Public visibility logic depends on the expiry
+   sweep (P-048) and is explicitly deferred to a future part.
+4. **`flake8`/`black` are not in the `web` image's installed
+   dependencies** — currently pip-installed ad-hoc per container
+   session, not persisted. If the team wants linting available by
+   default, add both to `requirements.txt` (or a
+   `requirements-dev.txt`) and rebuild the image — a follow-up
+   decision, not done as part of P-046.
+
+## GitHub References
+
+- Repo: `cavallo-app` (backend), branch `main`.
+- Commit `4b46031` — initial P-046 implementation (STEP 1 + STEP 2 +
+  STEP 3, all files above, pre-fix).
+- Commit `4c66081` — `fix(stories): shorten composite index name to
+  satisfy Django's 30-char limit (models.E034)` — the index-name fix
+  + all `black`-reformatted files + the generated
+  `stories/migrations/0001_initial.py` (this migration file did not
+  exist in `4b46031` — it was generated and committed only in
+  `4c66081`, after the index-name fix made `makemigrations` succeed
+  for the first time).
+- Both commits pushed to `origin/main` successfully, no conflicts.
+
+## Exact Next Starting Point
+
+**Part P-047** (per the master plan's own dependency chain): the
+Story **creation endpoint's fuller upload-retry logic** — this part's
+own spec explicitly deferred that to P-047/P-051
+("`StoryCreateView` — the fuller creation-with-upload-retry logic is
+Part P-047/P-051's job; this part just needs the model to be creatable
+and testable").
+
+Before starting P-047, resolve the caption/text-overlay/product-link
+scope gap noted above (Known Gaps #1), since P-047's upload flow will
+need to know whether those fields exist on `Story` or not.
+
+**Part P-048** (expiry sweep job) and **P-049** (view tracking) both
+depend on this part's `expires_at` strategy and the composite index —
+both are ready to build on top of what's in `stories/models.py` now,
+with no changes needed to this part's schema.
+═══════════════════════════════════════════════════════════════
