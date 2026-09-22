@@ -539,3 +539,96 @@ class TestReelDetailIDOR(APITestCase):
     def test_unauthenticated_delete_rejected(self):
         response = self.client.delete(f"/api/v1/reels/{self.reel.id}/")
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        
+
+
+# ---------------------------------------------------------------------------
+# Part P-044: rejection_reason field on PostSerializer/ReelSerializer.
+# ---------------------------------------------------------------------------
+
+
+from moderation.services import reject as moderation_reject  # noqa: E402
+
+
+class TestPostRejectionReason(APITestCase):
+    def setUp(self):
+        self.user, self.business = _make_business_user(
+            "trader-p044-post@example.com", "Trader P044 Post"
+        )
+        self.moderator = _make_customer("moderator-p044-post@example.com")
+        self.moderator.groups.add(Group.objects.get(name="Moderator"))
+        self.client.force_authenticate(self.user)
+        create_response = self.client.post(
+            "/api/v1/posts/", {"caption": "will be rejected"}, format="json"
+        )
+        self.post_id = create_response.data["id"]
+
+    def test_rejection_reason_is_null_while_pending(self):
+        response = self.client.get(f"/api/v1/posts/{self.post_id}/")
+        self.assertIsNone(response.data["rejection_reason"])
+
+    def test_rejection_reason_shows_real_text_after_reject(self):
+        queue_item = ModerationQueue.objects.get(
+            content_type=ContentType.objects.get_for_model(Post),
+            object_id=self.post_id,
+        )
+        moderation_reject(
+            queue_item, reviewer=self.moderator, reason="Blurry image, resubmit"
+        )
+
+        response = self.client.get(f"/api/v1/posts/{self.post_id}/")
+        self.assertEqual(response.data["status"], "rejected")
+        self.assertEqual(
+            response.data["rejection_reason"], "Blurry image, resubmit"
+        )
+
+    def test_rejection_reason_is_null_after_approve(self):
+        queue_item = ModerationQueue.objects.get(
+            content_type=ContentType.objects.get_for_model(Post),
+            object_id=self.post_id,
+        )
+        from moderation.services import approve as moderation_approve
+
+        moderation_approve(queue_item, reviewer=self.moderator)
+
+        response = self.client.get(f"/api/v1/posts/{self.post_id}/")
+        self.assertEqual(response.data["status"], "published")
+        self.assertIsNone(response.data["rejection_reason"])
+
+
+class TestReelRejectionReason(APITestCase):
+    def setUp(self):
+        self.user, self.business = _make_business_user(
+            "trader-p044-reel@example.com", "Trader P044 Reel"
+        )
+        self.moderator = _make_customer("moderator-p044-reel@example.com")
+        self.moderator.groups.add(Group.objects.get(name="Moderator"))
+
+    @patch("content.tasks.transcode_reel.delay")
+    def test_rejection_reason_shows_real_text_after_reel_rejected(self, mock_delay):
+        self.client.force_authenticate(self.user)
+        create_response = self.client.post(
+            "/api/v1/reels/",
+            {"caption": "reel to reject", "video": _make_video_upload()},
+            format="multipart",
+        )
+        reel_id = create_response.data["id"]
+
+        # Reel does not auto-enqueue on create (P-042) — simulate the
+        # transcode task reaching "ready" and creating the queue row,
+        # exactly as content/tasks.py::transcode_reel does for real.
+        reel = Reel.objects.get(pk=reel_id)
+        reel.processing_status = "ready"
+        reel.save()
+        queue_item = ModerationQueue.objects.create(
+            content_type=ContentType.objects.get_for_model(Reel),
+            object_id=reel_id,
+        )
+
+        moderation_reject(
+            queue_item, reviewer=self.moderator, reason="Video too dark"
+        )
+
+        response = self.client.get(f"/api/v1/reels/{reel_id}/")
+        self.assertEqual(response.data["status"], "rejected")
+        self.assertEqual(response.data["rejection_reason"], "Video too dark")

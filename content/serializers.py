@@ -1,7 +1,46 @@
+from django.contrib.contenttypes.models import ContentType
 from rest_framework import serializers
 
 from content.models import Post, Reel
 from core.media import validate_upload
+from moderation.models import ModerationLog, ModerationQueue
+
+
+def _get_rejection_reason(obj):
+    """
+    Part P-044. Return the reason text from the most recent 'rejected'
+    ModerationLog entry for this Moderatable object, or None if the
+    object is not currently rejected (or — defensively, should not
+    normally happen once status == "rejected" — no such log exists
+    yet). Used exclusively by the owner-facing PostSerializer/
+    ReelSerializer below.
+
+    Deliberately NOT added to PostPublicSerializer/ReelPublicSerializer
+    (P-043) — those classes exist specifically to keep moderation
+    metadata off the unauthenticated public endpoint; a rejected object
+    never appears there anyway (published_objects only), so the field
+    would be dead weight there at best.
+    """
+    if obj.status != obj.Status.REJECTED:
+        return None
+
+    content_type = ContentType.objects.get_for_model(obj.__class__)
+    queue_item = (
+        ModerationQueue.objects.filter(content_type=content_type, object_id=obj.id)
+        .order_by("-created_at")
+        .first()
+    )
+    if queue_item is None:
+        return None
+
+    log = (
+        ModerationLog.objects.filter(
+            queue_item=queue_item, action=ModerationLog.Action.REJECTED
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    return log.reason if log else None
 
 
 class PostSerializer(serializers.ModelSerializer):
@@ -11,7 +50,13 @@ class PostSerializer(serializers.ModelSerializer):
     request.user.business_profile in the view (P-032's exact pattern),
     and `status` is exclusively managed by moderation.services.approve()/
     reject(), never writable through this app's own serializer.
+
+    `rejection_reason` (Part P-044): a SerializerMethodField, always
+    read-only by construction (no need to list it in read_only_fields).
+    Populated only when status == "rejected"; None otherwise.
     """
+
+    rejection_reason = serializers.SerializerMethodField()
 
     class Meta:
         model = Post
@@ -21,6 +66,7 @@ class PostSerializer(serializers.ModelSerializer):
             "caption",
             "image",
             "status",
+            "rejection_reason",
             "created_at",
             "updated_at",
         )
@@ -34,6 +80,9 @@ class PostSerializer(serializers.ModelSerializer):
                 max_size_bytes=5 * 1024 * 1024,
             )
         return value
+
+    def get_rejection_reason(self, obj):
+        return _get_rejection_reason(obj)
 
 
 class ReelSerializer(serializers.ModelSerializer):
@@ -49,6 +98,9 @@ class ReelSerializer(serializers.ModelSerializer):
     PostSerializer above (business resolved server-side in the view;
     status exclusively owned by moderation.services).
 
+    `rejection_reason` (Part P-044): same SerializerMethodField as
+    PostSerializer above — populated only when status == "rejected".
+
     Known, deliberately out-of-scope limitation (flag for a future
     part, not silently "fixed" here): PATCHing `video` on an existing
     Reel replaces the file but does NOT re-trigger transcode_reel, so
@@ -56,6 +108,8 @@ class ReelSerializer(serializers.ModelSerializer):
     stale against the new file. This part's spec only covers the
     create-time pipeline; re-transcoding on update was never in scope.
     """
+
+    rejection_reason = serializers.SerializerMethodField()
 
     class Meta:
         model = Reel
@@ -68,6 +122,7 @@ class ReelSerializer(serializers.ModelSerializer):
             "duration_seconds",
             "processing_status",
             "status",
+            "rejection_reason",
             "created_at",
             "updated_at",
         )
@@ -94,6 +149,9 @@ class ReelSerializer(serializers.ModelSerializer):
             max_size_bytes=100 * 1024 * 1024,
         )
         return value
+
+    def get_rejection_reason(self, obj):
+        return _get_rejection_reason(obj)
 
 
 class PostPublicSerializer(serializers.ModelSerializer):
