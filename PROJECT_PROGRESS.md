@@ -6842,3 +6842,133 @@ work. Phase 14's future analytics dashboard (P-085) is the eventual
 aggregator of this raw `StoryView` data alongside other engagement
 metrics (Post/Reel views, likes, etc.) — P-049 deliberately built only
 the raw capture + single-story count, nothing more.
+
+## PART P-050 — Flutter: Story Viewer Screen (Local-Only Timer/Auto-Advance) — COMPLETE
+
+Status: DONE. Full customer-viewing Story experience built and manually
+proven end-to-end against the real backend (business creates → moderator
+approves → customer views → view recorded).
+
+What was implemented:
+- Domain layer: `PublicStory` entity + `StoryPublicRepository` interface
+  (lib/features/stories/domain/). Follows the project's established
+  public-entity convention (PublicPost/PublicReel from P-045) rather
+  than the master plan's own file/class naming — a deliberate, flagged
+  deviation (see that file's own docstring). No `businessName` field:
+  the backend's public list endpoint (P-048) returns only the
+  business's numeric id, same gap PostCard already hit and solved the
+  same way — the caller supplies the name.
+- Data layer: `StoryPublicRepositoryImpl` (fetchBusinessStories,
+  recordView) + `storyPublicRepositoryProvider`
+  (lib/features/stories/data/). `recordView` is fire-and-forget by
+  spec — it swallows its own DioException via `reportError` rather than
+  rethrowing, unlike every other repository method in the app.
+- Presentation providers: `businessStoriesProvider` (FutureProvider
+  .autoDispose.family, first page only, retry disabled) and
+  `viewedStoriesProvider` (StateProvider.autoDispose.family, via
+  `package:flutter_riverpod/legacy.dart` — the one deliberate use of
+  the legacy Riverpod API in this app, for a simple local in-memory
+  "seen" Set per business, per the master plan's own "don't
+  over-engineer persistent tracking" instruction).
+- `StoryRingWidget` (lib/features/stories/presentation/): reusable
+  avatar-with-ring component, built ahead of its real consumer
+  (Phase 10's Discover screen, P-062) — same precedent as
+  PostCard/ReelCard ahead of Feed. Renders nothing when a business has
+  no currently-visible stories.
+- `StoryViewerScreen` (lib/features/stories/presentation/): full
+  tap-to-advance/auto-advance/swipe-to-dismiss viewer. ALL timer/
+  progress/current-index state lives as plain fields on
+  `_StoryPlayerState` — never a Riverpod provider — satisfying
+  Architecture Section 13's explicit local-state boundary. Fixed
+  5-second duration per story (image or video — video's own real-
+  duration timing is an explicitly flagged out-of-scope gap, since no
+  `video_player` dependency exists in this project yet; every Story is
+  rendered via `Image.network` regardless of media type).
+- Routing: `RouteNames.storyViewer` / `storyViewerPath`
+  (`/stories/:id`, using the shared `idParam` convention) added to
+  `route_names.dart`; the actual `GoRoute` wired into `app_router.dart`.
+- Widget tests: `test/features/stories/presentation/
+  story_viewer_screen_test.dart` — 10 tests covering not-found/loading/
+  empty/load-error states, tap-advance/tap-back, reaching the end
+  closes the viewer, swipe-down-to-dismiss, the auto-advance timer, and
+  a dedicated test proving no state leaks into any provider outside the
+  viewer's own widget tree across two separate viewing sessions
+  (Architecture Section 13 verification). Uses a hand-written fake
+  repository (no mockito/mocktail), same convention as
+  reel_detail_screen_test.dart (P-045).
+
+Files created:
+- lib/features/stories/domain/public_story_entity.dart
+- lib/features/stories/domain/story_public_repository.dart
+- lib/features/stories/data/story_public_repository.dart
+- lib/features/stories/data/dtos/story_public_response_dto.dart
+- lib/features/stories/presentation/story_public_provider.dart
+- lib/features/stories/presentation/story_ring_widget.dart
+- lib/features/stories/presentation/story_viewer_screen.dart
+- test/features/stories/presentation/story_viewer_screen_test.dart
+
+Files modified:
+- lib/routing/route_names.dart (added storyViewer / storyViewerPath)
+- lib/routing/app_router.dart (wired the real GoRoute for storyViewer)
+- lib/features/feed/presentation/home_screen.dart (added a temporary
+  "View Story (debug, business 3)" debug button, hardcoded to
+  businessId 3, not gated on account type — same "temporary, remove
+  once a real navigational home exists" convention as the P-021c/
+  P-033/P-040 debug buttons already on this screen. Real home:
+  Phase 10's Discover screen stories bar, P-062.)
+
+Important implementation details / bugs found and fixed during this part:
+- `_recordCurrentView()`'s write to `viewedStoriesProvider` originally
+  ran synchronously inside `initState()`, which Riverpod treats as
+  still "the widget tree building" — this threw a real runtime
+  assertion ("Tried to modify a provider while the widget tree was
+  building"), caught by this part's own widget tests, not a
+  hypothetical. Fixed by deferring that one write via
+  `Future.microtask(() { if (!mounted) return; ... })`. The
+  fire-and-forget `recordView` network call itself was NOT affected —
+  it stays synchronous/unawaited.
+- The auto-advance-timer widget test initially flaked: pumping exactly
+  the AnimationController's 5-second duration could land the animation
+  value a hair under 1.0 (AnimationController's ticker only captures
+  its real start time on the FIRST tick after `.forward()`, not at the
+  call itself), so `AnimationStatus.completed` never fired. Fixed by
+  pumping 5.1s instead of exactly 5s in that one test — test-only
+  change, no production code affected.
+- flutter analyze flagged an unused optional test parameter
+  (`fetchError` on the fake repository) — fixed by adding a genuine
+  "load error" widget test group that exercises it, rather than
+  removing the parameter.
+
+Manual end-to-end validation (performed and confirmed): a real Story
+(image) created by a Business account, approved by a Moderator account,
+then viewed by a different, real Customer account on the Android
+emulator (`flutter run`, real backend at 10.0.2.2:8095). Confirmed via
+live logs: `GET /api/v1/stories/public/?business_id=3` → 200, followed
+by `POST /api/v1/stories/1/view/` → 200, proving `recordView` reaches
+the real backend, not just the test's fake repository. Video Stories
+were not exercised (out of scope, per the flagged gap above) — only
+image Stories were validated end-to-end.
+
+Commands:
+  flutter analyze
+  flutter test test/features/stories/presentation/story_viewer_screen_test.dart
+
+Tests: 10/10 passed (`All tests passed!`). `flutter analyze`: No issues
+found! (project-wide, after all P-050 changes).
+
+Known issues / remaining work:
+- Video Stories play as a fixed 5-second image-only render
+  (`Image.network`), not their real duration — a `video_player`
+  integration is explicitly left for a future part.
+- The "View Story (debug, business 3)" button on HomeScreen is
+  temporary and hardcoded — must be removed once Phase 10's Discover
+  screen (P-062) gives `StoryRingWidget` its real, permanent
+  navigational home.
+- `story_ring_widget.dart` is built and ready to import but has no
+  real consumer yet — flagged for P-062.
+
+GitHub: pushed to cavallo-mobile main, commit b9affae (also da2ee85 for
+the earlier STEP 4/5 work in this same part).
+
+Exact next starting point: Part P-051 (Flutter: Story creation, the
+Business-side counterpart to this part's customer-viewing side).
