@@ -5836,3 +5836,255 @@ unrelated to P-043's scope.
 Repo: https://github.com/Ahmed2132003/cavallo-app
 Branch: main
 Final commit for this part: e285ed6
+
+## PART P-044 — Flutter: Business-Console Post/Reel Creation Flow (Moderation-Status Feedback)
+
+**Status:** ✅ COMPLETE — implemented, unit/widget tested, and manually cross-role verified end-to-end on a real running backend + real Android emulator (two real accounts: one Business, one Moderator/Staff).
+
+### What was implemented
+
+Full owner-facing Post/Reel creation flow for the Business Console, with honest moderation-status feedback at every stage, per the original P-044 spec:
+
+- **Domain layer**: `ModerationStatus` enum (mirrors `Moderatable.Status` — pending_review/published/rejected), `ReelProcessingStatus` enum (uploaded/processing/ready/failed, with `isBeforeModeration` helper), `Post`/`Reel` entities, `ContentItem` sealed wrapper (`PostContentItem`/`ReelContentItem`) for the unified list, `PostRepository`/`ReelRepository` contracts (create + own-list only — no edit/delete in this part's scope).
+- **Data layer**: `PostResponseDto`/`ReelResponseDto`, `PostRepositoryImpl`/`ReelRepositoryImpl` (Dio-backed, conditional multipart for Post's optional image, always-multipart for Reel's required video).
+- **Presentation layer**:
+  - `OwnContentNotifier`/`ownContentProvider` (`AsyncNotifier<List<ContentItem>>`) — merges Post + Reel own-lists concurrently via `Future.wait`, sorted newest-first, full-refresh-on-mutation strategy.
+  - `ContentListScreen` — shows Posts and Reels together, each tagged by type, with a status badge: amber "Under review" (pending_review), green "Live" (published), red "Rejected: {reason}" (rejected, using the real backend reason). A Reel still `uploaded`/`processing` shows a distinct blue-grey "Processing video…" badge instead of any moderation badge (never "Under review" while pre-moderation) — Architecture Rule from the original spec, enforced explicitly. A Reel with `processing_status: failed` shows a dedicated red "Video processing failed" badge (own addition beyond the literal spec, flagged as such). A 5-second `Timer`-based poll (owned by the screen's State, not the notifier) runs only while at least one Reel is still pre-moderation, and stops automatically once none remain — the documented MVP simplification the original spec explicitly allowed in place of a WebSocket channel (Chat's WebSocket infra doesn't exist until Phase 12).
+  - `PostFormScreen` — caption + optional image, create-only, reuses P-033's image_picker upload pattern.
+  - `ReelFormScreen` — caption + required video, create-only, video picked via `image_picker`'s `pickVideo`. **Known, deliberately out-of-scope limitation**: no inline video playback preview (project has no `video_player`-style dependency yet, confirmed against `pubspec.yaml`) — shows a static "video selected" state (play-circle icon + filename) instead.
+- **Routing**: `RouteNames.contentList` / `postForm` / `reelForm` added under `/business-console/content...`, wired in `app_router.dart`. No new gate — all three are ordinary protected routes covered by the base auth gate.
+- **Business Console entry points**: `BusinessConsoleScreen` now has two permanent buttons — "My Content" (→ `ContentListScreen`) and "Moderation Queue" (→ `ModerationQueueScreen`, Part P-040's screen, which had no reachable entry point anywhere in the app before this). Both use `pushNamed`, same pattern as the pre-existing "My Products" button. "Moderation Queue" is shown unconditionally (not gated by account type in the UI) — the moderator-only restriction is already enforced server-side by `app_router.dart`'s own redirect guard, so a non-moderator tapping it is simply bounced to `/home`; this is a UI convenience, not a security boundary.
+
+### Backend addition (STEP 1 of this part — required, not optional)
+
+The original spec asked for a red "Rejected: {reason}" badge, but `PostSerializer`/`ReelSerializer` had no field carrying the rejection reason to the owner — it only existed in `ModerationLog.reason`, reachable only via moderator-only `/api/v1/moderation/...` endpoints. Added a `rejection_reason` `SerializerMethodField` to both `PostSerializer` and `ReelSerializer` (`content/serializers.py`) — populated only when `status == "rejected"`, reading the most recent `ModerationLog` with `action="rejected"` for that object's `ModerationQueue` row. Deliberately NOT added to `PostPublicSerializer`/`ReelPublicSerializer` (P-043) — those stay free of any moderation metadata. Covered by backend tests in `content/test_api.py`.
+
+### Files created
+
+- `lib/features/content/domain/moderation_status.dart`
+- `lib/features/content/domain/post_entity.dart`
+- `lib/features/content/domain/reel_entity.dart`
+- `lib/features/content/domain/content_item_entity.dart`
+- `lib/features/content/domain/post_repository.dart`
+- `lib/features/content/domain/reel_repository.dart`
+- `lib/features/content/data/dtos/post_response_dto.dart`
+- `lib/features/content/data/dtos/reel_response_dto.dart`
+- `lib/features/content/data/post_repository_impl.dart`
+- `lib/features/content/data/reel_repository_impl.dart`
+- `lib/features/content/presentation/own_content_provider.dart`
+- `lib/features/content/presentation/content_list_screen.dart`
+- `lib/features/content/presentation/post_form_screen.dart`
+- `lib/features/content/presentation/reel_form_screen.dart`
+- `test/features/content/presentation/own_content_provider_test.dart`
+- `test/features/content/presentation/content_list_screen_test.dart`
+- Backend: `content/serializers.py` — `_get_rejection_reason()` helper + `rejection_reason` field on `PostSerializer`/`ReelSerializer` (STEP 1)
+
+### Files modified
+
+- `lib/routing/route_names.dart` — added `contentList`/`postForm`/`reelForm` names + paths (STEP 8)
+- `lib/routing/app_router.dart` — added the 3 matching `GoRoute`s, wired `ContentListScreen`'s `onCreatePost`/`onCreateReel` callbacks (STEP 8)
+- `lib/features/business_console/presentation/business_console_screen.dart` — added permanent "My Content" and "Moderation Queue" buttons (post-STEP-10 addition, needed to make the feature and P-040's queue screen actually reachable for manual testing and for real use — no route/gate change, both are ordinary `pushNamed` calls to already-existing protected routes)
+
+### Real bug found and fixed during verification (post-STEP-9)
+
+`OwnContentNotifier._fetchMerged()` originally started both `postRepo.fetchOwnPosts()` and `reelRepo.fetchOwnReels()` as two local `Future` variables, then `await`ed them ONE AT A TIME. This is functionally correct but produces a genuine Dart Zone "Unhandled exception in Future" report whenever the SECOND-awaited future is also the one that rejects — reproduced as a real `flutter test` failure on "when the Reel fetch fails, the whole merge fails" (Post-fetch-fails passed fine since it was awaited first). **Fixed** by switching to `Future.wait`, which attaches a listener to every future synchronously at call time, so neither future is ever left unobserved regardless of which one rejects. Concurrency and the eager-fail-on-any-error contract are unchanged. Required adding explicit `import '../domain/post_entity.dart';` / `import '../domain/reel_entity.dart';` (previously unnecessary because the old code used type-inferred `final` locals with no explicit `PaginatedResponse<Post>`/`PaginatedResponse<Reel>` type annotation).
+
+### Commands run
+
+```powershell
+flutter analyze          # No issues found!
+flutter test test/features/content/   # All tests passed! (24 tests)
+flutter test              # Full suite — All tests passed! (388 tests, 0 regressions)
+```
+
+### Tests
+
+- **Repository/provider test** (`own_content_provider_test.dart`): merge + type-tagging (Post/Reel correctly tagged, newest-first sort), empty state resolves to `AsyncData([])` not error, either endpoint failing fails the whole merge (no partial state), `createPost`/`createReel` success refreshes and includes the new item, failure rethrows and leaves state untouched, `refresh()` failure becomes `AsyncError` without throwing, a null-`createdAt` item sorts last without crashing.
+- **Widget test** (`content_list_screen_test.dart`): loading/empty/error states, Retry button re-fetches, pending Post → amber "Under review", published Post → green "Live", rejected Post → red "Rejected: {real backend reason}", a Reel in `uploaded`/`processing` → "Processing video…" NEVER "Under review" (tested even with a deliberately mismatched `status: published` underneath, to prove the screen trusts `processingStatus` first), a Reel with `processing_status: failed` → "Video processing failed", a fully-processed + published Reel → same "Live" badge as a Post, Posts and Reels render together each correctly labeled, "New Post"/"New Reel" taps invoke their callbacks.
+
+### Manual cross-role verification (the real end-to-end proof, run on a real device)
+
+Performed against the real running backend (`http://<server-ip>:8095`) with two real accounts — a Business account and a Staff/Moderator account — using the new permanent "My Content"/"Moderation Queue" entry points in `BusinessConsoleScreen`:
+
+1. **Business account** created a real Post (caption + image) via `PostFormScreen` → confirmed it showed amber "Under review" immediately in `ContentListScreen`.
+2. **Moderator account** opened `ModerationQueueScreen`, found the item, opened `ModerationReviewScreen`, tapped Approve → confirmed `POST /api/v1/moderation/queue/{id}/approve/` returned `200` (visible in the app's HTTP log).
+3. Switched back to the **Business account**, pull-to-refreshed `ContentListScreen` → confirmed the badge genuinely changed from "Under review" to green "Live".
+
+First manual run showed an apparent mismatch (badge still "Under review" after approval); root-caused via direct backend code inspection (`moderation/services.py`, `moderation/views.py`, `content/serializers.py`, `content/views.py`, `lib/core/network/dio_client.dart` — all confirmed clean, no caching, no logic bug) plus live HTTP logs, which showed two `approve/` calls (`queue/7` and `queue/8`) — leftover pending items from earlier manual testing sessions in this same conversation, not the actual Test-A Post. Once the correct queue item was approved, the badge updated correctly on refresh. **Not a code bug** — confirmed both by the diagnosis and by Ahmed directly ("الاتنين مظبوطين خلاص هوا كان مشكلة ريلود بس في البرنامج").
+
+### Known issues / deliberate limitations (not bugs, flagged on purpose)
+
+- `ReelFormScreen` has no inline video playback preview (no `video_player` dependency in this project yet) — shows filename + icon only.
+- `PostRepository`/`ReelRepository` are create + own-list only; no edit/delete UI (backend PATCH/DELETE already exist from P-041/P-042 but have no Flutter caller — out of this part's scope).
+- The Business Console's "My Content"/"Moderation Queue" buttons are plain `AppButton`s on the placeholder `BusinessConsoleScreen` (Part P-007's routing skeleton) — will move into the real Business Console shell/nav once Phase 14 builds it; no route change needed then, only where the button lives.
+
+### GitHub references
+
+- Backend: `Ahmed2132003/cavallo-app` — `content/serializers.py` (`rejection_reason` addition), `content/views.py`, `content/models.py`, `moderation/services.py`, `moderation/views.py`, `moderation/models.py` — all reviewed and confirmed correct during verification.
+- Mobile: `Ahmed2132003/cavallo-mobile` — commits `64faf74` (STEP 6/7/8/9: post_form_screen.dart, reel_form_screen.dart, tests) and `106d68f` (Future.wait fix in own_content_provider.dart + My Content/Moderation Queue buttons in business_console_screen.dart), both pushed to `main`.
+
+### Exact next starting point
+
+P-044 is fully closed — Posts and Reels can be created, show honest moderation-status feedback (including real rejection reasons and Reel processing-vs-moderation distinction), and the full create → moderate → status-feedback pipeline is proven working end-to-end across both Flutter roles (Business + Moderator) on a real backend.
+
+Next part in sequence: **P-045** — the customer-facing (public) Post/Reel viewing surface, reading exclusively from the `published_objects`-backed public endpoints (`PostPublicListView`/`ReelPublicListView`, Part P-043). Shares no code with P-044's owner-facing screens (`content_list_screen.dart`, `post_form_screen.dart`, `reel_form_screen.dart` stay untouched).
+
+PART P-045 STATUS: COMPLETE — CLOSED (STEP 1–8 كلهم نُفّذوا واتأكدوا: flutter
+analyze نضيف، flutter test الشامل عدّى (+404 قبل STEP 8، وبعد إضافة STEP 8
+كل اختبارات الـ Part بما فيها post_detail_screen_test.dart (8 اختبارات)
+وreel_detail_screen_test.dart (9 اختبارات) عدّت All tests passed!)، والـ
+commit النهائي اتعمل push فعليًا. الـ Part مقفول بالكامل، جاهز كنقطة بداية
+لـ Phase 8.
+
+WHAT WAS IMPLEMENTED:
+- Public, customer-facing read-only data layer لـ Post/Reel:
+  PublicPost/PublicReel entities، PostPublicRepository/ReelPublicRepository
+  (domain contracts) وتطبيقهم (Impl)، بيستخدموا GET /api/v1/posts(reels)/public/
+  للقوائم و GET /api/v1/posts(reels)/{id}/ للتفاصيل (مع فحص status/processing_status
+  يدويًا لإغلاق الـ pre-existing gap في PostDetailView/ReelDetailView اللي
+  بترجع الشكل الكامل بغض النظر عن حالة الموديريشن).
+- PostCard/ReelCard: widgets قابلة لإعادة الاستخدام، بدون افتراضات عن الأب،
+  جاهزة يستوردها Phase 10's Feed (P-061) من غير تعديل. فيهم صف أيقونات
+  like/comment/share مشترك (ContentStubActionRow) — stub صريح وصادق
+  (SnackBar "Coming soon" عند الضغط)، مش سكوت.
+- PostDetailScreen/ReelDetailScreen خلف routes جديدة /post/:id و /reel/:id
+  (route_names.dart/app_router.dart اتعدّلوا إضافيًا، مفيش gate خاص —
+  زي productDetail بالظبط). ReelDetailScreen بيعرض الـ thumbnail + play-icon
+  stub بدل تشغيل فيديو حقيقي (السبب تحت في Known Issues).
+- business_profile_public_screen.dart اتوسّع بقسمي Posts وReels (نفس شكل
+  _ProductsSection بتاع P-034 بالظبط: loading/empty/error+retry مستقلين،
+  أول صفحة بس، وبدون أي فلترة زيادة عن اللي الـ backend public endpoints
+  بترجعه — acceptance criterion الأساسي للـ Part، متأكد منه باختبار مخصص
+  وبمانوال تشغيل حقيقي على Chrome كمان، انظر MANUAL VERIFICATION تحت).
+- widget tests كاملة لكل الطبقة: PostCard/ReelCard (rendering + stub row)،
+  Posts/Reels sections داخل business_profile_public_screen (list/empty/
+  error+retry، وتأكيد "لا فلترة زيادة")، وPostDetailScreen/ReelDetailScreen
+  (non-numeric id، loading، found+caption+stub، empty caption، tap stub،
+  not-found، error+retry).
+
+FILES CREATED (19):
+lib/features/content/domain/public_post_entity.dart
+lib/features/content/domain/public_reel_entity.dart
+lib/features/content/domain/post_public_repository.dart
+lib/features/content/domain/reel_public_repository.dart
+lib/features/content/data/dtos/post_public_response_dto.dart
+lib/features/content/data/dtos/reel_public_response_dto.dart
+lib/features/content/data/post_public_repository.dart
+lib/features/content/data/reel_public_repository.dart
+lib/features/content/presentation/content_stub_action_row.dart
+lib/features/content/presentation/post_card.dart
+lib/features/content/presentation/reel_card.dart
+lib/features/content/presentation/content_public_providers.dart
+lib/features/content/presentation/post_detail_screen.dart
+lib/features/content/presentation/reel_detail_screen.dart
+test/features/content/presentation/post_card_test.dart
+test/features/content/presentation/reel_card_test.dart
+test/features/business_profile/presentation/business_profile_public_content_section_test.dart
+test/features/content/presentation/post_detail_screen_test.dart
+test/features/content/presentation/reel_detail_screen_test.dart
+
+FILES MODIFIED (4):
+lib/routing/route_names.dart
+lib/routing/app_router.dart
+lib/features/business_profile/presentation/business_profile_public_screen.dart
+test/features/business_profile/presentation/business_profile_public_screen_test.dart
+
+ARCHITECTURE DECISIONS:
+- Business avatar/logo مش موجود في PostCard/ReelCard ولا في detail screens —
+  BusinessProfile مفيهوش logo field على الـ backend خالص (نفس قرار P-029's
+  _ProfileHeader).
+- ContentStubActionRow اتعمل كـ widget مشترك (مش مذكور حرفيًا في ملفات الـ
+  Part الأصلية) بدل تكراره في 4 أماكن — موثّق كإضافة معمارية صغيرة مبررة،
+  مش انحراف صامت.
+- Post/Reel detail screens بتعتمد على GET /{id}/ الموجود أصلاً (مش /public/{id}/
+  اللي مش موجود)، وبتفحص status/processing_status يدويًا في الـ repository —
+  نفس باترن P-034's isActive check.
+
+COMMANDS:
+```powershell
+flutter analyze
+flutter test test/features/content/presentation/post_card_test.dart
+flutter test test/features/content/presentation/reel_card_test.dart
+flutter test test/features/content/presentation/post_detail_screen_test.dart
+flutter test test/features/content/presentation/reel_detail_screen_test.dart
+flutter test test/features/business_profile/presentation/business_profile_public_screen_test.dart
+flutter test test/features/business_profile/presentation/business_profile_public_content_section_test.dart
+flutter test
+```
+
+TESTS — كل الجداول اتأكدت فعليًا (مش افتراض):
+| الملف | النتيجة |
+|---|---|
+| post_card_test.dart | All tests passed! (6) |
+| reel_card_test.dart | All tests passed! (4) |
+| post_detail_screen_test.dart | All tests passed! (8) |
+| reel_detail_screen_test.dart | All tests passed! (9) |
+| business_profile_public_screen_test.dart | All tests passed! (8) |
+| business_profile_public_content_section_test.dart | All tests passed! (6) |
+| flutter test (شامل) | All tests passed! |
+
+MANUAL VERIFICATION (نُفّذ فعليًا، مش نظري):
+- شُغّل على Chrome (flutter run -d chrome) بحساب Customer حقيقي
+  (creativitycode78@gmail.com)، اتفتح /business/3 يدويًا عن طريق تغيير الـ
+  URL بعد الـ #.
+- قسمي Posts وReels ظهروا فعليًا تحت Products، وعرضوا محتوى حقيقي published
+  فقط (post caption "I am Ahmed ibrahim" ظهر، وReel واحد ظهر بصورة placeholder).
+- تاپ على أيقونة Like ظهر SnackBar "Like — Coming soon" فعليًا (لقطة شاشة
+  مؤكِّدة) — الـ stub behavior شغّال بالظبط زي المطلوب.
+- الصور والـ video thumbnail لم تُحمَّل بصريًا أثناء هذا التشغيل تحديدًا —
+  السبب مؤكَّد من الـ logs نفسها: الـ backend بيولّد presigned MinIO URLs
+  بعنوان 10.0.2.2 (عنوان خاص بالـ Android emulator بس)، وده مش قابل للوصول
+  من متصفح Chrome على نفس جهاز الـ Windows. الـ API calls نفسها (GET
+  posts/public/, reels/public/, posts/{id}/, products/{id}/) كلها رجعت 200
+  OK بنجاح — يعني المشكلة بيئة اختبار (بيئة الصور المولَّدة)، مش كود P-045.
+  هذا موثّق كـ environment-specific وليس عيبًا في التنفيذ.
+- باقي خطوات الاختبار اليدوي (فتح post/reel detail بالتفاصيل، play button
+  stub، تأكيد إخفاء عنصر Pending) لم تُنفَّذ/تُوثَّق صراحةً حتى نهاية هذه
+  المحادثة — تُترك كخطوة تحقق يدوي مفتوحة لأحمد، وليست عائقًا لإغلاق الـ
+  Part لأن نفس السلوك مُغطّى بالكامل عبر widget tests آلية حقيقية (STEP 8).
+
+VERIFICATION RESULTS:
+flutter analyze → No issues found! (نهائي، بعد STEP 8).
+flutter test (شامل، بدون path) → All tests passed! (نهائي، بعد إضافة
+post_detail_screen_test.dart وreel_detail_screen_test.dart).
+
+KNOWN ISSUES / OPEN DECISION (غير مقفول بالنيابة عن أحمد):
+⚠️ لا يوجد video-playback package في pubspec.yaml (لا video_player ولا chewie
+ولا أي بديل) — اتأكد بقراءة الملف الحقيقي، مش افتراض. ReelDetailScreen وReelCard
+بيعرضوا الـ videoUrl/thumbnailUrl، لكن الـ play button stub بس (SnackBar
+"Coming soon"). اتسأل القرار مرتين في المحادثة (نضيف الـ dependency دلوقتي
+ونشغّل فيديو حقيقي، ولا نسيب الـ stub لـ part تانية لاحقًا) ومفيش إجابة صريحة —
+الـ Part اتقفل بالـ stub الآمن احترامًا لقاعدة "ما تغيرش Architecture من غير
+ما تُسأل"، مش لأنه بالضرورة القرار النهائي الصح. القرار ده محتاج إجابة أحمد
+قبل أي part لاحقة تحاول تلمس ReelDetailScreen/ReelCard.
+
+⚠️ pre-existing gap (مش من مسؤولية P-045): GET /api/v1/posts/{id}/ و
+GET /api/v1/reels/{id}/ (PostDetailView/ReelDetailView) بترجع الشكل الكامل
+بغض النظر عن حالة الموديريشن — اتقفل من ناحية الموبايل فقط (فحص status/
+processing_status يدويًا في الـ repositories)، مش من ناحية الـ backend نفسه.
+لو حد يحتاج /public/{id}/ endpoint حقيقي على الـ backend مستقبلاً، ده تغيير
+منفصل خارج نطاق هذا الـ Part.
+
+⚠️ dev-environment gap (مش عيب في التنفيذ، للتوثيق فقط): presigned media
+URLs من الـ backend مبنية على 10.0.2.2 (Android emulator loopback) — مش
+قابلة للتحميل من متصفح Chrome على نفس جهاز الـ Windows وقت اختبار الويب.
+لو حد هيكمل اختبار يدوي بصري (يشوف الصور فعليًا) لاحقًا، لازم يستخدم إما
+الإيموليتور نفسه، أو تعديل backend-side لعنوان الـ MinIO base URL حسب بيئة
+الطلب — خارج نطاق هذا الـ Part تمامًا.
+
+REMAINING WORK / NEXT STARTING POINT:
+- Phase 8 (Stories) — الجيت الرسمي بتاع الانتقال من Phase 7 لـ Phase 8 هو
+  "P-041 حتى P-045 كلهم عدّوا validation فعليًا" — ده تحقق الآن، فنقطة
+  START الجديدة هي فعليًا Phase 8.
+- Part P-061 (Phase 10's Home Feed) — لازم يستورد PostCard/ReelCard زي ما
+  هما بالظبط من lib/features/content/presentation/، من غير أي تعديل عليهم.
+- قرار الـ video player (فوق) — لازم يتحسم قبل أي تعديل مستقبلي على
+  ReelDetailScreen/ReelCard.
+- (اختياري، مش عائق) استكمال باقي الاختبار اليدوي البصري (فتح تفاصيل الـ
+  post/reel، play button، تأكيد إخفاء الـ Pending) على الإيموليتور أو بعد
+  حل مشكلة الـ MinIO base URL.
+
+GITHUB: كل الـ commits اتعملت push على cavallo-mobile main branch. آخر
+commit مؤكَّد فعليًا: "P-045 STEP 8: PostDetailScreen/ReelDetailScreen
+widget tests — Part P-045 complete" — commit 2f9c0cd (بعد 04fad6e). الـ
+Part مقفول بالكامل على GitHub، مفيش عمل متبقي غير موثّق.
