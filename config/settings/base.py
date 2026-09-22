@@ -216,6 +216,16 @@ CELERY_BEAT_SCHEDULE = {
         "task": "moderation.check_moderation_sla",
         "schedule": 300.0,  # every 5 minutes, in seconds
     },
+    # Part P-048. Bookkeeping/cleanup sweep only — see
+    # stories/tasks.py's module docstring: this job NEVER gates Story
+    # visibility (that's StoryPublicListView's live query, Section 9).
+    # 20 minutes chosen as the midpoint of the spec's 15-30 minute
+    # range — no real-time pressure on this specific value since
+    # visibility never depends on it.
+    "expire-stale-stories": {
+        "task": "stories.expire_stale_stories",
+        "schedule": 1200.0,  # every 20 minutes, in seconds
+    },
 }
 
 # ---------------------------------------------------------------------------
