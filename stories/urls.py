@@ -1,7 +1,7 @@
 from django.urls import path
 
-from stories.views import StoryCreateView
+from stories.views import StoryListCreateView
 
 urlpatterns = [
-    path("", StoryCreateView.as_view(), name="story-list-create"),
+    path("", StoryListCreateView.as_view(), name="story-list-create"),
 ]
