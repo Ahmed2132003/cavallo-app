@@ -39,6 +39,9 @@ gap between the presentation deck and this part's own written scope,
 left open for Ahmed to resolve before any later part (Flutter
 P-050/P-051, or a dedicated Story-editing part) assumes those fields
 exist.
+
+Part P-048 adds ``archived_at`` — see the field's own docstring below
+for why it must never be treated as a visibility signal.
 """
 
 from datetime import timedelta
@@ -101,12 +104,25 @@ class Story(Moderatable, TimestampedModel, SoftDeleteModel):
     # real indexed column to filter/sort on, not a computed Python-side
     # value (see the composite index below and this part's spec).
     expires_at = models.DateTimeField()
+    # Part P-048. PURE BOOKKEEPING/ANALYTICS FIELD — set once by the
+    # expire_stale_stories() Celery Beat sweep task (stories/tasks.py)
+    # when it notices expires_at has passed. This field MUST NEVER be
+    # checked by any visibility/query logic anywhere in this codebase
+    # (public feed, owner list, admin, serializers, etc.) — only
+    # `expires_at` and `status` determine whether a Story is visible.
+    # Architecture Section 9 requires visibility to be query-driven
+    # (expires_at > now(), evaluated fresh on every read), never
+    # dependent on whether this background job has run recently.
+    # Null until the sweep job processes the row; stays null forever
+    # for a Story that gets soft-deleted or otherwise never expires
+    # naturally through this job.
+    archived_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         indexes = [
             # Matches the architecture's Section 9 indexing strategy for
-            # Story specifically — backs both a future expiry sweep
-            # query and any "still-visible stories for this business"
+            # Story specifically — backs both the expiry sweep query
+            # (P-048) and any "still-visible stories for this business"
             # check.
             #
             # Part P-046 FIX: named "story_biz_status_exp_idx" (24
