@@ -10,7 +10,7 @@ from rest_framework.test import APITestCase
 from businesses.services import create_business_profile
 from core.tests.test_media import _DISGUISED_EXE_BYTES, _VALID_PNG_BYTES
 from moderation.models import ModerationQueue
-from stories.models import Story
+from stories.models import Story, StoryView
 
 User = get_user_model()
 
@@ -308,3 +308,84 @@ class TestStoryPublicList(APITestCase):
         ids = [item["id"] for item in response.data["results"]]
         self.assertIn(mine.id, ids)
         self.assertNotIn(other_story.id, ids)
+
+
+class TestStoryViewTracking(APITestCase):
+    """
+    Part P-049. Covers StoryViewRecordView (idempotent recording) and
+    StoryViewCountView (owner-only IDOR-protected count) end to end.
+    """
+
+    def setUp(self):
+        self.owner, self.business = _make_business_user(
+            "story-view-owner@example.com", "Story View Owner"
+        )
+        self.other_owner, self.other_business = _make_business_user(
+            "story-view-other-owner@example.com", "Story View Other Owner"
+        )
+        self.viewer_a = _make_customer("story-view-customer-a@example.com")
+        self.viewer_b = _make_customer("story-view-customer-b@example.com")
+        self.story = Story.objects.create(
+            business=self.business,
+            media=SimpleUploadedFile(
+                "story.png", _VALID_PNG_BYTES, content_type="image/png"
+            ),
+        )
+
+    def test_viewing_story_twice_as_same_user_creates_exactly_one_row(self):
+        self.client.force_authenticate(self.viewer_a)
+
+        first = self.client.post(f"/api/v1/stories/{self.story.id}/view/")
+        second = self.client.post(f"/api/v1/stories/{self.story.id}/view/")
+
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        # Direct DB query — not just checking the response codes twice,
+        # per this part's own validation requirement.
+        self.assertEqual(
+            StoryView.objects.filter(story=self.story, viewer=self.viewer_a).count(),
+            1,
+        )
+
+    def test_two_different_users_viewing_same_story_each_create_own_row(self):
+        self.client.force_authenticate(self.viewer_a)
+        self.client.post(f"/api/v1/stories/{self.story.id}/view/")
+
+        self.client.force_authenticate(self.viewer_b)
+        self.client.post(f"/api/v1/stories/{self.story.id}/view/")
+
+        self.assertEqual(StoryView.objects.filter(story=self.story).count(), 2)
+
+    def test_unauthenticated_view_record_rejected(self):
+        response = self.client.post(f"/api/v1/stories/{self.story.id}/view/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_view_record_on_nonexistent_story_returns_404(self):
+        self.client.force_authenticate(self.viewer_a)
+        response = self.client.post("/api/v1/stories/999999/view/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_owner_sees_correct_view_count(self):
+        self.client.force_authenticate(self.viewer_a)
+        self.client.post(f"/api/v1/stories/{self.story.id}/view/")
+        self.client.force_authenticate(self.viewer_b)
+        self.client.post(f"/api/v1/stories/{self.story.id}/view/")
+
+        self.client.force_authenticate(self.owner)
+        response = self.client.get(f"/api/v1/stories/{self.story.id}/view-count/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["view_count"], 2)
+
+    def test_different_business_gets_403_not_the_count(self):
+        self.client.force_authenticate(self.viewer_a)
+        self.client.post(f"/api/v1/stories/{self.story.id}/view/")
+
+        self.client.force_authenticate(self.other_owner)
+        response = self.client.get(f"/api/v1/stories/{self.story.id}/view-count/")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_unauthenticated_view_count_rejected(self):
+        response = self.client.get(f"/api/v1/stories/{self.story.id}/view-count/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)

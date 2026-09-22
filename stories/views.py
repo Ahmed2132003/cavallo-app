@@ -1,9 +1,11 @@
 from django.utils import timezone
-from rest_framework import generics, permissions
-from rest_framework.exceptions import PermissionDenied
+from rest_framework import generics, permissions, status
+from rest_framework.exceptions import NotFound, PermissionDenied
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from core.pagination import StandardCursorPagination
-from stories.models import Story
+from stories.models import Story, StoryView
 from stories.serializers import StorySerializer
 
 
@@ -88,3 +90,72 @@ class StoryPublicListView(generics.ListAPIView):
         if business_id is not None:
             queryset = queryset.filter(business_id=business_id)
         return queryset
+
+
+def _get_story_or_404(pk):
+    """
+    Part P-049. Same DRF-NotFound-explicitly convention as
+    content/views.py's _get_post_or_404 — a genuine 404 with the
+    NOT_FOUND error code, not django.shortcuts.get_object_or_404's
+    generic Http404.
+    """
+    story = Story.objects.filter(pk=pk).first()
+    if story is None:
+        raise NotFound("Story not found.")
+    return story
+
+
+class StoryViewRecordView(APIView):
+    """
+    Part P-049. POST /api/v1/stories/{id}/view/ — authenticated.
+
+    Records that request.user viewed this story. Idempotent by
+    construction: StoryView.objects.get_or_create(story=..., viewer=...)
+    relies on the model's own unique_together = ('story', 'viewer')
+    constraint, so a repeat call from the same user never creates a
+    second row and never raises — no try/except IntegrityError needed
+    here. Returns 200 whether the row was newly created or already
+    existed; the client is deliberately never told which, since it
+    doesn't need to know (per this part's own spec).
+
+    No ownership/IDOR check here on purpose — any authenticated user
+    (the story's own owner included) may record a view. The IDOR-
+    protected side of this feature is the *count* (StoryViewCountView
+    below), not the record action itself.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        story = _get_story_or_404(pk)
+        StoryView.objects.get_or_create(story=story, viewer=request.user)
+        return Response(status=status.HTTP_200_OK)
+
+
+class StoryViewCountView(APIView):
+    """
+    Part P-049. GET /api/v1/stories/{id}/view-count/ — authenticated,
+    owner-only.
+
+    Same explicit object-level IDOR-check pattern established since
+    P-026/P-032 (see products/views.py's ProductDetailView._check_owner
+    and content/views.py's PostDetailView._check_ownership): compares
+    story.business.user_id against request.user.id directly, raising
+    PermissionDenied on mismatch, rather than relying on
+    permission_classes alone.
+
+    story.storyview_set.count() uses the model's default reverse
+    accessor (StoryView.story has no explicit related_name — see
+    stories/models.py's StoryView docstring) — this is the exact
+    literal accessor name this part's own spec calls out.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        story = _get_story_or_404(pk)
+        if story.business.user_id != request.user.id:
+            raise PermissionDenied(
+                "You do not have permission to view this story's view count."
+            )
+        return Response({"view_count": story.storyview_set.count()})

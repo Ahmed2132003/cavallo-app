@@ -46,6 +46,7 @@ for why it must never be treated as a visibility signal.
 
 from datetime import timedelta
 
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -162,3 +163,41 @@ class Story(Moderatable, TimestampedModel, SoftDeleteModel):
             "preview_text": f"Story by {self.business.business_name}",
             "preview_image_url": self.media.url if self.media else None,
         }
+
+
+class StoryView(TimestampedModel):
+    """
+    Part P-049. Raw view-tracking record: one row per (story, viewer)
+    pair. `unique_together` enforces idempotency at the DB level — a
+    repeat view from the same user must never create a second row.
+    The application layer never relies on catching an IntegrityError
+    for this: StoryViewRecordView (stories/views.py) always goes
+    through StoryView.objects.get_or_create(story=..., viewer=...),
+    which is naturally idempotent on its own.
+
+    Deliberately NOT Moderatable and NOT SoftDeleteModel — a view
+    record is pure analytics bookkeeping, never user-facing content
+    and never moderated, so neither mixin applies (same precedent as
+    append-only models noted in core/models.py's SoftDeleteModel
+    docstring).
+
+    No explicit `related_name` on `story` — the default reverse
+    accessor (`story.storyview_set`) is used deliberately, matching
+    this part's own spec text verbatim (`story.storyview_set.count()`).
+    """
+
+    story = models.ForeignKey(
+        Story,
+        on_delete=models.CASCADE,
+    )
+    viewer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="story_views",
+    )
+
+    class Meta:
+        unique_together = ("story", "viewer")
+
+    def __str__(self):
+        return f"StoryView(story={self.story_id}, viewer={self.viewer_id})"
