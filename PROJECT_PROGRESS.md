@@ -6733,3 +6733,112 @@ per this part's own Handoff Notes, never needs to reason about the
 sweep job's timing — visibility is already correctly real-time from
 the query itself.
 ═══════════════════════════════════════════════════════════════
+
+### PART P-049 — Story View-Tracking Endpoint + Viewer Model — STATUS: DONE
+
+**What was implemented:**
+Raw view-tracking data capture for Stories: a `StoryView` model
+recording (story, viewer) pairs, a POST endpoint to record a view
+(idempotent), and a GET endpoint for the owning business to read its
+own Story's view count (IDOR-protected).
+
+**Files created:**
+- `stories/migrations/0003_storyview.py`
+
+**Files modified:**
+- `stories/models.py` — added `StoryView(TimestampedModel)`:
+  `story` FK → Story (CASCADE, no explicit related_name — default
+  reverse accessor is `story.storyview_set`), `viewer` FK →
+  settings.AUTH_USER_MODEL (CASCADE, related_name="story_views"),
+  `Meta.unique_together = ("story", "viewer")`.
+- `stories/views.py` — added `_get_story_or_404(pk)` helper (same
+  DRF-NotFound convention as content/views.py's `_get_post_or_404`);
+  `StoryViewRecordView(APIView)`: POST /api/v1/stories/{id}/view/,
+  IsAuthenticated, `StoryView.objects.get_or_create(story=..,
+  viewer=request.user)`, always returns 200 regardless of
+  created/existing; `StoryViewCountView(APIView)`: GET
+  /api/v1/stories/{id}/view-count/, IsAuthenticated, explicit
+  `story.business.user_id != request.user.id` → PermissionDenied
+  (same pattern as ProductDetailView._check_owner /
+  PostDetailView._check_ownership), returns
+  `{"view_count": story.storyview_set.count()}`.
+- `stories/urls.py` — added `<int:pk>/view/` (name
+  `story-view-record`) and `<int:pk>/view-count/` (name
+  `story-view-count`) routes.
+- `stories/tests/test_api.py` — added `TestStoryViewTracking` (7
+  tests): idempotent double-view (verified via direct DB query, not
+  just response codes), two-users-two-rows, unauthenticated 401 on
+  both endpoints, 404 on nonexistent story, owner sees correct count,
+  non-owning business gets 403 not the count.
+
+**Important implementation details:**
+- `StoryView` deliberately does NOT inherit `Moderatable` or
+  `SoftDeleteModel` — it's pure append-only analytics bookkeeping,
+  never user-facing content and never moderated (same precedent noted
+  for ModerationLog-style models).
+- Idempotency relies entirely on `get_or_create()` + the DB-level
+  `unique_together` constraint — no `try/except IntegrityError`
+  anywhere in the view.
+- `StoryViewRecordView` intentionally has NO ownership/IDOR check —
+  any authenticated user (including the story's own owner) may record
+  a view. Only the *count* endpoint is owner-restricted.
+- Reverse accessor for `story.storyview_set` is Django's default
+  (no `related_name` set on the `story` FK) — confirmed working via
+  the test suite, not guessed.
+
+**Architecture decisions confirmed/reinforced:**
+- Top-level app convention (`stories/`, not `apps/stories/`) applied
+  consistently — same deviation from the literal spec paths
+  established since P-046.
+- Same object-level IDOR-check pattern as P-026/P-032/P-041/P-042
+  (`business.user_id != request.user.id` inside the view, not left to
+  permission_classes alone) reused verbatim, no new pattern invented.
+- Plain `APIView` + explicit `.post()`/`.get()` methods used for both
+  new endpoints (not DRF generics) — matches the existing precedent in
+  `moderation/views.py`'s `ApproveView`/`RejectView` for
+  action-style, non-CRUD endpoints.
+
+**Commands:**
+```powershell
+docker compose exec web python manage.py makemigrations stories
+docker compose exec web python manage.py migrate stories
+docker compose exec web python manage.py check
+docker compose exec web black stories/
+docker compose exec web flake8 stories/
+docker compose exec web pytest stories/ -v
+docker compose exec web pytest -q -rs
+```
+
+**Tests:**
+`stories/tests/test_api.py::TestStoryViewTracking` — 7/7 passed.
+Full project suite — 412 passed, 1 skipped (unrelated `moto` import
+skip in `core/tests/test_storage_backends.py`).
+
+**Verification results:**
+`manage.py check` clean. `flake8 stories/` clean. `black --check
+stories/` clean. `makemigrations --check --dry-run` → No changes
+detected. All 38 tests in `stories/` green, full suite green.
+
+**Known issues:** None new. Pre-existing open gaps carried forward
+unchanged (caption/text-overlay/product-link fields on Story,
+rejection_reason field, celerybeat-schedule binary tracked in git —
+see P-046/P-047/P-048/P-039 entries).
+
+**Remaining work:** None for P-049 itself — fully done.
+
+**GitHub references:**
+- Repo: https://github.com/Ahmed2132003/cavallo-app
+- Commit: `c6536d6` — "P-049: Story view-tracking endpoint + StoryView
+  model" (5 files changed, 260 insertions(+), 5 deletions(-)), pushed
+  to `main` (`9e24c94..c6536d6`).
+
+**Exact next starting point:**
+**Part P-050** (Flutter Story viewer, per P-048's own handoff note)
+can now also call `POST /api/v1/stories/{id}/view/` when a customer
+opens a Story in the viewer UI, and — for a business's own analytics
+screen — `GET /api/v1/stories/{id}/view-count/`. No further backend
+schema change to Story/StoryView is needed for P-050's client-side
+work. Phase 14's future analytics dashboard (P-085) is the eventual
+aggregator of this raw `StoryView` data alongside other engagement
+metrics (Post/Reel views, likes, etc.) — P-049 deliberately built only
+the raw capture + single-story count, nothing more.
