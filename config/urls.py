@@ -40,6 +40,12 @@ urlpatterns = [
     # businesses/views.py's module docstring. businesses/{id}/ is the
     # one deliberately public, read-only exception.
     path("api/v1/businesses/", include("businesses.urls")),
+    # Part P-052: Follow/Unfollow — a second, separate include under
+    # the SAME api/v1/businesses/ prefix as the line above, since the
+    # Follow model/view live in their own `social` app rather than
+    # inside `businesses`. No pattern collision: businesses.urls only
+    # declares "me/" and "<int:pk>/", never "<int:pk>/follow/".
+    path("api/v1/businesses/", include("social.urls")),
     path("api/v1/customers/", include("businesses.customer_urls")),
     # Part P-032: second real application of P-026's IDOR-prevention
     # pattern, this time against a many-owned-resources relationship

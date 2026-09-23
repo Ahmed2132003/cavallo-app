@@ -41,12 +41,13 @@ class BusinessProfileSerializer(serializers.ModelSerializer):
     models.py's P-027 comment on the field).
 
     Read adds: id (read-only), is_verified (computed, read-through
-    property — see models.py), follower_count (placeholder, always 0
-    until Phase 9 wires a real Follow counter).
+    property — see models.py), follower_count (Part P-052: a real,
+    atomically-updated denormalized counter — read-only here; only
+    ever mutated by social/views.py's FollowToggleView via F()
+    expressions, never through this serializer).
     """
 
     is_verified = serializers.BooleanField(read_only=True)
-    follower_count = serializers.SerializerMethodField()
 
     class Meta:
         model = BusinessProfile
@@ -62,13 +63,7 @@ class BusinessProfileSerializer(serializers.ModelSerializer):
             "is_verified",
             "follower_count",
         ]
-        read_only_fields = ["id"]
-
-    def get_follower_count(self, obj) -> int:
-        # TODO(Phase 9): wire to real Follow counter. Defaulting to 0
-        # is deliberate per this part's explicit scope — the Follow
-        # model/relationship doesn't exist yet.
-        return 0
+        read_only_fields = ["id", "follower_count"]
 
     def validate_phone_number(self, value):
         """

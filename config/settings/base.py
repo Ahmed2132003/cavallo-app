@@ -68,8 +68,7 @@ INSTALLED_APPS = [
     "moderation",  # Part P-036: ModerationQueue + Moderatable mixin.
     "content",
     "stories",  # Part P-046: Story (Moderatable, 24h expiry, fast_path).
-
-
+    "social",
 ]
 
 # ---------------------------------------------------------------------------

@@ -147,7 +147,8 @@ class LogoutView(generics.GenericAPIView):
         return Response(
             {"detail": "Successfully logged out."}, status=status.HTTP_200_OK
         )
-        
+
+
 # ADD to accounts/views.py
 
 # 1. Add this import alongside the existing rest_framework imports:

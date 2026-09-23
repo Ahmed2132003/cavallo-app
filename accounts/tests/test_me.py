@@ -30,7 +30,7 @@ class TestMe(APITestCase):
 
     def tearDown(self):
         cache.clear()
-        
+
     def _register_and_login(self, email, account_type):
         register_response = self.client.post(
             "/api/v1/auth/register/",
@@ -42,9 +42,9 @@ class TestMe(APITestCase):
             },
             format="json",
         )
-        assert register_response.status_code == status.HTTP_201_CREATED, (
-            register_response.data
-        )
+        assert (
+            register_response.status_code == status.HTTP_201_CREATED
+        ), register_response.data
 
         login_response = self.client.post(
             "/api/v1/auth/login/",
@@ -102,7 +102,7 @@ class TestMe(APITestCase):
         # A fresh Customer registration defaults to both False.
         self.assertFalse(response.data["is_moderator"])
         self.assertFalse(response.data["is_staff"])
-        
+
     def test_me_reflects_true_role_flags(self):
         # Confirms the flags aren't hardcoded False — a real moderator
         # account must see is_moderator=True, and a real staff account
@@ -120,7 +120,7 @@ class TestMe(APITestCase):
 
         self.assertTrue(response.data["is_moderator"])
         self.assertTrue(response.data["is_staff"])
-        
+
     def test_me_rejects_unauthenticated_request(self):
         response = self.client.get("/api/v1/auth/me/")
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)

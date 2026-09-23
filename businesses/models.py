@@ -86,6 +86,18 @@ class BusinessProfile(TimestampedModel, SoftDeleteModel):
     # the "no phone on file" state, matching description's convention
     # above, so there is exactly one representation of "not set".
     phone_number = models.CharField(max_length=20, blank=True, default="")
+    # Part P-052 addition: denormalized, atomically-updated counter
+    # (Section 5 rule 4 — never COUNT() a live table). Replaces the
+    # BusinessProfileSerializer placeholder that always returned 0
+    # (P-026's `# TODO(Phase 9)`). ONLY ever mutated via
+    # BusinessProfile.objects.filter(pk=...).update(follower_count=F(...))
+    # inside social/views.py's FollowToggleView — never via
+    # instance.follower_count = ... + save(), which would race under
+    # concurrent requests. Named `follower_count` (singular), matching
+    # the wire contract P-026/P-028A already shipped to the mobile app
+    # — NOT `followers_count`, despite the master-plan spec's literal
+    # field name.
+    follower_count = models.PositiveIntegerField(default=0)
 
     class Meta:
         verbose_name = "Business Profile"

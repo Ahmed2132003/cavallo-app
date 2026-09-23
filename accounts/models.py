@@ -118,6 +118,15 @@ class User(AbstractUser, TimestampedModel):
         "meaningful when account_type='business'; stays False and unused "
         "for customer accounts.",
     )
+    # Part P-052 addition: denormalized, atomically-updated counter of
+    # how many BusinessProfiles this user follows. Lives on User (not
+    # on CustomerProfile/BusinessProfile separately) since either
+    # account type can follow a business symmetrically — see
+    # social/models.py's Follow docstring for the assumption this
+    # rests on. ONLY ever mutated via
+    # User.objects.filter(pk=...).update(following_count=F(...))
+    # inside social/views.py's FollowToggleView.
+    following_count = models.PositiveIntegerField(default=0)
 
     class Meta:
         db_table = "accounts_user"
