@@ -6972,3 +6972,134 @@ the earlier STEP 4/5 work in this same part).
 
 Exact next starting point: Part P-051 (Flutter: Story creation, the
 Business-side counterpart to this part's customer-viewing side).
+
+### P-051 — Flutter: Story Creation/Upload Flow With Background Retry Queue
+Status: COMPLETE
+
+What was implemented:
+- StoryCreationRepository (lib/features/stories/data/story_creation_repository.dart):
+  uploads a single media file (image or video) to POST /api/v1/stories/ via
+  multipart FormData under the "media" key (StorySerializer's only writable
+  field, per P-046 — no caption/product-link support exists on the backend).
+  Accepts an optional CancelToken. No domain interface — single consumer,
+  deliberate scope decision (see file's own class doc).
+- StoryUploadQueueNotifier (lib/features/stories/presentation/
+  story_upload_queue_provider.dart): Riverpod Notifier<List<UploadTask>>.
+  Exponential backoff (2s/4s/8s/16s/32s), capped at 5 attempts. Distinguishes
+  NetworkFailure/TimeoutException (retried) from ValidationFailure (fails
+  immediately, no retry — retrying a bad file type won't help). Supports
+  cancel(id) mid-retry-wait, discard(id) for a failed task, and
+  retryFailedTask(id) (resets attempt counter, fires immediately).
+  backoffDelayForAttempt is injectable for tests (production never overrides
+  it).
+- StoryCreationScreen (lib/features/stories/presentation/
+  story_creation_screen.dart): image/video picker (two explicit buttons — no
+  single "pick either" API in image_picker), image preview via Image.file,
+  video preview is a placeholder (icon + filename) — no video_player
+  dependency exists in pubspec.yaml, out of scope for this part's 3-file
+  Files Expected list. Submits via enqueueUpload, resets the form
+  immediately (upload continues in background regardless of screen state).
+- StoryUploadStatusBanner (lib/features/stories/presentation/
+  story_upload_status_banner.dart): stateless ConsumerWidget rendering one
+  row per UploadTask (uploading/retrying/failed states, with
+  Cancel/Retry/Discard actions as appropriate). Placed in TWO screens —
+  StoryCreationScreen and BusinessConsoleScreen — NOT as a single app-wide
+  overlay, since no root-level persistent shell exists yet (deferred to
+  Phase 14). Documented as FLAGGED SCOPE DECISION 6 in the widget's own
+  class doc.
+- New route: RouteNames.storyForm / storyFormPath
+  (/business-console/stories/create), registered in app_router.dart. Own
+  segment under /business-console/, not nested under contentListPath
+  (Stories uses the queue-based flow, not ownContentProvider like
+  Posts/Reels).
+- BusinessConsoleScreen: added "Create Story" entry point button and
+  StoryUploadStatusBanner at the top of the screen body.
+
+Files created:
+- lib/features/stories/data/story_creation_repository.dart
+- lib/features/stories/presentation/story_upload_queue_provider.dart
+- lib/features/stories/presentation/story_creation_screen.dart
+- lib/features/stories/presentation/story_upload_status_banner.dart
+- test/features/stories/data/story_creation_repository_test.dart
+- test/features/stories/presentation/story_upload_queue_provider_test.dart
+- test/features/stories/presentation/story_creation_screen_test.dart
+- test/features/stories/presentation/story_upload_status_banner_test.dart
+
+Files modified:
+- lib/routing/route_names.dart (storyForm, storyFormPath added)
+- lib/routing/app_router.dart (GoRoute for storyFormPath added)
+- lib/features/business_console/presentation/business_console_screen.dart
+  ("Create Story" button + StoryUploadStatusBanner added)
+
+Architecture decisions:
+- No domain-layer interface for StoryCreationRepository (single consumer,
+  matches this part's own Files Expected list — see repository's class doc
+  if a second consumer ever needs one).
+- Persistent upload-status indicator lives in two screens, not one app-wide
+  overlay — root shell doesn't exist until Phase 14. See
+  StoryUploadStatusBanner's FLAGGED SCOPE DECISION 6.
+- No video preview/playback — no video_player dependency in this codebase.
+  Picked videos show a placeholder card. See StoryCreationScreen's FLAGGED
+  SCOPE DECISION 5.
+- Full offline-queue persistence across app kill/restart is explicitly OUT
+  OF SCOPE for this MVP part (Section 27's own scope note) — the queue is
+  in-memory only, lost on full app restart. Flagged, not silently skipped.
+
+Commands:
+  flutter pub get
+  flutter test test/features/stories/
+  flutter analyze
+
+Tests: 25 automated tests, all passing (`+25: All tests passed!`):
+  - story_creation_repository_test.dart: multipart body, cancelToken,
+    400 → ValidationFailure surfaced (not swallowed)
+  - story_upload_queue_provider_test.dart: eventual-success,
+    always-fails-until-cap, immediate validation-failure (no retry),
+    discard, manual retry, cancel mid-retry-wait
+  - story_upload_status_banner_test.dart: empty state, Retry/Discard flow
+    for a failed task, Cancel for an in-flight task (test-file fix applied:
+    fake File path used instead of a real disk write, since the repository
+    doubles in this file never read the file's bytes — see file's own
+    _fakeMediaFile() doc comment)
+  - story_creation_screen_test.dart: validation error with no media,
+    persistent banner appears on enqueue + Cancel removes it (same
+    _fakeMediaFile() fix applied)
+`flutter analyze`: No issues found!
+
+Manual real-network-loss test (Definition of Done requirement, not
+simulated): performed against the live backend. All 5 steps confirmed —
+happy-path upload, automatic retry with increasing attempt count on real
+connectivity loss, automatic recovery/success once connectivity was
+restored mid-retry (no manual resubmission needed), final-failure state
+with visible Retry/Discard after exhausting the cap, and the status banner
+correctly persisting in BusinessConsoleScreen after navigating away from
+StoryCreationScreen mid-retry. No crashes, no silent data loss observed.
+
+Known issues: none outstanding. One test-environment-only issue was hit
+and resolved during development: writing real bytes to
+Directory.systemTemp inside two widget test files stalled indefinitely on
+one Windows machine (antivirus/real-time-scan interference on that
+machine's Temp folder, confirmed via debug-print bisection — not a bug in
+app code). Fixed by having those tests build a File pointing at a
+throwaway path without ever writing to disk. No production code was
+affected by this issue or its fix.
+
+Remaining work: none for P-051 itself.
+
+GitHub: cavallo-mobile, main branch
+(https://github.com/Ahmed2132003/cavallo-mobile). P-051 spans two commits:
+"update" (24f97c7 — STEP 4/5 initial: story_creation_screen.dart,
+story_upload_status_banner.dart, their tests, route_names.dart,
+app_router.dart, business_console_screen.dart) and "update" (07f8cd0 —
+the disk-I/O test fix, 2 files changed: story_upload_status_banner_test.dart,
+story_creation_screen_test.dart). STEP 1-3 (repository + queue provider +
+their tests) were committed in an earlier commit prior to 24f97c7.
+
+Next starting point: Phase 8 is now fully validated (P-046 through P-051
+all genuinely passed, including this part's real network-loss test) — the
+explicit gate for Phase 9 (Social Graph: Like/Comment/Save/Share against
+real Posts/Reels/Stories content) is clear. This retry-queue pattern
+(StoryUploadQueueNotifier's backoff/cap/cancel/retry design) is the
+candidate template for P-076 (Phase 12, chat media-upload retry), which
+faces a similar reliability requirement — worth reviewing when P-076
+starts rather than rebuilding from scratch.
