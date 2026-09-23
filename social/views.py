@@ -31,7 +31,7 @@ from rest_framework.views import APIView
 
 from businesses.models import BusinessProfile
 
-from .models import Follow
+from .models import Follow, Like
 
 User = get_user_model()
 
@@ -89,3 +89,92 @@ class FollowToggleView(APIView):
                 )
 
         return Response({"following": False})
+    
+from django.apps import apps
+from django.contrib.contenttypes.models import ContentType
+from rest_framework.exceptions import ValidationError
+
+# Whitelist of content_type strings this endpoint accepts, mapped to
+# (app_label, model_name). Deliberately explicit and closed — NOT
+# derived from ContentType.objects.all() — so an unrecognized or
+# unintended model (e.g. "user", "businessprofile") can never be
+# liked just because it exists in the ContentType table.
+ALLOWED_CONTENT_TYPES = {
+    "post": ("content", "Post"),
+    "reel": ("content", "Reel"),
+}
+
+
+def _resolve_like_target(content_type_str, object_id):
+    if content_type_str not in ALLOWED_CONTENT_TYPES:
+        raise ValidationError(
+            {
+                "content_type": (
+                    f"Unrecognized content_type '{content_type_str}'. "
+                    f"Must be one of: {', '.join(ALLOWED_CONTENT_TYPES)}."
+                )
+            }
+        )
+    app_label, model_name = ALLOWED_CONTENT_TYPES[content_type_str]
+    model = apps.get_model(app_label, model_name)
+    try:
+        obj = model.objects.get(pk=object_id)
+    except model.DoesNotExist:
+        raise NotFound(f"{model_name} not found.")
+    content_type = ContentType.objects.get_for_model(model)
+    return content_type, obj
+
+
+class LikeToggleView(APIView):
+    """
+    POST   /api/v1/likes/ — like (idempotent)
+    DELETE /api/v1/likes/ — unlike (idempotent)
+
+    Body: {"content_type": "post"|"reel", "object_id": <id>}
+
+    Mirrors FollowToggleView's exact transactional shape (P-052):
+    get_or_create()/filter().delete() gated atomic F()-counter update,
+    resolved generically via obj.__class__ instead of a fixed model.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        content_type_str = request.data.get("content_type")
+        object_id = request.data.get("object_id")
+        if not content_type_str or object_id is None:
+            raise ValidationError(
+                {"detail": "Both 'content_type' and 'object_id' are required."}
+            )
+        content_type, obj = _resolve_like_target(content_type_str, object_id)
+
+        with transaction.atomic():
+            _like, created = Like.objects.get_or_create(
+                user=request.user, content_type=content_type, object_id=obj.pk
+            )
+            if created:
+                obj.__class__.objects.filter(pk=obj.pk).update(
+                    likes_count=F("likes_count") + 1
+                )
+
+        return Response({"liked": True})
+
+    def delete(self, request):
+        content_type_str = request.data.get("content_type")
+        object_id = request.data.get("object_id")
+        if not content_type_str or object_id is None:
+            raise ValidationError(
+                {"detail": "Both 'content_type' and 'object_id' are required."}
+            )
+        content_type, obj = _resolve_like_target(content_type_str, object_id)
+
+        with transaction.atomic():
+            deleted_count, _ = Like.objects.filter(
+                user=request.user, content_type=content_type, object_id=obj.pk
+            ).delete()
+            if deleted_count:
+                obj.__class__.objects.filter(
+                    pk=obj.pk, likes_count__gt=0
+                ).update(likes_count=F("likes_count") - 1)
+
+        return Response({"liked": False})

@@ -34,3 +34,38 @@ class Follow(TimestampedModel):
 
     def __str__(self):
         return f"user:{self.follower_id} -> business:{self.business_id}"
+
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
+
+
+class Like(TimestampedModel):
+    """
+    A generic like relationship: a User liking any Moderatable content
+    object that exposes a `likes_count` field (Post, Reel — see
+    social/views.py's ALLOWED_CONTENT_TYPES for the exact whitelist).
+
+    Second real application of P-052's idempotent-toggle-plus-atomic-
+    counter pattern, this time via a GenericForeignKey rather than a
+    fixed-model FK, since Like applies across multiple content types.
+
+    Stories are explicitly NOT likeable — the architecture's Story
+    scope (P-046/P-049) is view-tracking only, with no other social
+    interaction. If that changes, add "story" to ALLOWED_CONTENT_TYPES
+    explicitly rather than opening this up generically.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="likes",
+    )
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.PositiveIntegerField()
+    content_object = GenericForeignKey("content_type", "object_id")
+
+    class Meta:
+        unique_together = ("user", "content_type", "object_id")
+
+    def __str__(self):
+        return f"user:{self.user_id} -> {self.content_type_id}:{self.object_id}"

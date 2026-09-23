@@ -69,4 +69,10 @@ urlpatterns = [
     # create/list for now; no public endpoint yet (see stories/views.py
     # and this part's own "Out of Scope" note).
     path("api/v1/stories/", include("stories.urls")),
+    # Part P-053: generic Like/Unlike — targets Post or Reel via
+    # {"content_type": ..., "object_id": ...} in the request body, not
+    # a URL-path id, since the target model varies. Own top-level
+    # prefix (not folded into social.urls' /api/v1/businesses/ prefix)
+    # because Like isn't business-scoped.
+    path("api/v1/likes/", include("social.like_urls")),
 ]

@@ -55,7 +55,8 @@ class Post(Moderatable, TimestampedModel, SoftDeleteModel):
     published_objects = PublishedManager()
     caption = models.TextField()
     image = models.FileField(upload_to="posts/", null=True, blank=True)
-
+    likes_count = models.PositiveIntegerField(default=0)
+    
     class Meta:
         indexes = [
             models.Index(fields=["business"], name="content_post_business_idx"),
@@ -166,6 +167,7 @@ class Reel(Moderatable, TimestampedModel, SoftDeleteModel):
         default=ProcessingStatus.UPLOADED,
     )
     published_objects = ReelPublishedManager()
+    likes_count = models.PositiveIntegerField(default=0)
 
     class Meta:
         indexes = [

@@ -18,6 +18,7 @@ from rest_framework.test import APIClient
 from accounts.models import User
 from businesses.models import BusinessProfile
 from social.models import Follow
+from django.core.files.uploadedfile import SimpleUploadedFile
 
 pytestmark = pytest.mark.django_db
 
@@ -197,3 +198,224 @@ class TestFollowConcurrency:
         assert Follow.objects.filter(follower=follower, business=business).count() == 1
         business.refresh_from_db()
         assert business.follower_count == 1
+
+
+
+from django.contrib.contenttypes.models import ContentType
+
+from content.models import Post, Reel
+from social.models import Like
+
+
+def _make_post(business=None):
+    business = business or _make_business()
+    return Post.objects.create(business=business, caption="hi")
+
+
+def _make_reel(business=None):
+    business = business or _make_business()
+    return Reel.objects.create(
+        business=business,
+        caption="hi",
+        video=SimpleUploadedFile(
+            "raw.mp4",
+            (b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"),
+            content_type="video/mp4",
+        ),
+    )
+
+
+def _like_url():
+    return reverse("likes:toggle")
+
+
+class TestLikeTogglePost:
+    def test_like_post_creates_row_and_increments_counter(self, api_client):
+        liker = _make_user("customer", "p053-l1@example.com")
+        post = _make_post()
+        api_client.force_authenticate(user=liker)
+
+        response = api_client.post(
+            _like_url(), {"content_type": "post", "object_id": post.pk}, format="json"
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"liked": True}
+        post_ct = ContentType.objects.get_for_model(Post)
+        assert (
+            Like.objects.filter(user=liker, content_type=post_ct, object_id=post.pk).count()
+            == 1
+        )
+        post.refresh_from_db()
+        assert post.likes_count == 1
+
+    def test_like_post_is_idempotent(self, api_client):
+        liker = _make_user("customer", "p053-l2@example.com")
+        post = _make_post()
+        api_client.force_authenticate(user=liker)
+
+        api_client.post(
+            _like_url(), {"content_type": "post", "object_id": post.pk}, format="json"
+        )
+        response = api_client.post(
+            _like_url(), {"content_type": "post", "object_id": post.pk}, format="json"
+        )
+
+        assert response.status_code == 200
+        post.refresh_from_db()
+        assert post.likes_count == 1
+
+    def test_unlike_post_decrements_counter(self, api_client):
+        liker = _make_user("customer", "p053-l3@example.com")
+        post = _make_post()
+        api_client.force_authenticate(user=liker)
+        api_client.post(
+            _like_url(), {"content_type": "post", "object_id": post.pk}, format="json"
+        )
+
+        response = api_client.delete(
+            _like_url(), {"content_type": "post", "object_id": post.pk}, format="json"
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"liked": False}
+        post.refresh_from_db()
+        assert post.likes_count == 0
+
+    def test_unlike_never_liked_is_harmless_noop(self, api_client):
+        liker = _make_user("customer", "p053-l4@example.com")
+        post = _make_post()
+        api_client.force_authenticate(user=liker)
+
+        response = api_client.delete(
+            _like_url(), {"content_type": "post", "object_id": post.pk}, format="json"
+        )
+
+        assert response.status_code == 200
+        post.refresh_from_db()
+        assert post.likes_count == 0
+
+    def test_unlike_twice_does_not_go_negative(self, api_client):
+        liker = _make_user("customer", "p053-l5@example.com")
+        post = _make_post()
+        api_client.force_authenticate(user=liker)
+        api_client.post(
+            _like_url(), {"content_type": "post", "object_id": post.pk}, format="json"
+        )
+
+        api_client.delete(
+            _like_url(), {"content_type": "post", "object_id": post.pk}, format="json"
+        )
+        response = api_client.delete(
+            _like_url(), {"content_type": "post", "object_id": post.pk}, format="json"
+        )
+
+        assert response.status_code == 200
+        post.refresh_from_db()
+        assert post.likes_count == 0
+
+
+class TestLikeToggleReel:
+    def test_like_reel_creates_row_and_increments_counter(self, api_client):
+        """
+        Same mechanism proven against a different concrete model —
+        the generic-FK dispatch works identically for Reel, not just
+        Post, without any Reel-specific branch in the view.
+        """
+        liker = _make_user("customer", "p053-lr1@example.com")
+        reel = _make_reel()
+        api_client.force_authenticate(user=liker)
+
+        response = api_client.post(
+            _like_url(), {"content_type": "reel", "object_id": reel.pk}, format="json"
+        )
+
+        assert response.status_code == 200
+        reel.refresh_from_db()
+        assert reel.likes_count == 1
+
+    def test_unlike_reel_decrements_counter(self, api_client):
+        liker = _make_user("customer", "p053-lr2@example.com")
+        reel = _make_reel()
+        api_client.force_authenticate(user=liker)
+        api_client.post(
+            _like_url(), {"content_type": "reel", "object_id": reel.pk}, format="json"
+        )
+
+        response = api_client.delete(
+            _like_url(), {"content_type": "reel", "object_id": reel.pk}, format="json"
+        )
+
+        assert response.status_code == 200
+        reel.refresh_from_db()
+        assert reel.likes_count == 0
+
+
+class TestLikeToggleValidation:
+    def test_unrecognized_content_type_returns_400(self, api_client):
+        liker = _make_user("customer", "p053-v1@example.com")
+        api_client.force_authenticate(user=liker)
+
+        response = api_client.post(
+            _like_url(), {"content_type": "story", "object_id": 1}, format="json"
+        )
+
+        assert response.status_code == 400
+
+    def test_missing_object_id_returns_400(self, api_client):
+        liker = _make_user("customer", "p053-v2@example.com")
+        api_client.force_authenticate(user=liker)
+
+        response = api_client.post(
+            _like_url(), {"content_type": "post"}, format="json"
+        )
+
+        assert response.status_code == 400
+
+    def test_nonexistent_object_id_returns_404(self, api_client):
+        liker = _make_user("customer", "p053-v3@example.com")
+        api_client.force_authenticate(user=liker)
+
+        response = api_client.post(
+            _like_url(), {"content_type": "post", "object_id": 999999}, format="json"
+        )
+
+        assert response.status_code == 404
+
+    def test_unauthenticated_like_returns_401(self, api_client):
+        post = _make_post()
+        response = api_client.post(
+            _like_url(), {"content_type": "post", "object_id": post.pk}, format="json"
+        )
+        assert response.status_code == 401
+
+
+@pytest.mark.django_db(transaction=True)
+class TestLikeConcurrency:
+    def test_concurrent_like_requests_increment_exactly_once(self):
+        liker = _make_user("customer", "p053-conc1@example.com")
+        post = _make_post()
+        results = []
+
+        def _do_like():
+            client = APIClient()
+            client.force_authenticate(user=liker)
+            resp = client.post(
+                _like_url(),
+                {"content_type": "post", "object_id": post.pk},
+                format="json",
+            )
+            results.append(resp.status_code)
+
+        t1 = threading.Thread(target=_do_like)
+        t2 = threading.Thread(target=_do_like)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert results == [200, 200]
+        post_ct = ContentType.objects.get_for_model(Post)
+        assert Like.objects.filter(user=liker, content_type=post_ct, object_id=post.pk).count() == 1
+        post.refresh_from_db()
+        assert post.likes_count == 1
