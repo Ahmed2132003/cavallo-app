@@ -5,15 +5,15 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
 
 from businesses.models import BusinessProfile
+from categories.models import Category
 from content.models import Post, Reel
-from social.models import Follow, Like
+from products.models import Product
+from social.models import Follow, Like, Save
 from uuid import uuid4
 
 User = get_user_model()
 
-_VALID_MP4_BYTES = (
-    b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"
-)
+_VALID_MP4_BYTES = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"
 
 
 def _make_follower():
@@ -170,3 +170,118 @@ class TestLikeModel:
         liker.delete()
 
         assert Like.objects.count() == 0
+
+
+def _make_category(name="Fashion"):
+    return Category.objects.create(name=name)
+
+
+def _make_product(business=None, category=None, **overrides):
+    defaults = {
+        "business": business or _make_business(),
+        "category": category or _make_category(),
+        "name": "Classic Shirt",
+        "description": "A shirt.",
+        "price": "199.99",
+        "currency": Product.CURRENCY_EGP,
+    }
+    defaults.update(overrides)
+    return Product.objects.create(**defaults)
+
+
+def _make_saver(suffix="saver1"):
+    return User.objects.create_user(
+        username=suffix, password="pass12345", account_type="customer"
+    )
+
+
+@pytest.mark.django_db
+class TestSaveModel:
+    def test_save_created_successfully_on_post(self):
+        saver = _make_saver("saver-p1")
+        post = _make_post()
+        content_type = ContentType.objects.get_for_model(Post)
+
+        save = Save.objects.create(
+            user=saver, content_type=content_type, object_id=post.pk
+        )
+
+        assert save.pk is not None
+        assert save.content_object == post
+        assert saver.saves.count() == 1
+
+    def test_save_created_successfully_on_reel(self):
+        saver = _make_saver("saver-r1")
+        reel = _make_reel()
+        content_type = ContentType.objects.get_for_model(Reel)
+
+        save = Save.objects.create(
+            user=saver, content_type=content_type, object_id=reel.pk
+        )
+
+        assert save.pk is not None
+        assert save.content_object == reel
+
+    def test_save_created_successfully_on_product(self):
+        """
+        Proves Save's generic-FK dispatch works against Product too —
+        the one content type Like deliberately does NOT support
+        (P-053 stays Post/Reel-only; P-054 adds Product per its own
+        spec interpretation).
+        """
+        saver = _make_saver("saver-pr1")
+        product = _make_product()
+        content_type = ContentType.objects.get_for_model(Product)
+
+        save = Save.objects.create(
+            user=saver, content_type=content_type, object_id=product.pk
+        )
+
+        assert save.pk is not None
+        assert save.content_object == product
+
+    def test_duplicate_save_raises_integrity_error(self):
+        saver = _make_saver("saver-dup")
+        post = _make_post()
+        content_type = ContentType.objects.get_for_model(Post)
+        Save.objects.create(user=saver, content_type=content_type, object_id=post.pk)
+
+        with pytest.raises(IntegrityError):
+            with transaction.atomic():
+                Save.objects.create(
+                    user=saver, content_type=content_type, object_id=post.pk
+                )
+
+    def test_same_user_can_save_post_reel_and_product_independently(self):
+        saver = _make_saver("saver-all3")
+        post = _make_post()
+        reel = _make_reel()
+        product = _make_product()
+
+        Save.objects.create(
+            user=saver,
+            content_type=ContentType.objects.get_for_model(Post),
+            object_id=post.pk,
+        )
+        Save.objects.create(
+            user=saver,
+            content_type=ContentType.objects.get_for_model(Reel),
+            object_id=reel.pk,
+        )
+        Save.objects.create(
+            user=saver,
+            content_type=ContentType.objects.get_for_model(Product),
+            object_id=product.pk,
+        )
+
+        assert Save.objects.filter(user=saver).count() == 3
+
+    def test_saver_deleted_cascades(self):
+        saver = _make_saver("saver-cascade")
+        post = _make_post()
+        content_type = ContentType.objects.get_for_model(Post)
+        Save.objects.create(user=saver, content_type=content_type, object_id=post.pk)
+
+        saver.delete()
+
+        assert Save.objects.count() == 0

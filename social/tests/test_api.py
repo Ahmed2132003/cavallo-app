@@ -200,7 +200,6 @@ class TestFollowConcurrency:
         assert business.follower_count == 1
 
 
-
 from django.contrib.contenttypes.models import ContentType
 
 from content.models import Post, Reel
@@ -243,7 +242,9 @@ class TestLikeTogglePost:
         assert response.json() == {"liked": True}
         post_ct = ContentType.objects.get_for_model(Post)
         assert (
-            Like.objects.filter(user=liker, content_type=post_ct, object_id=post.pk).count()
+            Like.objects.filter(
+                user=liker, content_type=post_ct, object_id=post.pk
+            ).count()
             == 1
         )
         post.refresh_from_db()
@@ -366,9 +367,7 @@ class TestLikeToggleValidation:
         liker = _make_user("customer", "p053-v2@example.com")
         api_client.force_authenticate(user=liker)
 
-        response = api_client.post(
-            _like_url(), {"content_type": "post"}, format="json"
-        )
+        response = api_client.post(_like_url(), {"content_type": "post"}, format="json")
 
         assert response.status_code == 400
 
@@ -416,6 +415,326 @@ class TestLikeConcurrency:
 
         assert results == [200, 200]
         post_ct = ContentType.objects.get_for_model(Post)
-        assert Like.objects.filter(user=liker, content_type=post_ct, object_id=post.pk).count() == 1
+        assert (
+            Like.objects.filter(
+                user=liker, content_type=post_ct, object_id=post.pk
+            ).count()
+            == 1
+        )
         post.refresh_from_db()
         assert post.likes_count == 1
+
+
+from categories.models import Category
+from products.models import Product
+
+from social.models import Save
+
+
+def _make_category(name="Fashion"):
+    return Category.objects.create(name=name)
+
+
+def _make_product(business=None, category=None, **overrides):
+    defaults = {
+        "business": business or _make_business(),
+        "category": category or _make_category(),
+        "name": "Classic Shirt",
+        "description": "A shirt.",
+        "price": "199.99",
+        "currency": Product.CURRENCY_EGP,
+    }
+    defaults.update(overrides)
+    return Product.objects.create(**defaults)
+
+
+def _save_toggle_url():
+    return reverse("saves:toggle")
+
+
+def _save_list_url():
+    return reverse("saves:list")
+
+
+class TestSaveTogglePost:
+    def test_save_post_creates_row(self, api_client):
+        saver = _make_user("customer", "p054-s1@example.com")
+        post = _make_post()
+        api_client.force_authenticate(user=saver)
+
+        response = api_client.post(
+            _save_toggle_url(),
+            {"content_type": "post", "object_id": post.pk},
+            format="json",
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"saved": True}
+        post_ct = ContentType.objects.get_for_model(Post)
+        assert (
+            Save.objects.filter(
+                user=saver, content_type=post_ct, object_id=post.pk
+            ).count()
+            == 1
+        )
+
+    def test_save_post_is_idempotent(self, api_client):
+        saver = _make_user("customer", "p054-s2@example.com")
+        post = _make_post()
+        api_client.force_authenticate(user=saver)
+
+        api_client.post(
+            _save_toggle_url(),
+            {"content_type": "post", "object_id": post.pk},
+            format="json",
+        )
+        response = api_client.post(
+            _save_toggle_url(),
+            {"content_type": "post", "object_id": post.pk},
+            format="json",
+        )
+
+        assert response.status_code == 200
+        assert Save.objects.filter(user=saver).count() == 1
+
+    def test_unsave_post_removes_row(self, api_client):
+        saver = _make_user("customer", "p054-s3@example.com")
+        post = _make_post()
+        api_client.force_authenticate(user=saver)
+        api_client.post(
+            _save_toggle_url(),
+            {"content_type": "post", "object_id": post.pk},
+            format="json",
+        )
+
+        response = api_client.delete(
+            _save_toggle_url(),
+            {"content_type": "post", "object_id": post.pk},
+            format="json",
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"saved": False}
+        assert Save.objects.filter(user=saver).count() == 0
+
+    def test_unsave_never_saved_is_harmless_noop(self, api_client):
+        saver = _make_user("customer", "p054-s4@example.com")
+        post = _make_post()
+        api_client.force_authenticate(user=saver)
+
+        response = api_client.delete(
+            _save_toggle_url(),
+            {"content_type": "post", "object_id": post.pk},
+            format="json",
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"saved": False}
+
+
+class TestSaveToggleReelAndProduct:
+    def test_save_reel_creates_row(self, api_client):
+        saver = _make_user("customer", "p054-sr1@example.com")
+        reel = _make_reel()
+        api_client.force_authenticate(user=saver)
+
+        response = api_client.post(
+            _save_toggle_url(),
+            {"content_type": "reel", "object_id": reel.pk},
+            format="json",
+        )
+
+        assert response.status_code == 200
+        reel_ct = ContentType.objects.get_for_model(Reel)
+        assert (
+            Save.objects.filter(
+                user=saver, content_type=reel_ct, object_id=reel.pk
+            ).count()
+            == 1
+        )
+
+    def test_save_product_creates_row(self, api_client):
+        """
+        The one content type Like doesn't support — proves Save's own
+        whitelist (SAVE_ALLOWED_CONTENT_TYPES) genuinely includes
+        Product, distinct from LikeToggleView's whitelist.
+        """
+        saver = _make_user("customer", "p054-sp1@example.com")
+        product = _make_product()
+        api_client.force_authenticate(user=saver)
+
+        response = api_client.post(
+            _save_toggle_url(),
+            {"content_type": "product", "object_id": product.pk},
+            format="json",
+        )
+
+        assert response.status_code == 200
+        product_ct = ContentType.objects.get_for_model(Product)
+        assert (
+            Save.objects.filter(
+                user=saver, content_type=product_ct, object_id=product.pk
+            ).count()
+            == 1
+        )
+
+    def test_unsave_product_removes_row(self, api_client):
+        saver = _make_user("customer", "p054-sp2@example.com")
+        product = _make_product()
+        api_client.force_authenticate(user=saver)
+        api_client.post(
+            _save_toggle_url(),
+            {"content_type": "product", "object_id": product.pk},
+            format="json",
+        )
+
+        response = api_client.delete(
+            _save_toggle_url(),
+            {"content_type": "product", "object_id": product.pk},
+            format="json",
+        )
+
+        assert response.status_code == 200
+        assert Save.objects.filter(user=saver).count() == 0
+
+
+class TestSaveToggleValidation:
+    def test_unrecognized_content_type_returns_400(self, api_client):
+        saver = _make_user("customer", "p054-v1@example.com")
+        api_client.force_authenticate(user=saver)
+
+        response = api_client.post(
+            _save_toggle_url(), {"content_type": "story", "object_id": 1}, format="json"
+        )
+
+        assert response.status_code == 400
+
+    def test_missing_object_id_returns_400(self, api_client):
+        saver = _make_user("customer", "p054-v2@example.com")
+        api_client.force_authenticate(user=saver)
+
+        response = api_client.post(
+            _save_toggle_url(), {"content_type": "product"}, format="json"
+        )
+
+        assert response.status_code == 400
+
+    def test_nonexistent_object_id_returns_404(self, api_client):
+        saver = _make_user("customer", "p054-v3@example.com")
+        api_client.force_authenticate(user=saver)
+
+        response = api_client.post(
+            _save_toggle_url(),
+            {"content_type": "product", "object_id": 999999},
+            format="json",
+        )
+
+        assert response.status_code == 404
+
+    def test_unauthenticated_save_returns_401(self, api_client):
+        post = _make_post()
+        response = api_client.post(
+            _save_toggle_url(),
+            {"content_type": "post", "object_id": post.pk},
+            format="json",
+        )
+        assert response.status_code == 401
+
+
+class TestSaveList:
+    def test_list_returns_only_own_saves(self, api_client):
+        saver = _make_user("customer", "p054-l1@example.com")
+        other = _make_user("customer", "p054-l2@example.com")
+        post = _make_post()
+        reel = _make_reel()
+        api_client.force_authenticate(user=saver)
+        api_client.post(
+            _save_toggle_url(),
+            {"content_type": "post", "object_id": post.pk},
+            format="json",
+        )
+        api_client.force_authenticate(user=other)
+        api_client.post(
+            _save_toggle_url(),
+            {"content_type": "reel", "object_id": reel.pk},
+            format="json",
+        )
+
+        api_client.force_authenticate(user=saver)
+        response = api_client.get(_save_list_url())
+
+        assert response.status_code == 200
+        results = response.json()["results"]
+        assert len(results) == 1
+        assert results[0]["content_type"] == "post"
+        assert results[0]["object_id"] == post.pk
+
+    def test_list_includes_preview_for_each_content_type(self, api_client):
+        saver = _make_user("customer", "p054-l3@example.com")
+        product = _make_product()
+        api_client.force_authenticate(user=saver)
+        api_client.post(
+            _save_toggle_url(),
+            {"content_type": "product", "object_id": product.pk},
+            format="json",
+        )
+
+        response = api_client.get(_save_list_url())
+
+        assert response.status_code == 200
+        item = response.json()["results"][0]
+        assert item["content_type"] == "product"
+        assert item["preview"]["preview_text"] == "Classic Shirt"
+
+    def test_list_is_paginated_by_cursor(self, api_client):
+        saver = _make_user("customer", "p054-l4@example.com")
+        api_client.force_authenticate(user=saver)
+        for _ in range(3):
+            post = _make_post()
+            api_client.post(
+                _save_toggle_url(),
+                {"content_type": "post", "object_id": post.pk},
+                format="json",
+            )
+
+        response = api_client.get(_save_list_url())
+
+        assert response.status_code == 200
+        body = response.json()
+        assert "results" in body and "next" in body
+
+    def test_list_empty_when_no_saves(self, api_client):
+        saver = _make_user("customer", "p054-l5@example.com")
+        api_client.force_authenticate(user=saver)
+
+        response = api_client.get(_save_list_url())
+
+        assert response.status_code == 200
+        assert response.json()["results"] == []
+
+    def test_unauthenticated_list_returns_401(self, api_client):
+        response = api_client.get(_save_list_url())
+        assert response.status_code == 401
+
+    def test_list_has_no_id_parameter_to_manipulate_idor(self, api_client):
+        """
+        IDOR check (P-026 discipline, applied to a list this time):
+        the URL itself carries no id — /saves/me/ always resolves from
+        request.user. There is structurally no way to pass another
+        user's id to see their saves.
+        """
+        saver = _make_user("customer", "p054-l6@example.com")
+        other = _make_user("customer", "p054-l7@example.com")
+        post = _make_post()
+        api_client.force_authenticate(user=other)
+        api_client.post(
+            _save_toggle_url(),
+            {"content_type": "post", "object_id": post.pk},
+            format="json",
+        )
+
+        api_client.force_authenticate(user=saver)
+        response = api_client.get(_save_list_url())
+
+        assert response.status_code == 200
+        assert response.json()["results"] == []

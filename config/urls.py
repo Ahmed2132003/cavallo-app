@@ -75,4 +75,8 @@ urlpatterns = [
     # prefix (not folded into social.urls' /api/v1/businesses/ prefix)
     # because Like isn't business-scoped.
     path("api/v1/likes/", include("social.like_urls")),
+    # Part P-054: Save/Unsave (idempotent) + own-saves list. Own
+    # top-level prefix, same shape as likes above — targets Post,
+    # Reel or Product via the request body, not a URL-path id.
+    path("api/v1/saves/", include("social.save_urls")),
 ]
