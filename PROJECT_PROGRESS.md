@@ -7272,3 +7272,139 @@ checked for `likes_count` first; (2) confirm whether `Save` reuses
 `ALLOWED_CONTENT_TYPES`'s exact whitelist style or needs its own; (3)
 confirm P-054's own spec section on app placement (`social` app is
 the natural home, same as `Like`, but don't assume — check first).
+
+
+## PART P-054 — social App: Save Model (Generic FK, Post/Reel/Product) + Own-Saves List — ✅ COMPLETE
+
+**Status:** Closed — validated on the real machine (D:\Cavallo\scd-backend, real Docker Compose, real Postgres). All new tests green, zero regressions. Pushed to `github.com/Ahmed2132003/cavallo-app` as commit `a773758` on `main` (7 files changed, 675 insertions(+), 19 deletions(-)).
+
+**What was implemented:**
+- `Save(TimestampedModel)` in `social/models.py`: generic FK
+  (`content_type` + `object_id` + `content_object`), `unique_together
+  = ("user", "content_type", "object_id")`. No counter field
+  anywhere — Save stays private, per this part's own spec.
+- `SaveToggleView` in `social/views.py`: `POST`/`DELETE /api/v1/saves/`,
+  body `{"content_type": "post"|"reel"|"product", "object_id": <id>}`.
+  `SAVE_ALLOWED_CONTENT_TYPES` is its own explicit closed whitelist,
+  separate from `LikeToggleView`'s `ALLOWED_CONTENT_TYPES` — Save
+  includes `product`, Like does not (P-053 stays Post/Reel-only).
+- `SaveListView` (DRF `ListAPIView`) in `social/views.py`:
+  `GET /api/v1/saves/me/`, authenticated, scoped strictly to
+  `request.user` (no id parameter exists — same IDOR-safe `/me/`
+  shape as `businesses/me/`, P-026), cursor-paginated via
+  `core.pagination.StandardCursorPagination` (P-011's convention).
+- New `social/serializers.py`: `SaveSerializer` (fields: id,
+  content_type [lowercase model name, e.g. "post"/"reel"/"product"],
+  object_id, preview, created_at) + a module-level `_preview_for()`
+  helper. Post/Reel already implement `get_moderation_preview()`
+  (they're `Moderatable`) and are reused directly; `Product` is NOT
+  `Moderatable` (P-031: `SoftDeleteModel` only), so `_preview_for()`
+  has an explicit fallback branch for it, returning the same
+  two-key `{"preview_text", "preview_image_url"}` contract by hand
+  (`name`/`image` fields).
+- New `social/save_urls.py`, mounted at top-level `api/v1/saves/` in
+  `config/urls.py` (own prefix, same shape as `social/like_urls.py`).
+
+**Files created:**
+- `social/serializers.py`
+- `social/save_urls.py`
+- `social/migrations/0003_save.py` (real, machine-generated)
+
+**Files modified:**
+- `social/models.py`, `social/views.py`, `config/urls.py`,
+  `social/tests/test_models.py`, `social/tests/test_api.py`
+
+**Architecture decisions / confirmations:**
+- Confirmed via `content/serializers.py` and `products/serializers.py`:
+  no pre-existing `saved`/`is_saved`-shaped placeholder existed before
+  this part — same "check first" step P-052/P-053 each did for their
+  own field names.
+- Deliberately did NOT reuse `LikeToggleView.ALLOWED_CONTENT_TYPES` —
+  Save's own `SAVE_ALLOWED_CONTENT_TYPES` whitelist is separate and
+  includes `product`, so a future change to Like's whitelist can never
+  accidentally open or close Save's scope (and vice versa).
+- `Save` intentionally has NO `transaction.atomic()`/`F()`-counter
+  pattern — unlike Follow/Like, there is nothing to atomically
+  increment/decrement, since no public `saves_count` exists anywhere.
+  `get_or_create()`/`filter().delete()` alone are sufficient for
+  idempotency here.
+- Product's preview fallback lives in `social/serializers.py`, not as
+  a `get_moderation_preview()`-named method added onto `Product`
+  itself — `Product` has nothing to do with the moderation queue, and
+  giving it a method literally named after that queue's contract
+  would be misleading. The two-key shape is matched by convention,
+  not by inheritance.
+
+**Commands (all verified passing on the real stack):**
+```powershell
+docker compose exec web python manage.py makemigrations social
+docker compose exec web python manage.py migrate social
+docker compose exec web python manage.py check
+docker compose exec web black social/ config/
+docker compose exec web flake8 social/ config/
+docker compose exec web pytest social/ -v
+```
+
+**Tests / Verification results:**
+- `social/tests/test_models.py::TestSaveModel` — 6 tests, all passing
+  (create on Post/Reel/Product, duplicate `IntegrityError`, three
+  content types independent for one user, saver-delete cascade).
+- `social/tests/test_api.py::TestSaveTogglePost` +
+  `TestSaveToggleReelAndProduct` + `TestSaveToggleValidation` — 11
+  tests, all passing (idempotent save/unsave across all three content
+  types, harmless no-op unsave, 400/404/401 validation).
+- `social/tests/test_api.py::TestSaveList` — 6 tests, all passing
+  (own-saves-only scoping, per-content-type preview, cursor
+  pagination shape, empty list, 401, explicit IDOR check with no id
+  parameter to manipulate).
+- `social/` full run: **56 passed** (10 Follow + 21 Like/concurrency
+  + 23 Save + 2 concurrency — up from 33 pre-P-054, 23 net new Save
+  tests, zero regressions on Follow/Like).
+- Combined `social/ content/ products/` run (previous full pass
+  before formatting/commit): **193 passed**, zero regressions.
+- Full project suite (previous full pass before formatting/commit):
+  **468 passed, 1 skipped** (the 1 skip is pre-existing and
+  unrelated — `core/tests/test_storage_backends.py`, missing `moto`
+  package, flagged since before P-052).
+
+**Known issues:**
+- None found specific to P-054's actual logic.
+- `flake8` reports `E402` (module level import not at top of file) on
+  a handful of lines in `social/models.py`, `social/views.py` and
+  `social/tests/test_api.py` — this is the same established,
+  intentional-but-flagged style already present for Follow/Like (each
+  Part's classes/imports appended to the end of the shared file
+  rather than reorganizing it), not a new problem introduced by Save.
+  Not fixed here, consistent with P-052/P-053 leaving it as-is.
+- `config/settings/test.py:20` `F405` — pre-existing, unrelated,
+  flagged since before P-052 (`from .dev import *` by design).
+- Same cosmetic pytest-teardown `OperationalError` warning on
+  concurrency tests flagged in P-052's own entry still appears; not
+  new, not blocking.
+
+**Commit:** `a773758` — "P-054: social app - Save model (generic FK,
+Post/Reel/Product) + own-saves list" (7 files changed, 675
+insertions(+), 19 deletions(-)), pushed to `main`
+(`5226379..a773758`).
+
+**Remaining work:** None for P-054 itself. `Save.related_name="saves"`
+on `User` has no serializer exposing it directly yet beyond
+`SaveListView`'s own list — sufficient for this part's scope.
+
+**GitHub references:**
+- Repo: https://github.com/Ahmed2132003/cavallo-app
+- Commit: `a773758` on `main`.
+
+**Next starting point — Part P-055 (Comment), per Phase 9's sequence
+(Section 4 scope matrix: Like → Save → Comment → Share → Report):**
+Before writing any code: (1) confirm Comment's own app placement the
+same way P-052/P-053/P-054 each did (very likely `social`, but check
+that part's own spec section first, don't assume); (2) confirm
+whether Comment needs its own content-type whitelist (`ALLOWED_`/
+`SAVE_ALLOWED_`-shaped) or reuses one — Comment is very likely
+Post/Reel-only like Like, not Post/Reel/Product like Save, but verify
+against the source architecture rather than assuming by pattern;
+(3) Comment is the first part in this sequence that needs actual
+user-submitted text content (not just a toggle), so check whether it
+needs its own moderation/profanity-filtering pass, or whether Section
+4/6 of the architecture stays silent on that for MVP.
