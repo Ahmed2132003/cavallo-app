@@ -7190,3 +7190,85 @@ None for P-052 itself — fully done. `following_count` has no serializer exposi
 
 ### Exact next starting point
 **Part P-053 (Like)** is next — Phase 9 continues. Per this part's own handoff instruction, P-053 must copy this exact pattern verbatim: `get_or_create()`/`filter().delete()` → check the `created`/deleted-count signal → gate an atomic `.filter(pk=...).update(field=F(field) ± 1)` on that signal → wrapped in `transaction.atomic()` → guard decrements with `field__gt=0`. **Before writing any Like model/field name**, repeat this part's own BEFORE CODING step: grep `content/serializers.py` (Post/Reel) for any existing `like_count`/`likes_count`-shaped placeholder the way `businesses/serializers.py` already had one for `follower_count` — the master-plan spec's literal field name is not automatically the real one. P-052's `social/` app is the natural home for `Like` too (same app, same counter-update helper shape), but confirm that against whatever P-053's own spec section says about app placement before assuming it.
+
+## PART P-053 — social App: Like Model (Generic FK) + Atomic Counters — ✅ COMPLETE
+
+**What was implemented:**
+- `Like(TimestampedModel)` in `social/models.py`: generic FK
+  (`content_type` + `object_id` + `content_object`), `unique_together
+  = ("user", "content_type", "object_id")`.
+- `likes_count = models.PositiveIntegerField(default=0)` added to
+  both `content.Post` (migration `content/migrations/0004_post_likes_count.py`)
+  and `content.Reel` (migration `content/migrations/0005_reel_likes_count.py`)
+  — same field name on both, confirmed via dedicated model test.
+- `LikeToggleView` in `social/views.py`: `POST`/`DELETE /api/v1/likes/`,
+  body `{"content_type": "post"|"reel", "object_id": <id>}`.
+  `ALLOWED_CONTENT_TYPES` is an explicit closed whitelist (`post`,
+  `reel`) mapped to `(app_label, model_name)` — deliberately NOT
+  derived from `ContentType.objects.all()`, so no unintended model
+  ever becomes likeable. Story is NOT in the whitelist (view-only
+  scope per P-046/P-049 — no architecture evidence found requiring
+  Story likes).
+- Mirrors P-052 exactly: `get_or_create()`/`filter().delete()` → gate
+  `.filter(pk=...).update(likes_count=F("likes_count") ± 1)` on the
+  created/deleted signal → wrapped in `transaction.atomic()` →
+  decrements guarded with `likes_count__gt=0`.
+- New URL module `social/like_urls.py`, mounted at top-level
+  `api/v1/likes/` in `config/urls.py` (own prefix, not folded into
+  `social.urls`'s `/api/v1/businesses/`, since Like isn't
+  business-scoped).
+
+**Files created:**
+- `content/migrations/0004_post_likes_count.py`
+- `content/migrations/0005_reel_likes_count.py`
+- `social/migrations/0002_like.py`
+- `social/like_urls.py`
+
+**Files modified:**
+- `content/models.py`, `social/models.py`, `social/views.py`,
+  `config/urls.py`, `social/tests/test_models.py`,
+  `social/tests/test_api.py`
+
+**Architecture decisions / confirmations:**
+- Confirmed via `content/serializers.py`: Post/Reel serializers use
+  explicit `fields` tuples, so `likes_count` is NOT auto-exposed in
+  any API response yet — same precedent as `follower_count` after
+  P-052. Add explicitly to a serializer when/if a future part needs
+  it exposed.
+- Confirmed no pre-existing `like_count`/`likes_count` placeholder
+  existed before this part — `likes_count` is the field's first use,
+  matching the spec's literal name.
+- Confirmed Story stays out of scope for likes.
+
+**Commands:**
+```bash
+docker compose exec web python manage.py makemigrations content
+docker compose exec web python manage.py makemigrations social
+docker compose exec web python manage.py migrate content
+docker compose exec web python manage.py migrate social
+docker compose exec web pytest social/ content/ -v
+```
+
+**Tests:** 10 model tests (5 Follow pre-existing + 5 Like) + 22 API
+tests (10 Follow pre-existing + 12 Like, including 1 dedicated
+concurrency test) — **116 passed, 0 failed** across `social/` and
+`content/` combined (full app test run, confirming no regression on
+Post/Reel/moderation/transcode behavior from the `likes_count` field
+addition).
+
+**Known issues:** None found specific to P-053. (Pre-existing,
+unrelated: `accounts/views.py` still has the stray leftover text
+flagged back in P-052's own entry — untouched here, still not
+blocking.)
+
+**Commit:** `756e2aa` — "update" (11 files changed, 564 insertions(+),
+4 deletions(-)), pushed to `main` (`bb489ad..756e2aa`).
+
+**Next starting point — Part P-054 (Save):** per this part's own
+handoff, P-054 will very likely mirror this exact generic-FK shape.
+Before writing any code: (1) grep `content/serializers.py` for any
+existing `saved`/`is_saved`-shaped placeholder the same way this part
+checked for `likes_count` first; (2) confirm whether `Save` reuses
+`ALLOWED_CONTENT_TYPES`'s exact whitelist style or needs its own; (3)
+confirm P-054's own spec section on app placement (`social` app is
+the natural home, same as `Like`, but don't assume — check first).
