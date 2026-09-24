@@ -79,4 +79,8 @@ urlpatterns = [
     # top-level prefix, same shape as likes above — targets Post,
     # Reel or Product via the request body, not a URL-path id.
     path("api/v1/saves/", include("social.save_urls")),
+    # Part P-055: Comment create (list endpoint added in the same part).
+    # Own top-level prefix, same shape as likes/saves above. Comments
+    # are the one content type that is NOT moderated pre-publish.
+    path("api/v1/comments/", include("social.comment_urls")),
 ]

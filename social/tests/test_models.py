@@ -8,7 +8,9 @@ from businesses.models import BusinessProfile
 from categories.models import Category
 from content.models import Post, Reel
 from products.models import Product
-from social.models import Follow, Like, Save
+from core.models import SoftDeleteModel, TimestampedModel
+from moderation.models import Moderatable, ModerationQueue
+from social.models import Comment, Follow, Like, Save
 from uuid import uuid4
 
 User = get_user_model()
@@ -285,3 +287,88 @@ class TestSaveModel:
         saver.delete()
 
         assert Save.objects.count() == 0
+
+
+@pytest.mark.django_db
+class TestCommentsCountField:
+    def test_post_comments_count_defaults_to_zero(self):
+        assert _make_post().comments_count == 0
+
+    def test_reel_comments_count_defaults_to_zero(self):
+        assert _make_reel().comments_count == 0
+
+    def test_comments_count_mirrors_likes_count_convention_on_both_models(self):
+        for model in (Post, Reel):
+            comments_field = model._meta.get_field("comments_count")
+            likes_field = model._meta.get_field("likes_count")
+            assert type(comments_field) is type(likes_field)
+            assert comments_field.default == 0
+
+
+def _make_commenter(suffix="commenter1"):
+    return User.objects.create_user(
+        username=suffix, password="pass12345", account_type="customer"
+    )
+
+
+def _make_comment(user, target, text="nice"):
+    return Comment.objects.create(
+        user=user,
+        content_type=ContentType.objects.get_for_model(type(target)),
+        object_id=target.pk,
+        text=text,
+    )
+
+
+@pytest.mark.django_db
+class TestCommentModel:
+    def test_comment_is_deliberately_not_moderatable(self):
+        assert not issubclass(Comment, Moderatable)
+        field_names = {f.name for f in Comment._meta.get_fields()}
+        assert "status" not in field_names
+
+    def test_comment_uses_timestamped_and_softdelete_bases(self):
+        assert issubclass(Comment, TimestampedModel)
+        assert issubclass(Comment, SoftDeleteModel)
+
+    def test_create_on_post_with_defaults(self):
+        post = _make_post()
+        comment = _make_comment(_make_commenter(), post)
+        assert comment.reports_count == 0
+        assert comment.is_hidden is False
+        assert comment.content_object == post
+        assert comment.created_at is not None
+
+    def test_create_on_reel(self):
+        reel = _make_reel()
+        comment = _make_comment(_make_commenter(), reel)
+        assert comment.content_object == reel
+
+    def test_creating_comment_creates_no_moderation_queue_row(self):
+        post = _make_post()
+        user = _make_commenter()
+        before = ModerationQueue.objects.count()
+        # Sanity: the Post itself WAS enqueued, so the moderation
+        # signal is live and this negative test is meaningful.
+        assert before >= 1
+        _make_comment(user, post)
+        assert ModerationQueue.objects.count() == before
+
+    def test_same_user_can_comment_multiple_times_on_same_object(self):
+        post = _make_post()
+        user = _make_commenter()
+        _make_comment(user, post, text="first")
+        _make_comment(user, post, text="second")
+        assert Comment.objects.filter(user=user, object_id=post.pk).count() == 2
+
+    def test_soft_delete_excludes_from_default_manager(self):
+        comment = _make_comment(_make_commenter(), _make_post())
+        comment.delete()
+        assert not Comment.objects.filter(pk=comment.pk).exists()
+        assert Comment.all_objects.filter(pk=comment.pk).exists()
+
+    def test_deleting_user_cascades_to_comments(self):
+        user = _make_commenter()
+        comment = _make_comment(user, _make_post())
+        user.delete()
+        assert not Comment.all_objects.filter(pk=comment.pk).exists()

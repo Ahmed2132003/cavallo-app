@@ -8,7 +8,7 @@ that needs a real list representation.
 
 from rest_framework import serializers
 
-from .models import Save
+from .models import Comment, Save
 
 
 def _preview_for(content_object):
@@ -58,3 +58,55 @@ class SaveSerializer(serializers.ModelSerializer):
             # of a 500 — the Save row itself is still valid data.
             return None
         return _preview_for(content_object)
+
+
+# Part P-055 — PLACEHOLDER max comment length (the spec is silent on it;
+# an unbounded TextField would let a single request store megabytes).
+# Tunable; not a product-confirmed value.
+COMMENT_MAX_LENGTH = 1000
+
+
+class CommentCreateSerializer(serializers.Serializer):
+    """
+    Input validation for POST /api/v1/comments/. `content_type` is only
+    checked as a non-empty string here; the closed whitelist check
+    (post/reel) lives in the view, next to COMMENT_ALLOWED_CONTENT_TYPES.
+    """
+
+    content_type = serializers.CharField()
+    object_id = serializers.IntegerField(min_value=1)
+    text = serializers.CharField(max_length=COMMENT_MAX_LENGTH)
+
+
+class CommentSerializer(serializers.ModelSerializer):
+    """
+    Public representation of a Comment. `reports_count` is deliberately
+    NOT exposed. `is_hidden` is included so that the author/moderators
+    (the only viewers who ever receive a hidden comment, see Part
+    P-055's list endpoint) can render a "hidden" marker.
+    """
+
+    content_type = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Comment
+        fields = (
+            "id",
+            "user",
+            "content_type",
+            "object_id",
+            "text",
+            "is_hidden",
+            "created_at",
+        )
+        read_only_fields = fields
+
+    def get_content_type(self, obj):
+        return obj.content_type.model
+
+
+class CommentListQuerySerializer(serializers.Serializer):
+    """Query-string validation for GET /api/v1/comments/."""
+
+    content_type = serializers.CharField()
+    object_id = serializers.IntegerField(min_value=1)

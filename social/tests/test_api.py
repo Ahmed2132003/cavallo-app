@@ -738,3 +738,441 @@ class TestSaveList:
 
         assert response.status_code == 200
         assert response.json()["results"] == []
+
+
+from moderation.models import Moderatable, ModerationQueue
+from social.models import Comment
+from social.serializers import COMMENT_MAX_LENGTH
+
+
+def _comments_url():
+    return reverse("comments:collection")
+
+
+def _publish(obj):
+    """Make a Post/Reel visible to published_objects without going
+    through the moderation queue (update() fires no signals)."""
+    fields = {"status": Moderatable.Status.PUBLISHED}
+    if isinstance(obj, Reel):
+        fields["processing_status"] = Reel.ProcessingStatus.READY
+    type(obj).objects.filter(pk=obj.pk).update(**fields)
+    obj.refresh_from_db()
+    return obj
+
+
+_MISSING = object()
+
+
+class TestCommentCreate:
+    def test_comment_on_post_returns_201_and_increments_counter(self, api_client):
+        user = _make_user("customer", "p055-c1@example.com")
+        post = _publish(_make_post())
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(
+            _comments_url(),
+            {"content_type": "post", "object_id": post.pk, "text": "nice"},
+            format="json",
+        )
+
+        assert response.status_code == 201
+        body = response.json()
+        assert body["text"] == "nice"
+        assert body["content_type"] == "post"
+        assert body["object_id"] == post.pk
+        assert body["user"] == user.pk
+        assert body["is_hidden"] is False
+        assert "reports_count" not in body
+        assert Comment.objects.filter(user=user, object_id=post.pk).count() == 1
+        post.refresh_from_db()
+        assert post.comments_count == 1
+
+    def test_comment_on_reel_returns_201_and_increments_counter(self, api_client):
+        user = _make_user("customer", "p055-c2@example.com")
+        reel = _publish(_make_reel())
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(
+            _comments_url(),
+            {"content_type": "reel", "object_id": reel.pk, "text": "wow"},
+            format="json",
+        )
+
+        assert response.status_code == 201
+        assert response.json()["content_type"] == "reel"
+        reel.refresh_from_db()
+        assert reel.comments_count == 1
+
+    def test_creating_comment_creates_zero_moderation_queue_rows(self, api_client):
+        user = _make_user("customer", "p055-c3@example.com")
+        post = _publish(_make_post())
+        api_client.force_authenticate(user=user)
+        before = ModerationQueue.objects.count()
+        # Sanity: the Post itself WAS enqueued, so the moderation
+        # signal is live and this negative test is meaningful.
+        assert before >= 1
+
+        response = api_client.post(
+            _comments_url(),
+            {"content_type": "post", "object_id": post.pk, "text": "nice"},
+            format="json",
+        )
+
+        assert response.status_code == 201
+        assert ModerationQueue.objects.count() == before
+        comment = Comment.objects.get(pk=response.json()["id"])
+        assert not hasattr(comment, "status")
+
+    def test_each_comment_increments_counter_by_one(self, api_client):
+        user = _make_user("customer", "p055-c4@example.com")
+        post = _publish(_make_post())
+        api_client.force_authenticate(user=user)
+        payload = {"content_type": "post", "object_id": post.pk, "text": "hi"}
+
+        api_client.post(_comments_url(), payload, format="json")
+        api_client.post(_comments_url(), payload, format="json")
+
+        post.refresh_from_db()
+        assert post.comments_count == 2
+        assert Comment.objects.filter(object_id=post.pk).count() == 2
+
+    def test_business_account_can_comment_too(self, api_client):
+        post = _publish(_make_post())
+        other_business_owner = _make_user("business", "p055-c5@example.com")
+        api_client.force_authenticate(user=other_business_owner)
+
+        response = api_client.post(
+            _comments_url(),
+            {"content_type": "post", "object_id": post.pk, "text": "hello"},
+            format="json",
+        )
+
+        assert response.status_code == 201
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("content_type", "story"),
+            ("content_type", "product"),
+            ("content_type", _MISSING),
+            ("object_id", _MISSING),
+            ("object_id", "abc"),
+            ("object_id", 0),
+            ("text", _MISSING),
+            ("text", ""),
+            ("text", "   "),
+            ("text", "x" * (COMMENT_MAX_LENGTH + 1)),
+        ],
+    )
+    def test_invalid_payload_returns_400_and_creates_nothing(
+        self, api_client, field, value
+    ):
+        user = _make_user("customer", "p055-v1@example.com")
+        post = _publish(_make_post())
+        api_client.force_authenticate(user=user)
+        payload = {"content_type": "post", "object_id": post.pk, "text": "nice"}
+        if value is _MISSING:
+            del payload[field]
+        else:
+            payload[field] = value
+
+        response = api_client.post(_comments_url(), payload, format="json")
+
+        assert response.status_code == 400
+        assert Comment.objects.count() == 0
+        post.refresh_from_db()
+        assert post.comments_count == 0
+
+    def test_nonexistent_target_returns_404(self, api_client):
+        user = _make_user("customer", "p055-v2@example.com")
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(
+            _comments_url(),
+            {"content_type": "post", "object_id": 999999, "text": "nice"},
+            format="json",
+        )
+
+        assert response.status_code == 404
+
+    def test_unpublished_post_returns_404_and_creates_nothing(self, api_client):
+        user = _make_user("customer", "p055-v3@example.com")
+        post = _make_post()  # pending_review, never published
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(
+            _comments_url(),
+            {"content_type": "post", "object_id": post.pk, "text": "nice"},
+            format="json",
+        )
+
+        assert response.status_code == 404
+        assert Comment.objects.count() == 0
+        post.refresh_from_db()
+        assert post.comments_count == 0
+
+    def test_soft_deleted_post_returns_404(self, api_client):
+        user = _make_user("customer", "p055-v4@example.com")
+        post = _publish(_make_post())
+        post.delete()  # soft delete
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(
+            _comments_url(),
+            {"content_type": "post", "object_id": post.pk, "text": "nice"},
+            format="json",
+        )
+
+        assert response.status_code == 404
+
+    def test_unauthenticated_returns_401(self, api_client):
+        post = _publish(_make_post())
+
+        response = api_client.post(
+            _comments_url(),
+            {"content_type": "post", "object_id": post.pk, "text": "nice"},
+            format="json",
+        )
+
+        assert response.status_code == 401
+        assert Comment.objects.count() == 0
+
+
+from django.contrib.auth.models import Group
+
+from social.services import (
+    COMMENT_AUTO_HIDE_THRESHOLD,
+    check_and_hide_if_threshold_exceeded,
+)
+
+
+def _make_moderator(email):
+    user = _make_user("customer", email)
+    user.groups.add(Group.objects.get(name="Moderator"))
+    return user
+
+
+def _add_comment(user, target, text="nice", **extra):
+    return Comment.objects.create(
+        user=user,
+        content_type=ContentType.objects.get_for_model(type(target)),
+        object_id=target.pk,
+        text=text,
+        **extra,
+    )
+
+
+def _list_comments(client, content_type, object_id):
+    return client.get(
+        _comments_url(), {"content_type": content_type, "object_id": object_id}
+    )
+
+
+def _comment_ids(response):
+    return [item["id"] for item in response.json()["results"]]
+
+
+class TestCommentList:
+    def test_comment_is_listable_immediately_after_creation(self, api_client):
+        author = _make_user("customer", "p055-l1@example.com")
+        post = _publish(_make_post())
+        api_client.force_authenticate(user=author)
+        created = api_client.post(
+            _comments_url(),
+            {"content_type": "post", "object_id": post.pk, "text": "nice"},
+            format="json",
+        )
+        assert created.status_code == 201
+
+        anonymous = APIClient()
+        response = _list_comments(anonymous, "post", post.pk)
+
+        assert response.status_code == 200
+        assert _comment_ids(response) == [created.json()["id"]]
+
+    def test_list_is_scoped_to_the_requested_target(self, api_client):
+        user = _make_user("customer", "p055-l2@example.com")
+        post = _publish(_make_post())
+        other_post = _publish(_make_post())
+        mine = _add_comment(user, post, "on this post")
+        _add_comment(user, other_post, "on another post")
+        # Same object_id but a DIFFERENT content type must not leak in.
+        Comment.objects.create(
+            user=user,
+            content_type=ContentType.objects.get_for_model(Reel),
+            object_id=post.pk,
+            text="on a reel that happens to share the id",
+        )
+
+        response = _list_comments(api_client, "post", post.pk)
+
+        assert response.status_code == 200
+        assert _comment_ids(response) == [mine.pk]
+
+    def test_list_is_newest_first_and_cursor_paginated(self, api_client):
+        user = _make_user("customer", "p055-l3@example.com")
+        post = _publish(_make_post())
+        first = _add_comment(user, post, "first")
+        second = _add_comment(user, post, "second")
+        third = _add_comment(user, post, "third")
+
+        response = _list_comments(api_client, "post", post.pk)
+
+        body = response.json()
+        assert "results" in body and "next" in body and "previous" in body
+        assert _comment_ids(response) == [third.pk, second.pk, first.pk]
+
+    def test_hidden_comment_excluded_for_anonymous(self, api_client):
+        author = _make_user("customer", "p055-h1@example.com")
+        post = _publish(_make_post())
+        visible = _add_comment(author, post, "visible")
+        _add_comment(author, post, "hidden", is_hidden=True)
+
+        response = _list_comments(api_client, "post", post.pk)
+
+        assert _comment_ids(response) == [visible.pk]
+
+    def test_hidden_comment_excluded_for_unrelated_authenticated_user(self, api_client):
+        author = _make_user("customer", "p055-h2@example.com")
+        stranger = _make_user("customer", "p055-h2b@example.com")
+        post = _publish(_make_post())
+        visible = _add_comment(author, post, "visible")
+        _add_comment(author, post, "hidden", is_hidden=True)
+        api_client.force_authenticate(user=stranger)
+
+        response = _list_comments(api_client, "post", post.pk)
+
+        assert _comment_ids(response) == [visible.pk]
+
+    def test_hidden_comment_included_for_its_own_author(self, api_client):
+        author = _make_user("customer", "p055-h3@example.com")
+        post = _publish(_make_post())
+        hidden = _add_comment(author, post, "hidden", is_hidden=True)
+        api_client.force_authenticate(user=author)
+
+        response = _list_comments(api_client, "post", post.pk)
+
+        assert _comment_ids(response) == [hidden.pk]
+        assert response.json()["results"][0]["is_hidden"] is True
+
+    def test_author_sees_own_hidden_comment_but_not_others_hidden(self, api_client):
+        author_a = _make_user("customer", "p055-h4a@example.com")
+        author_b = _make_user("customer", "p055-h4b@example.com")
+        post = _publish(_make_post())
+        a_hidden = _add_comment(author_a, post, "a hidden", is_hidden=True)
+        _add_comment(author_b, post, "b hidden", is_hidden=True)
+        b_visible = _add_comment(author_b, post, "b visible")
+        api_client.force_authenticate(user=author_a)
+
+        response = _list_comments(api_client, "post", post.pk)
+
+        assert set(_comment_ids(response)) == {a_hidden.pk, b_visible.pk}
+
+    def test_hidden_comment_included_for_moderator(self, api_client):
+        author = _make_user("customer", "p055-h5@example.com")
+        moderator = _make_moderator("p055-h5m@example.com")
+        post = _publish(_make_post())
+        visible = _add_comment(author, post, "visible")
+        hidden = _add_comment(author, post, "hidden", is_hidden=True)
+        api_client.force_authenticate(user=moderator)
+
+        response = _list_comments(api_client, "post", post.pk)
+
+        assert set(_comment_ids(response)) == {visible.pk, hidden.pk}
+
+    def test_soft_deleted_comment_excluded_for_everyone(self, api_client):
+        author = _make_user("customer", "p055-d1@example.com")
+        moderator = _make_moderator("p055-d1m@example.com")
+        post = _publish(_make_post())
+        gone = _add_comment(author, post, "deleted")
+        gone.delete()  # soft delete
+
+        for viewer in (None, author, moderator):
+            client = APIClient()
+            if viewer is not None:
+                client.force_authenticate(user=viewer)
+            response = _list_comments(client, "post", post.pk)
+            assert response.status_code == 200
+            assert _comment_ids(response) == []
+
+    def test_auto_hide_end_to_end_via_service_seam(self, api_client):
+        author = _make_user("customer", "p055-e1@example.com")
+        post = _publish(_make_post())
+        comment = _add_comment(author, post, "controversial")
+        assert _comment_ids(_list_comments(APIClient(), "post", post.pk)) == [
+            comment.pk
+        ]
+
+        Comment.objects.filter(pk=comment.pk).update(
+            reports_count=COMMENT_AUTO_HIDE_THRESHOLD
+        )
+        assert check_and_hide_if_threshold_exceeded(comment) is True
+
+        assert _comment_ids(_list_comments(APIClient(), "post", post.pk)) == []
+        api_client.force_authenticate(user=author)
+        assert _comment_ids(_list_comments(api_client, "post", post.pk)) == [comment.pk]
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"object_id": 1},
+            {"content_type": "post"},
+            {"content_type": "post", "object_id": "abc"},
+            {"content_type": "post", "object_id": 0},
+            {"content_type": "story", "object_id": 1},
+        ],
+    )
+    def test_invalid_query_returns_400(self, api_client, params):
+        response = api_client.get(_comments_url(), params)
+
+        assert response.status_code == 400
+
+    def test_nonexistent_target_returns_404(self, api_client):
+        response = _list_comments(api_client, "post", 999999)
+
+        assert response.status_code == 404
+
+    def test_unpublished_target_returns_404(self, api_client):
+        post = _make_post()  # pending_review
+
+        response = _list_comments(api_client, "post", post.pk)
+
+        assert response.status_code == 404
+
+    def test_delete_on_collection_returns_405(self, api_client):
+        user = _make_user("customer", "p055-m1@example.com")
+        api_client.force_authenticate(user=user)
+
+        response = api_client.delete(_comments_url())
+
+        assert response.status_code == 405
+
+
+@pytest.mark.django_db(transaction=True)
+class TestCommentCountConcurrency:
+    def test_concurrent_comments_each_increment_counter_exactly_once(self):
+        commenter = _make_user("customer", "p055-conc1@example.com")
+        post = _publish(_make_post())
+        results = []
+
+        def _do_comment():
+            client = APIClient()
+            client.force_authenticate(user=commenter)
+            resp = client.post(
+                _comments_url(),
+                {"content_type": "post", "object_id": post.pk, "text": "race"},
+                format="json",
+            )
+            results.append(resp.status_code)
+
+        t1 = threading.Thread(target=_do_comment)
+        t2 = threading.Thread(target=_do_comment)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert results == [201, 201]
+        assert Comment.objects.filter(object_id=post.pk).count() == 2
+        post.refresh_from_db()
+        assert post.comments_count == 2

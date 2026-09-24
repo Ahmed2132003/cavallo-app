@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.db import models
 
-from core.models import TimestampedModel
+from core.models import SoftDeleteModel, TimestampedModel
 
 
 class Follow(TimestampedModel):
@@ -105,3 +105,61 @@ class Save(TimestampedModel):
 
     def __str__(self):
         return f"user:{self.user_id} -> save:{self.content_type_id}:{self.object_id}"
+
+
+class Comment(TimestampedModel, SoftDeleteModel):
+    """
+    A user-submitted text comment on a Post or Reel (Part P-055).
+
+    ==========================================================
+    DELIBERATE, CONFIRMED ARCHITECTURAL EXCEPTION — NOT AN OVERSIGHT
+    ==========================================================
+    Comment deliberately does NOT inherit `moderation.models.Moderatable`.
+    Every other content type (Post, Reel, Story) is pre-publish moderated;
+    Comment is the one content type that publishes IMMEDIATELY, with no
+    `status` field, no `pending_review` state, and no ModerationQueue
+    row ever created for it (the moderation post_save signal only fires
+    for Moderatable subclasses, so simply not inheriting it is what
+    keeps Comment out of the queue). Moderation is REACTIVE only: users
+    report a comment (Part P-057), which increments `reports_count`, and
+    once that reaches COMMENT_AUTO_HIDE_THRESHOLD
+    (social/services.py) the comment is auto-hidden via `is_hidden`.
+
+    Do NOT add Moderatable, a status field, or any "light review" step
+    here. If that ever needs to change, it is a product decision that
+    must be confirmed explicitly, not a bug to fix.
+
+    `reports_count` is incremented by Part P-057 (Report), not by this
+    part; P-057 must then call
+    `social.services.check_and_hide_if_threshold_exceeded(comment)`
+    rather than re-implementing the threshold logic.
+
+    Unlike Like/Save there is NO unique_together: a user may comment
+    on the same object any number of times.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="comments",
+    )
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.PositiveIntegerField()
+    content_object = GenericForeignKey("content_type", "object_id")
+    text = models.TextField()
+    reports_count = models.PositiveIntegerField(default=0)
+    is_hidden = models.BooleanField(default=False)
+
+    class Meta:
+        indexes = [
+            models.Index(
+                fields=["content_type", "object_id"],
+                name="social_comment_target_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"comment:{self.pk} by user:{self.user_id} "
+            f"on {self.content_type_id}:{self.object_id}"
+        )

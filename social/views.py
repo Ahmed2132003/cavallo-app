@@ -22,16 +22,19 @@ of account_type — see social/models.py's Follow docstring.
 """
 
 from django.db import transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.contrib.auth import get_user_model
 from rest_framework.exceptions import NotFound
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.views.decorators.csrf import csrf_exempt
+
+from core.permissions import HasCapability
 
 from businesses.models import BusinessProfile
 
-from .models import Follow, Like, Save
+from .models import Comment, Follow, Like, Save
 
 User = get_user_model()
 
@@ -261,7 +264,12 @@ from rest_framework.generics import ListAPIView
 
 from core.pagination import StandardCursorPagination
 
-from .serializers import SaveSerializer
+from .serializers import (
+    CommentCreateSerializer,
+    CommentListQuerySerializer,
+    CommentSerializer,
+    SaveSerializer,
+)
 
 
 class SaveListView(ListAPIView):
@@ -281,3 +289,147 @@ class SaveListView(ListAPIView):
         return Save.objects.filter(user=self.request.user).select_related(
             "content_type"
         )
+
+
+# Whitelist for Part P-055 (Comment) — its own explicit, closed
+# whitelist, separate from Like's and Save's (same reasoning as
+# SAVE_ALLOWED_CONTENT_TYPES above). Stories have no comments
+# (architecture-mandated), and Product is not commentable in the MVP.
+COMMENT_ALLOWED_CONTENT_TYPES = {
+    "post": ("content", "Post"),
+    "reel": ("content", "Reel"),
+}
+
+
+def _resolve_comment_target(content_type_str, object_id):
+    """
+    Returns (ContentType, model, obj). Unlike Like/Save, the target
+    must be PUBLISHED (published_objects: status == published, not
+    soft-deleted, and for Reel also processing_status == ready) —
+    commenting on pending/rejected/deleted content is never valid.
+    """
+    if content_type_str not in COMMENT_ALLOWED_CONTENT_TYPES:
+        raise ValidationError(
+            {
+                "content_type": (
+                    f"Unrecognized content_type '{content_type_str}'. "
+                    f"Must be one of: {', '.join(COMMENT_ALLOWED_CONTENT_TYPES)}."
+                )
+            }
+        )
+    app_label, model_name = COMMENT_ALLOWED_CONTENT_TYPES[content_type_str]
+    model = apps.get_model(app_label, model_name)
+    try:
+        obj = model.published_objects.get(pk=object_id)
+    except model.DoesNotExist:
+        raise NotFound(f"{model_name} not found.")
+    return ContentType.objects.get_for_model(model), model, obj
+
+
+class CommentCreateView(APIView):
+    """
+    POST /api/v1/comments/ — create a comment (Part P-055).
+
+    Body: {"content_type": "post"|"reel", "object_id": <id>, "text": "..."}
+
+    DELIBERATELY NO MODERATION: the comment is live the instant this
+    view returns. Nothing here touches apps/moderation — Comment is the
+    one confirmed, documented exception to the Moderatable pattern (see
+    social/models.py's Comment docstring). Moderation is reactive only
+    (Report + auto-hide threshold, Part P-057 / social/services.py).
+
+    comments_count uses the same pattern as P-052/P-053: an atomic
+    `.filter(pk=...).update(comments_count=F("comments_count") + 1)`
+    inside the same transaction.atomic() as the insert.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = CommentCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        content_type, model, obj = _resolve_comment_target(
+            data["content_type"], data["object_id"]
+        )
+
+        with transaction.atomic():
+            comment = Comment.objects.create(
+                user=request.user,
+                content_type=content_type,
+                object_id=obj.pk,
+                text=data["text"],
+            )
+            model.objects.filter(pk=obj.pk).update(
+                comments_count=F("comments_count") + 1
+            )
+
+        return Response(CommentSerializer(comment).data, status=201)
+
+
+# Reuses P-019's capability factory (same check the moderation API uses)
+# to decide whether a viewer may see hidden comments. Imported from
+# core.permissions, NOT from apps/moderation — Comment stays fully
+# decoupled from the moderation app.
+_CanModerateContent = HasCapability("can_moderate_content")
+
+
+class CommentListView(ListAPIView):
+    """
+    GET /api/v1/comments/?content_type=post|reel&object_id=<id> — public,
+    cursor-paginated (newest first) list of a Post/Reel's comments
+    (Part P-055).
+
+    Visibility of auto-hidden comments (is_hidden=True):
+      - anonymous / unrelated authenticated user -> NOT included
+      - the comment's own author                 -> included
+      - holder of can_moderate_content           -> included
+    Soft-deleted comments are never included for anyone
+    (Comment.objects excludes them).
+    """
+
+    permission_classes = [AllowAny]
+    serializer_class = CommentSerializer
+    pagination_class = StandardCursorPagination
+
+    def get_queryset(self):
+        query = CommentListQuerySerializer(data=self.request.query_params)
+        query.is_valid(raise_exception=True)
+        content_type, _model, obj = _resolve_comment_target(
+            query.validated_data["content_type"],
+            query.validated_data["object_id"],
+        )
+
+        queryset = Comment.objects.filter(
+            content_type=content_type, object_id=obj.pk
+        ).select_related("content_type")
+
+        user = self.request.user
+        if user.is_authenticated:
+            if _CanModerateContent().has_permission(self.request, self):
+                return queryset
+            return queryset.filter(Q(is_hidden=False) | Q(user=user))
+        return queryset.filter(is_hidden=False)
+
+
+_comment_list_view = CommentListView.as_view()
+_comment_create_view = CommentCreateView.as_view()
+
+
+@csrf_exempt
+def comment_collection_view(request, *args, **kwargs):
+    """
+    Single-URL dispatcher for /api/v1/comments/: reads go to
+    CommentListView (public), everything else to CommentCreateView
+    (authenticated POST; other methods get its 405).
+
+    @csrf_exempt is REQUIRED: DRF's APIView.as_view() marks its own
+    callable csrf_exempt, but this plain wrapper is what the URLconf
+    resolves to, so Django's CsrfViewMiddleware would otherwise apply
+    to POSTs. (JWT auth is not cookie-based; DRF enforces CSRF itself
+    only for SessionAuthentication.)
+    """
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return _comment_list_view(request, *args, **kwargs)
+    return _comment_create_view(request, *args, **kwargs)

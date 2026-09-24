@@ -28,9 +28,13 @@ class PublishedManager(models.Manager):
     """
 
     def get_queryset(self):
-        return super().get_queryset().filter(
-            status=Moderatable.Status.PUBLISHED,
-            is_deleted=False,
+        return (
+            super()
+            .get_queryset()
+            .filter(
+                status=Moderatable.Status.PUBLISHED,
+                is_deleted=False,
+            )
         )
 
 
@@ -56,7 +60,8 @@ class Post(Moderatable, TimestampedModel, SoftDeleteModel):
     caption = models.TextField()
     image = models.FileField(upload_to="posts/", null=True, blank=True)
     likes_count = models.PositiveIntegerField(default=0)
-    
+    comments_count = models.PositiveIntegerField(default=0)
+
     class Meta:
         indexes = [
             models.Index(fields=["business"], name="content_post_business_idx"),
@@ -89,8 +94,12 @@ class ReelPublishedManager(PublishedManager):
     """
 
     def get_queryset(self):
-        return super().get_queryset().filter(
-            processing_status=Reel.ProcessingStatus.READY,
+        return (
+            super()
+            .get_queryset()
+            .filter(
+                processing_status=Reel.ProcessingStatus.READY,
+            )
         )
 
 
@@ -157,9 +166,7 @@ class Reel(Moderatable, TimestampedModel, SoftDeleteModel):
     # Populated by content.tasks.transcode_reel() once transcoding
     # succeeds; null=True/blank=True because it does not exist yet on
     # the initial raw upload.
-    thumbnail = models.FileField(
-        upload_to="reels/thumbnails/", null=True, blank=True
-    )
+    thumbnail = models.FileField(upload_to="reels/thumbnails/", null=True, blank=True)
     duration_seconds = models.PositiveIntegerField(null=True, blank=True)
     processing_status = models.CharField(
         max_length=20,
@@ -168,6 +175,7 @@ class Reel(Moderatable, TimestampedModel, SoftDeleteModel):
     )
     published_objects = ReelPublishedManager()
     likes_count = models.PositiveIntegerField(default=0)
+    comments_count = models.PositiveIntegerField(default=0)
 
     class Meta:
         indexes = [
