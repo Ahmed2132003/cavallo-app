@@ -7596,3 +7596,132 @@ docker compose exec web pytest social/ content/ products/ -q
 3. Give Report its own explicit closed content-type whitelist (do not reuse Like's/Save's/Comment's/Share's). The presentation's Report scope covers User / Business / Product / Post / Reel / Story / Comment, so decide which are reportable in the MVP from P-057's own spec rather than by pattern.
 4. Decide from P-057's spec whether Report is idempotent per (reporter, target) (likely yes — a `unique_together` there is probably correct, unlike Share). Do not carry Share's "no unique_together" rule over by analogy.
 5. Latest migrations to depend on: `content/0009_reel_shares_count`, `social/0005_share`. The next `social` migration will be `0006_...`.
+
+## PART P-057 — reports App: Generic Report Model + Rate-Limited Submission — ✅ COMPLETE
+
+**Status:** Closed — validated on the real machine (D:\Cavallo\scd-backend, real Docker Compose, real Postgres + Redis) AND live against the running server (`localhost:8095`, real JWTs). Pushed to `github.com/Ahmed2132003/cavallo-app` as commit `30793a6` on `main` (23 files changed, 1175 insertions(+); `3c4bc47..30793a6`). This is the **last backend part of Phase 9**.
+
+### What was implemented
+- **New app `reports/`** (flat path, NOT `apps/reports/` — same real-repo convention as every prior part). Its own app, NOT inside `social/` (the P-057 spec says "reports app"). `"reports"` added to `INSTALLED_APPS` in `config/settings/base.py`, after `"social"`.
+- **`Report(TimestampedModel)`** in `reports/models.py`:
+  - `reporter` (FK to `AUTH_USER_MODEL`, CASCADE, `related_name="submitted_reports"`), `content_type` (FK ContentType, CASCADE), `object_id` (`PositiveIntegerField`), `content_object` (GenericForeignKey).
+  - `reason` (`Report.Reason`: `spam`, `inappropriate`, `misleading`, `other`), `details` (`TextField`, blank, default `""`, optional for ANY reason), `status` (`Report.Status`: `pending` (default) / `reviewed`). `status` is independent of `Comment.is_hidden`.
+  - `unique_together = (("reporter", "content_type", "object_id"),)` — one report per (reporter, target). Indexes `reports_report_target_idx` `(content_type, object_id)` and `reports_report_status_idx` `(status, created_at)`.
+  - Not Moderatable, not soft-deletable (an audit record).
+- **`ReportAdmin`** (`reports/admin.py`) — the only review surface in the MVP: list (id, reporter, content_type, object_id, reason, status, created_at), filters (status, reason, content_type), search (reporter username/email, details), everything read-only except `status`, **adding disabled** (reports are created only via the API), and a bulk action **"Mark selected reports as reviewed"** (pending → reviewed, also refreshes `updated_at` because `.update()` skips `auto_now`).
+- **`ReportRateThrottle`** (`reports/throttles.py`) — `UserRateThrottle` subclass with its OWN dedicated scope `"report"`. `get_rate()` returns `settings.REPORT_THROTTLE_RATE` if defined, else `DEFAULT_REPORT_THROTTLE_RATE = "10/hour"`. **TUNABLE PLACEHOLDER** (same precedent as P-039 / P-055 thresholds). Cache key `throttle_report_<user_pk>`, so it never collides with login or any other scope.
+- **`POST /api/v1/reports/`** — `ReportCreateView` (`reports/views.py`), `IsAuthenticated` + `throttle_classes = [ReportRateThrottle]`. Wired in `config/urls.py` at top-level `api/v1/reports/` via `reports/urls.py` (`app_name="reports"`, route name `reports:create`).
+- **`reports/targets.py`** — Report's OWN explicit closed whitelist `REPORT_ALLOWED_CONTENT_TYPES = comment, post, reel, story, product, business` (separate from Like/Save/Comment/Share whitelists), plus `resolve_report_target()`.
+- **`reports/services.py::submit_report()`** — the whole write path (idempotent create + Comment side effect), see below.
+- **`reports/serializers.py::ReportCreateSerializer`** — input validation only.
+
+### Endpoint contract (for P-058 Flutter)
+- **Request:** `POST /api/v1/reports/`, authenticated, JSON body `{"content_type": "comment"|"post"|"reel"|"story"|"product"|"business", "object_id": <int 1..2147483647>, "reason": "spam"|"inappropriate"|"misleading"|"other", "details": "<optional, ≤1000 chars>"}`. `details` is optional for every reason (the spec says "for the 'other' case", but it is not forced).
+- **`201`** `{"reported": true}` — new report created.
+- **`200`** `{"reported": true}` — this user already reported this exact target (idempotent; original `reason`/`details` kept; **no counter change**).
+- **`400`** — missing/invalid `reason`, `object_id` (0, non-integer, > 2147483647), `details` too long, or unsupported `content_type` (e.g. `user`, `chat`).
+- **`401`** — unauthenticated (does NOT consume any quota).
+- **`404`** — target does not exist or is not reportable (see below).
+- **`405`** — any method other than POST.
+- **`429`** — rate limit exceeded (error code `THROTTLED` in the unified envelope).
+- Order of checks: serializer validation (400) → whitelist (400) → target lookup (404) → create.
+- The client can offer only the 4 fixed reasons; the "other" case can carry `details`.
+
+### The Comment pipeline (the real trigger for P-055)
+In `submit_report()`, inside ONE `transaction.atomic()`:
+1. `Report.objects.get_or_create(reporter, content_type, object_id, defaults={reason, details})`.
+2. **Only if a NEW row was created and the target is a `Comment`:** `Comment.objects.filter(pk=...).update(reports_count=F("reports_count") + 1)` (atomic F(), never read-then-write).
+3. Then `social.services.check_and_hide_if_threshold_exceeded(target)` — **P-055's function is called through the module (`social_services.…`), the threshold logic is NOT reimplemented** (a structural test asserts `COMMENT_AUTO_HIDE_THRESHOLD` never appears in `reports/services.py`).
+- If step 2 or 3 raises, the whole transaction rolls back: a Report can never exist without its counter increment (proven by a test → 500, 0 Report rows, `reports_count == 0`).
+- For every non-Comment target the report is only recorded (Admin-attention signal): no auto-hide, no status change, no counter (proven per type).
+- The bool returned by the P-055 service is currently not used (no moderator/author notification exists yet — see Remaining work).
+
+### Architecture decisions / confirmations (spec silent or ambiguous — all deliberate)
+- **Report is idempotent per (reporter, target)** (`unique_together` + duplicate → 200). Not a style choice: the Comment auto-hide threshold is 5 (`COMMENT_AUTO_HIDE_THRESHOLD`) and the report limit is 10/hour, so without uniqueness ONE user could hide any comment alone. Do NOT copy Share's "no unique_together" design here. Proven live: one user repeating 4× → `[201, 200, 200, 200]`, `reports_count == 1`, not hidden.
+- **Reportable = visible to the reporter.** Post/Reel → `published_objects`; Story → `status == PUBLISHED` and `expires_at > now`; Product → `is_active=True` (`.objects`, so soft-deleted excluded); Business → `BusinessProfile.objects`; **Comment → `is_hidden=False`**. Consequence: reporting an already-hidden comment returns **404** (also avoids leaking hidden comments' existence by ID), and reports stop being accepted the moment a comment is auto-hidden.
+- **`user` is NOT reportable.** The product presentation (Admin "Reports" slide) lists `User / Business / Product / Post / Reel / Story / Comment`, but the P-057 Scope enumerates Post/Reel/Story/Product/BusinessProfile/Comment only. Followed the Scope. **Open gap, needs an explicit product decision** (see Remaining work).
+- **Throttle counts EVERY authenticated request**, including 400/404 and duplicate reports (DRF runs throttles after authentication/permissions and before validation). Intentional: it is the flood mitigation. Unauthenticated requests get 401 first and consume nothing. The limit is per user (by user pk), so it does not stop a determined attacker with many accounts (inherent to per-user throttling).
+- **Throttle rate location:** read from `settings.REPORT_THROTTLE_RATE` (optional) with a `10/hour` default in code — deliberately NOT added to `REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]`. Deviation from the spec's "mirror the login throttle's pattern from P-018": `accounts/throttles.py` and `config/settings/base.py` were not inspected in this part (the P-018 entry left the login rate unconfirmed and GitHub file pages were not reachable), so a self-contained dedicated-scope throttle was built instead. Same principle (own scope, tunable, independently enforced); the mechanism differs. Unifying both throttles under `DEFAULT_THROTTLE_RATES` is an optional cleanup.
+- **`REPORT_DETAILS_MAX_LENGTH = 1000`** — PLACEHOLDER (spec silent), tunable. Blank details are allowed.
+- **Reporting your own content is not blocked** (spec silent; the unique constraint caps it at 1 report per target, so it cannot game the threshold).
+- Auto-hide still does NOT change `comments_count` (unchanged P-055 decision).
+- Report does not touch the `moderation` app (no `ModerationQueue` row).
+
+### Files created (23 in the commit, all under `reports/` except none outside it)
+`reports/__init__.py`, `reports/apps.py`, `reports/models.py`, `reports/admin.py`, `reports/throttles.py`, `reports/targets.py`, `reports/serializers.py`, `reports/services.py`, `reports/views.py`, `reports/urls.py`, `reports/migrations/__init__.py`, `reports/migrations/0001_initial.py` (machine-generated), `reports/tests/__init__.py`, `reports/tests/conftest.py`, `reports/tests/helpers.py`, `reports/tests/test_models.py`, `reports/tests/test_admin.py`, `reports/tests/test_throttles.py`, `reports/tests/test_api.py`, `reports/tests/test_comment_reports.py`, `reports/tests/test_rate_limit.py`.
+
+### Files modified
+`config/settings/base.py` (added `"reports"` to `INSTALLED_APPS`, after `"social"`), `config/urls.py` (added `path("api/v1/reports/", include("reports.urls"))`).
+- **`social/` was NOT modified.** The P-057 spec's "Modify: apps/social/views.py or services.py" was unnecessary: the whole trigger lives in `reports/services.py` and calls P-055's existing function.
+
+### Commands (all verified passing on the real stack; PowerShell, from `D:\Cavallo\scd-backend`)
+```powershell
+docker compose exec web python manage.py check
+docker compose exec web python manage.py makemigrations reports
+docker compose exec web python manage.py migrate reports
+docker compose exec web python manage.py makemigrations --check --dry-run
+docker compose exec web black reports/ config/urls.py
+docker compose exec web flake8 reports/
+docker compose exec web pytest reports/ -q
+docker compose exec web pytest social/ -q
+docker compose exec web pytest -q
+```
+
+### Tests / Verification results
+- **`pytest reports/ -q`: 70 passed.** Breakdown: `test_models.py` 10, `test_admin.py` 4, `test_throttles.py` 6, `test_api.py` 31, `test_comment_reports.py` 11, `test_rate_limit.py` 8.
+  - Every non-Comment type (post/reel/story/product/business) → 201, one Report row, target's `status` untouched; details stored; duplicate → 200 with a single row and original reason kept; validation (missing fields, bad reason, `object_id` 0/"abc", unsupported types `user`/`chat`/`nonsense`, details > 1000, nonexistent target for all 6 types, unpublished Post/Reel/Story → 404, inactive Product → 404, GET → 405, 401).
+  - **End-to-end Comment proof through the real endpoint:** `COMMENT_AUTO_HIDE_THRESHOLD` (5) DIFFERENT users each POST a report → after each `reports_count == i+1`; `is_hidden` becomes `True` exactly on the 5th; a 6th reporter gets 404. A spy proves P-055's function is called exactly once per new Comment report, NOT for a duplicate, NOT for non-Comment targets. Rollback-on-failure test and a structural (AST-free, source-level) test for `transaction.atomic` + `F("reports_count")` + no reimplemented threshold.
+  - **Rate limit genuinely triggered (not just declared):** 10 real reports → 201, the 11th → 429 with `error.code == "THROTTLED"`; duplicates and 400s consume quota; per-user isolation; 401s consume nothing; `/api/v1/shares/` is not throttled by the report scope; limit tunable via `settings.REPORT_THROTTLE_RATE`; view uses only `ReportRateThrottle`.
+- **Regression:** `pytest social/ -q` → **148 passed** (P-055 Comment logic unaffected). **Full suite `pytest -q` → 630 passed, 1 skipped.**
+- `manage.py check`: no issues. `makemigrations --check --dry-run`: No changes detected. `black --check reports/` and `flake8 reports/`: clean (no E402 in `reports/`).
+- **Live smoke test on the running stack (`localhost:8095`, real JWTs, throwaway `smoke57-*` accounts, cleaned up afterwards):** 5 different users reporting one Comment → `201 ×5`; a late report on the now-hidden comment → `404`; DB shows `reports_count: 5`, `is_hidden: true`, 5 reports on the comment. One user reporting a Business 11×: `201`, then `200 ×9`, then **`429`** on the 11th. Cleanup deleted 16 rows (8 users, 6 reports, 1 comment, 1 business profile).
+
+### Known issues
+- The cosmetic pytest-teardown `OperationalError` warning ("database is being accessed by other users") still appears in full runs (flagged since P-052; now surfaced at the end of the full suite). Not blocking.
+- `celerybeat-schedule` (runtime file tracked in the repo) still shows as modified locally and was deliberately NOT included in the P-057 commit. Add it to `.gitignore` when convenient (flagged since P-055).
+- Windows CRLF/LF artifacts: cosmetic, unchanged from earlier parts.
+- Pre-existing, unrelated: `config/settings/test.py` `F405`; leftover hand-off text in `accounts/views.py` (flagged in P-052).
+- `black` reformatted every new `reports/` file and `config/urls.py` after authoring; logic unchanged.
+- **Verification note:** the GitHub web UI could not be inspected during this part (automated access disallowed), so the push is confirmed only by the local `git push` output (`3c4bc47..30793a6`). A fresh-clone confirmation, as done in earlier parts, is recommended.
+- No concurrency test was written for Report (unlike Follow/Like/Share). The counter is atomic by construction (F() inside `transaction.atomic()`, verified structurally and by the rollback test), and P-055's hide check is a single conditional UPDATE proven concurrency-safe in P-055.
+
+### Remaining work / gaps (not built, by design or spec — flagged, not silently decided)
+- **Admin-facing "Review Reports" UI is a real gap.** Out of scope per the spec. The only review surface today is Django Admin (`/admin/reports/report/`, list + filters + "Mark as reviewed"). The product presentation's Admin slide promises more than that: **View, Assign, Investigate, Take Action & Close** (also "Review Reports" under Products and Posts). Consider extending P-040's moderator screens in a later iteration (a `GET` list/detail API for reports for `can_moderate_content` holders, assignment, a resolution field). Needs Ahmed's decision.
+- **Reporting a `User` is not supported** (listed in the presentation, not in the P-057 Scope). If wanted: add `"user"` to `REPORT_TARGETS` with an explicit visibility rule (e.g. active users only), decide self-report handling, and add tests.
+- **Only Comment has any automatic consequence.** Post/Reel/Story/Product/Business reports are an Admin-review signal only (no auto-hide exists for them in this MVP, by spec).
+- **No notification** to the comment author / moderators when a Comment gets auto-hidden or reported (the `check_and_hide_if_threshold_exceeded()` bool is available for that). The presentation's notifications list does not include it explicitly.
+- No report list/detail API, no "my reports" list, no un-report endpoint, no reporter-facing status.
+- `reports_count` is still NOT exposed in any serializer (P-055 decision).
+- Chat "Block & Report" (presentation, Chat slide) is out of scope here (the chat is a later phase; a `message`/`conversation` target would need its own whitelist entry and an IDOR-safe participant check).
+- Tuning: `10/hour` report limit, `1000` details max length, and the threshold of 5 are all placeholders pending real-world data.
+
+### Phase 9 backend status (P-052 → P-057)
+| Part | Status | Commit |
+|---|---|---|
+| P-052 Follow | ✅ | `03fd42e` |
+| P-053 Like | ✅ | see P-053 entry |
+| P-054 Save | ✅ | `a773758` |
+| P-055 Comment + auto-hide | ✅ | `0c51ad1` |
+| P-056 Share | ✅ | `97a1e48` |
+| P-057 Report | ✅ | `30793a6` |
+
+**Phase 9 backend is COMPLETE.** All six interactions (Follow, Like, Save, Comment, Share, Report) exist as API endpoints. The full reactive-moderation loop for Comments (Report → `reports_count` → auto-hide) is proven end to end, in tests and live.
+
+### Handoff notes for P-058 (Flutter — wires all six interactions)
+- Report action = an overflow "..." menu on cards/detail screens opening a reason picker with EXACTLY the 4 reasons (`spam`, `inappropriate`, `misleading`, `other`; free-text `details` optional, ≤ 1000 chars). Target keys: `comment`, `post`, `reel`, `story`, `product`, `business`. Do not offer Report on a User (not supported).
+- Treat both `201` and `200` as "reported" (a repeat report is not an error for the user). Show a friendly message on `429` (rate limit) and `404` (content no longer available / already hidden).
+- After a Comment reaches the threshold it disappears from other users' lists; only its author and moderators still see it (`is_hidden: true`, P-055). The Flutter client should not expect any hidden-state feedback in the report response.
+- For a multi-account manual test of the auto-hide flow you need 5 DIFFERENT accounts (`COMMENT_AUTO_HIDE_THRESHOLD = 5`); the same account cannot push a comment over the threshold.
+- Sending more than 10 report requests per hour from one account returns 429.
+
+### GitHub references
+- Repo: https://github.com/Ahmed2132003/cavallo-app
+- Commit: `30793a6` — "P-057: reports app - generic Report model + rate-limited submission + Comment auto-hide trigger" on `main` (`3c4bc47..30793a6`). https://github.com/Ahmed2132003/cavallo-app/commit/30793a6
+
+### Exact next starting point
+**Part P-058 (Flutter: wire Follow / Like / Save / Comment / Share / Report into the UI)** is next — the last part of Phase 9. Before writing any code:
+1. Read P-058's own spec section in the master plan and the "Handoff notes" of P-052 → P-057 (each documents its own request/response contract and gotchas: Follow/Like/Save idempotent toggles, **Share deliberately non-idempotent**, Comment needs an author display object decision, Report as above).
+2. The counters (`likes_count`, `comments_count`, `shares_count`) are NOT exposed by any Post/Reel serializer yet; `follower_count` is the only one already on the business serializer. Expose them explicitly where the UI needs them.
+3. Product sharing is not supported by P-056 (Post/Reel only) even though the presentation lists "Share Product" — needs a product decision before the Flutter Share button appears on product screens.
+4. Resolve/decide the open items above (Admin review UI, Report on User) before or alongside P-058, since the "..." Report menu is part of that part.
+5. Latest migrations to depend on: `reports/0001_initial` (new app), `social/0005_share`, `content/0009_reel_shares_count`.
