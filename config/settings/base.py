@@ -70,6 +70,8 @@ INSTALLED_APPS = [
     "stories",  # Part P-046: Story (Moderatable, 24h expiry, fast_path).
     "social",
     "reports",
+    "feed",  # Part P-059: model-less Home Feed query/aggregation layer.
+
 ]
 
 # ---------------------------------------------------------------------------

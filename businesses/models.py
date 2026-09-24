@@ -98,6 +98,14 @@ class BusinessProfile(TimestampedModel, SoftDeleteModel):
     # — NOT `followers_count`, despite the master-plan spec's literal
     # field name.
     follower_count = models.PositiveIntegerField(default=0)
+    # Part P-059 addition — PLACEHOLDER. Gives the Home Feed's backfill
+    # tier a real column to order by (is_featured DESC, then recency).
+    # Nothing sets this True automatically yet: for now it is only
+    # changed by hand (Admin/shell). Phase 15 (P-086/P-087/P-088) wires
+    # it to FeaturedSubscription state (activate sets it, expiry job
+    # clears it). It deliberately lives here, NOT duplicated on
+    # Post/Reel: feed queries resolve it through `business__is_featured`.
+    is_featured = models.BooleanField(default=False)
 
     class Meta:
         verbose_name = "Business Profile"
