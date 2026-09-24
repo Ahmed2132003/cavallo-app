@@ -69,6 +69,7 @@ INSTALLED_APPS = [
     "content",
     "stories",  # Part P-046: Story (Moderatable, 24h expiry, fast_path).
     "social",
+    "reports",
 ]
 
 # ---------------------------------------------------------------------------
