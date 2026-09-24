@@ -7495,4 +7495,104 @@ docker compose exec web pytest -q
 - Commit: `0c51ad1` — "P-055: social app - Comment model (deliberately not Moderatable) + auto-hide threshold" on `main` (`625627a..0c51ad1`).
 
 ### Exact next starting point
-**Part P-056 (Share)** is next (Phase 9 sequence: Like → Save → Comment → **Share** → Report). Before writing any code, repeat the "check first" steps used since P-052: (1) read P-056's own spec section for app placement (very likely `social`, but confirm); (2) grep `content/serializers.py` / `products/serializers.py` for any existing `shares_count`/`share_count`-shaped placeholder — the spec's literal name is not automatically the real one; (3) confirm which content types are shareable (Post/Reel/Product?) and give Share its own explicit closed whitelist rather than reusing Like's/Save's/Comment's; (4) decide whether Share needs an atomic counter — if so mirror the P-052/P-053/P-055 pattern verbatim (`get_or_create`/insert → gate `.filter(pk=...).update(F() ± 1)` on the created signal → `transaction.atomic()`). Then **P-057 (Report)**, which must call `check_and_hide_if_threshold_exceeded()` as described in the SEAM section above.
+**Part P-056 (Share)** is next (Phase 9 sequence: Like → Save → Comment → **Share** → Report). Before writing any code, repeat the "check first" steps used since P-052: (1) read P-056's own spec section for app placement (very likely `social`, but confirm); (2) grep `content/serializers.py` / `products/serializers.py` for any existing `shares_count`/`share_count`-shaped placeholder — the spec's literal name is not automatically the real one; (3) confirm which content types are shareable (Post/Reel/Product?) and give Share its own explicit closed whitelist rather than reusing Like's/Save's/Comment's; (4) decide whether Share needs an atomic counter — if so mirror the P-052/P-053/P-055 pattern verbatim (`get_or_create`/insert → gate `.filter(pk=...).update(F() ± 1)` on the created signal → `transaction.atomic()`). Then **P-057 (Report)**, which must call `check_and_hide_if_threshold_exceeded()` as described in the SEAM section above.\
+
+---
+
+## PART P-056 — social App: Share (Tracking) + Endpoint — ✅ COMPLETE
+
+**Status:** Closed — validated on the real machine (D:\Cavallo\scd-backend, real Docker Compose, real Postgres). All new tests green, zero regressions. Pushed to `github.com/Ahmed2132003/cavallo-app` as commit `97a1e48` on `main` (11 files changed, 619 insertions(+), 2 deletions(-); `631c65a..97a1e48`).
+
+### ⚠️ INTENTIONAL DESIGN — READ BEFORE "FIXING" ANYTHING
+**Share is DELIBERATELY NON-IDEMPOTENT. This is different from every other Phase 9 interaction (P-052 Follow, P-053 Like, P-054 Save) and it is intentional.**
+- Sharing the same content twice creates **two** `Share` rows and increments `shares_count` **twice**.
+- `Share` has **no `unique_together`** and no constraints (asserted by a test).
+- The view uses **no `get_or_create()`**, no dedup check, and **no `created`-gating** of the counter — every successful POST is a genuine new event.
+- Do NOT "fix" Share into an idempotent toggle to match Follow/Like/Save. Tests that look "opposite" to P-052–P-054's idempotency tests are correct by design and say so in their docstrings.
+- Do NOT copy the "gate the counter on `created`" instruction from P-055's "Exact next starting point" note for this part — P-056's own spec explicitly requires an unconditional increment.
+
+### What was implemented
+- **`shares_count`** (`PositiveIntegerField(default=0)`) added to both `content.Post` and `content.Reel`, same naming/shape as `likes_count`/`comments_count`, one additive migration per model.
+- **`Share(TimestampedModel)`** in `social/models.py`: `user` (FK, CASCADE, `related_name="shares"`), `content_type` (FK ContentType), `object_id` (PositiveIntegerField), `content_object` (GenericForeignKey). No `Meta` uniqueness, no index, not Moderatable, no soft-delete. Class docstring states the non-idempotent design explicitly.
+- **`ShareCreateSerializer`** in `social/serializers.py` (input validation only): `content_type` (CharField), `object_id` (IntegerField, `min_value=1`).
+- **`ShareCreateView`** in `social/views.py` — `POST /api/v1/shares/`, authenticated (`IsAuthenticated`), body `{"content_type": "post"|"reel", "object_id": <id>}`. Inside one `transaction.atomic()`: `Share.objects.create(...)` then `model.objects.filter(pk=obj.pk).update(shares_count=F("shares_count") + 1)`. Returns **201** `{"shared": true}`. Only POST exists (no DELETE/unshare, no list) — other methods get 405.
+- **`SHARE_ALLOWED_CONTENT_TYPES`** (`post`, `reel`) — its own explicit closed whitelist, separate from Like's `ALLOWED_CONTENT_TYPES`, Save's `SAVE_ALLOWED_CONTENT_TYPES` and Comment's `COMMENT_ALLOWED_CONTENT_TYPES`. Story and Product are rejected with 400.
+- **`_resolve_share_target()`** — validates the whitelist (400), then looks up the target via `model.published_objects` (404 if missing/unpublished).
+- New URL module `social/share_urls.py` (`app_name="shares"`, route name `shares:create`), mounted at top-level `api/v1/shares/` in `config/urls.py` (own prefix, same shape as likes/saves/comments).
+
+### Files created
+- `content/migrations/0008_post_shares_count.py`
+- `content/migrations/0009_reel_shares_count.py`
+- `social/migrations/0005_share.py`
+- `social/share_urls.py`
+
+### Files modified
+- `content/models.py`, `social/models.py`, `social/serializers.py`, `social/views.py`, `config/urls.py`, `social/tests/test_models.py`, `social/tests/test_api.py`
+
+### Architecture decisions / confirmations
+- **Real repo paths are flat** (`social/`, `content/`), not `apps/social/` / `apps/content/` as written in the master-plan spec — real paths followed (same as P-055).
+- Confirmed via grep before coding: no pre-existing `shares_count`/`share_count` placeholder anywhere; `shares_count` is the field's first use, matching the spec's literal name.
+- **Deliberate decision (spec is silent): the share target must be PUBLISHED** (`published_objects`, same rule as Comment/P-055; for Reel also `processing_status == ready`). Sharing pending/rejected/deleted content and bumping its counter is never valid. This is stricter than Like/Save (which use `.objects`). If Ahmed wants Share to accept unpublished targets like Like does, change `_resolve_share_target` to use `model.objects` and update the two `test_unpublished_*_returns_404_*` tests.
+- **Product is NOT shareable in P-056.** The spec scopes `shares_count` to Post/Reel only, and Product has no `shares_count`. The presentation lists "Share Product" as a customer action and "Product Shares" as a trader analytic, so Product sharing is a likely future addition: it would need a `shares_count` on Product, an entry in `SHARE_ALLOWED_CONTENT_TYPES`, and a decision on how Product publish-state is checked (Product is `SoftDeleteModel` only, not Moderatable — see P-054's `_preview_for()` precedent). Not built here; needs an explicit product decision.
+- `shares_count` is NOT exposed by any Post/Reel serializer yet (same precedent as `likes_count`/`comments_count`/`follower_count` — serializers use explicit `fields` tuples). Add it explicitly when a part needs it exposed (P-058 Flutter and/or the trader analytics part).
+- Share creates no `ModerationQueue` row (asserted by a test) — it does not touch the moderation app.
+- The counter increment is still atomic (`.filter().update(F() + 1)` inside `transaction.atomic()`), never read-then-write — verified by a concurrency test and by a structural guard test.
+- No counter decrement exists anywhere (no unshare/delete endpoint), so there is no `__gt=0` guard to maintain.
+
+### Commands (all verified passing on the real stack)
+```powershell
+docker compose exec web python manage.py makemigrations content --name post_shares_count
+docker compose exec web python manage.py makemigrations content --name reel_shares_count
+docker compose exec web python manage.py makemigrations social --name share
+docker compose exec web python manage.py migrate content
+docker compose exec web python manage.py migrate social
+docker compose exec web python manage.py check
+docker compose exec web python manage.py makemigrations --check --dry-run
+docker compose exec web black social/ config/urls.py content/models.py content/migrations/0008_post_shares_count.py content/migrations/0009_reel_shares_count.py
+docker compose exec web flake8 social/ config/urls.py content/models.py content/migrations/0008_post_shares_count.py content/migrations/0009_reel_shares_count.py
+docker compose exec web pytest social/ content/ products/ -q
+```
+
+### Tests / Verification results
+- `social/tests/test_models.py`: `TestSharesCountField` (3) + `TestShareModel` (7) = **10 new tests, all passing**; whole file **37 passed**. Covers: `shares_count` defaults to 0 and mirrors `likes_count`'s field type on both models; `Share` is `TimestampedModel` and not `Moderatable`; **`unique_together == ()` and `constraints == []`**; create on Post/Reel; **same user sharing the same content twice is allowed (opposite of `test_duplicate_like_raises_integrity_error`)**; different users each counted; user-delete cascades.
+- `social/tests/test_api.py`: **21 new tests, all passing** (`-k Share`):
+  - `TestShareCreate` (7): 201 + counter for Post and Reel; **`test_sharing_same_content_twice_is_not_deduplicated` — 2 rows and `shares_count == 2`, explicitly documented as the OPPOSITE of the P-052–P-054 idempotency tests**; different users each counted; other counters (`likes_count`/`comments_count`) untouched; other objects untouched; no `ModerationQueue` row created.
+  - `TestShareValidation` (11): `story`/`product` → 400; missing `content_type`/`object_id` → 400; `object_id` 0 or non-integer → 400; nonexistent → 404; unpublished Post/Reel → 404 with no Share row and no counter change; unauthenticated → 401 with no side effects; GET → 405.
+  - `TestShareViewStructure` (2): `ShareCreateView.post` source contains no `get_or_create`, and does contain `transaction.atomic` and `F("shares_count")` (guards against someone copying the toggle pattern in later).
+  - `TestShareCountConcurrency` (1, `django_db(transaction=True)`): two near-simultaneous share POSTs by the same user both return 201, produce 2 rows and `shares_count == 2`.
+- Regression run `pytest social/ content/ products/ -q`: **285 passed, 0 failed** (1 cosmetic teardown warning, see Known issues). Whole-project suite was not re-run in this session.
+- `manage.py check`: no issues. `makemigrations --check --dry-run`: No changes detected.
+- `black` reformatted 7 files (`social/share_urls.py`, `social/serializers.py`, `social/models.py`, `content/models.py`, `social/views.py`, `social/tests/test_models.py`, `social/tests/test_api.py`); logic unchanged (the `update(...)` call in `ShareCreateView` was collapsed to one line, and the structural test still passes).
+
+### Known issues
+- `flake8` reports only `E402` (module level import not at top of file) in `social/models.py`, `social/views.py` and `social/tests/test_api.py` — the same established, intentional-but-flagged style used since P-052 (each Part's imports/classes appended to the end of the shared file). The new `from social.models import Share` and `from social.views import ShareCreateView` lines in `test_api.py` follow that style. Not new, not blocking.
+- Same cosmetic pytest-teardown `OperationalError` warning ("database is being accessed by other users") on concurrency tests as flagged in P-052/P-055; now also appears for `TestShareCountConcurrency`. Not blocking.
+- `celerybeat-schedule` (runtime file tracked in the repo) shows as modified locally after every run; intentionally NOT included in the P-056 commit. Consider adding it to `.gitignore` (already flagged in P-055).
+- Windows-transfer artifact of the same class flagged before: the repo files use CRLF line endings; cosmetic only.
+- Pre-existing, unrelated: `config/settings/test.py:20` `F405`; leftover text in `accounts/views.py` flagged in P-052.
+
+### Remaining work
+- None for P-056's own scope. Not built, by design or spec:
+  - Any share-to-external-platform integration / real shareable link or deep-link (spec's Out of Scope). The backend only records that a share action occurred.
+  - Any unshare/delete/list endpoint for shares.
+  - Product sharing (see Architecture decisions).
+  - Share notifications ("Follows & Shares" appear in the notifications feature list of the product presentation) — not part of this part.
+  - Report (P-057).
+
+### Handoff notes for P-058 (Flutter)
+- Pair the backend call with the platform's native share sheet (e.g. `share_plus`): call `POST /api/v1/shares/` alongside/after invoking the native UI, **not instead of it**. The native share-sheet UX is entirely a Flutter concern.
+- Request: `POST /api/v1/shares/` with `{"content_type": "post"|"reel", "object_id": <id>}`, authenticated. Success: `201` `{"shared": true}`. Errors: `400` (bad/unsupported `content_type`, missing/invalid `object_id`), `404` (target not found or not published), `401` (unauthenticated).
+- The client must NOT dedupe or debounce-away legitimate repeat shares on the assumption the server deduplicates — it does not (by design).
+- `shares_count` is not returned by any Post/Reel serializer yet; if the Flutter UI needs to display it, expose it explicitly in the relevant serializer.
+
+### GitHub references
+- Repo: https://github.com/Ahmed2132003/cavallo-app
+- Commit: `97a1e48` — "P-056: social app - Share tracking (deliberately non-idempotent) + shares_count on Post/Reel" on `main` (`631c65a..97a1e48`). https://github.com/Ahmed2132003/cavallo-app/commit/97a1e48
+
+### Exact next starting point
+**Part P-057 (Report)** is next (Phase 9 sequence: Like → Save → Comment → Share → **Report**). Before writing any code:
+1. Read P-057's own spec section (app placement — very likely `social`, but confirm; real repo paths are flat: `social/`, not `apps/social/`).
+2. **Follow the SEAM FOR P-057 in the P-055 section above**: when a report against a Comment is accepted, (a) increment via `Comment.objects.filter(pk=...).update(reports_count=F("reports_count") + 1)` inside its own `transaction.atomic()` together with the Report row insert, then (b) call `social.services.check_and_hide_if_threshold_exceeded(comment)` and use the returned bool. Do NOT re-implement the threshold logic.
+3. Give Report its own explicit closed content-type whitelist (do not reuse Like's/Save's/Comment's/Share's). The presentation's Report scope covers User / Business / Product / Post / Reel / Story / Comment, so decide which are reportable in the MVP from P-057's own spec rather than by pattern.
+4. Decide from P-057's spec whether Report is idempotent per (reporter, target) (likely yes — a `unique_together` there is probably correct, unlike Share). Do not carry Share's "no unique_together" rule over by analogy.
+5. Latest migrations to depend on: `content/0009_reel_shares_count`, `social/0005_share`. The next `social` migration will be `0006_...`.
