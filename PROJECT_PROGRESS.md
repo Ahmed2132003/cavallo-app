@@ -7408,3 +7408,91 @@ against the source architecture rather than assuming by pattern;
 user-submitted text content (not just a toggle), so check whether it
 needs its own moderation/profanity-filtering pass, or whether Section
 4/6 of the architecture stays silent on that for MVP.
+
+
+## PART P-055 — social App: Comment Model (Deliberately Not Moderatable) + Auto-Hide Threshold — ✅ COMPLETE
+
+**Status:** Closed — validated on the real machine (D:\Cavallo\scd-backend, real Docker Compose, real Postgres). All new tests green, zero regressions. Pushed to `github.com/Ahmed2132003/cavallo-app` as commit `0c51ad1` on `main` (13 files changed, 1162 insertions(+), 17 deletions(-); `625627a..0c51ad1`).
+
+### What was implemented
+- **`comments_count`** (`PositiveIntegerField(default=0)`) added to both `content.Post` and `content.Reel`, same naming/shape as `likes_count` (P-053), one additive migration per model.
+- **`Comment(TimestampedModel, SoftDeleteModel)`** in `social/models.py` — **deliberately does NOT inherit `Moderatable`** (the one confirmed, documented exception to the moderation pattern; the class docstring states this explicitly). Fields: `user` (FK, CASCADE, `related_name="comments"`), `content_type` (FK ContentType), `object_id` (PositiveIntegerField), `content_object` (GenericForeignKey), `text` (TextField), `reports_count` (PositiveIntegerField, default 0), `is_hidden` (BooleanField, default False). Index `social_comment_target_idx` on `(content_type, object_id)`. No `unique_together` (a user may comment repeatedly). No `status` field, no `is_moderated` field.
+- **`social/services.py` (new):** `COMMENT_AUTO_HIDE_THRESHOLD = 5` (PLACEHOLDER pending real-world tuning, module-level, read at call time; P-039 SLA-threshold precedent) and `check_and_hide_if_threshold_exceeded(comment) -> bool`.
+- **`CommentCreateView`** — `POST /api/v1/comments/`, authenticated, body `{"content_type": "post"|"reel", "object_id": <id>, "text": "..."}`. Publishes immediately (no queue, no pending state), returns 201 with `CommentSerializer` data. Increments the target's `comments_count` via `.filter(pk=...).update(comments_count=F("comments_count") + 1)` inside `transaction.atomic()` (same pattern as P-052/P-053).
+- **`CommentListView`** — `GET /api/v1/comments/?content_type=post|reel&object_id=<id>`, public (`AllowAny`), cursor-paginated (`StandardCursorPagination`, newest first).
+- **Single URL, two views:** `social/views.py::comment_collection_view` dispatches `GET/HEAD/OPTIONS` to `CommentListView` and everything else to `CommentCreateView`; mounted via new `social/comment_urls.py` (`app_name="comments"`, route name `comments:collection`) at top-level `api/v1/comments/` in `config/urls.py`.
+
+### Files created
+- `content/migrations/0006_post_comments_count.py`
+- `content/migrations/0007_reel_comments_count.py`
+- `social/migrations/0004_comment.py`
+- `social/services.py`
+- `social/comment_urls.py`
+- `social/tests/test_services.py`
+
+### Files modified
+- `content/models.py`, `social/models.py`, `social/serializers.py` (added `CommentCreateSerializer`, `CommentSerializer`, `CommentListQuerySerializer`, `COMMENT_MAX_LENGTH`), `social/views.py`, `config/urls.py`, `social/tests/test_models.py`, `social/tests/test_api.py`
+
+### Important implementation details
+- **Visibility of hidden comments (`is_hidden=True`) in the list endpoint:** anonymous / unrelated authenticated user → excluded; the comment's own author → included (with `is_hidden: true` in the payload so Flutter can render a marker); holder of `can_moderate_content` → included. The moderator check reuses P-019's `HasCapability("can_moderate_content")` imported from `core.permissions` (NOT from `apps/moderation`). Soft-deleted comments are excluded for everyone (`Comment.objects` = `SoftDeleteManager`).
+- **`CommentSerializer` fields:** `id, user (pk), content_type ("post"/"reel"), object_id, text, is_hidden, created_at`. `reports_count` is deliberately NOT exposed.
+- **`COMMENT_ALLOWED_CONTENT_TYPES`** in `social/views.py` — its own explicit closed whitelist (`post`, `reel`), separate from Like's `ALLOWED_CONTENT_TYPES` and Save's `SAVE_ALLOWED_CONTENT_TYPES`. Story stays out (architecture: Stories have no comments); Product is not commentable in the MVP.
+- **Target must be PUBLISHED:** `_resolve_comment_target()` uses `model.published_objects` (status published, not soft-deleted; Reel also `processing_status == ready`) → otherwise 404. This applies to BOTH create and list. This is intentionally stricter than Like/Save (which only use `.objects`) — commenting on / listing comments of pending, rejected or deleted content is never valid. Order of checks: serializer validation (400) → whitelist (400) → target lookup (404).
+- **`COMMENT_MAX_LENGTH = 1000`** (in `social/serializers.py`) — PLACEHOLDER, the spec is silent; prevents unbounded text. Tunable, not a product-confirmed value. Blank/whitespace-only text → 400.
+- **`AllowAny` on the list view is explicit and required:** the project default is `DEFAULT_PERMISSION_CLASSES = IsAuthenticated`.
+- **`@csrf_exempt` on `comment_collection_view` is REQUIRED:** `CsrfViewMiddleware` is enabled and the dispatcher is a plain function (only DRF's `as_view()` output is csrf-exempt on its own). Without it POSTs would 403 in production while tests (which skip CSRF) still pass. Do not remove.
+- **Deliberate deviation from the spec's literal wording (documented in the function docstring):** `check_and_hide_if_threshold_exceeded()` is a single conditional DB `UPDATE` — `Comment.objects.filter(pk=..., is_hidden=False, reports_count__gte=COMMENT_AUTO_HIDE_THRESHOLD).update(is_hidden=True, updated_at=now)` — rather than "read `comment.reports_count` then `save()`". Reason: P-057 will increment `reports_count` with `F()` without refreshing the caller's in-memory instance, so the DB row is the source of truth; the `is_hidden=False` condition also makes concurrent callers safe (exactly one gets `True`). Returns `True` ONLY if THIS call newly hid the comment; `False` if below threshold OR already hidden. On success it also sets `comment.is_hidden = True` on the passed instance.
+- **Auto-hide does NOT change `comments_count`** (spec silent; left unchanged on purpose). `comments_count` is also never decremented anywhere in this part because no comment-delete endpoint exists (see Remaining work).
+
+### Architecture decisions / confirmations
+- **Comment is structurally NOT Moderatable** — proven three ways: (1) `issubclass(Comment, Moderatable)` is False and no `status` field exists; (2) behavioral: `ModerationQueue.objects.count()` is identical before/after creating a Comment, both at model level and through the API (each test first asserts `before >= 1` so the moderation signal is proven live, making the negative test meaningful); also unchanged after auto-hide; (3) structural: an AST-based test asserts `social/models.py`, `views.py`, `serializers.py`, `services.py` never import the `moderation` app.
+- **Real repo paths are flat** (`social/`, `content/`), not `apps/social/` / `apps/content/` as written in the master-plan spec — real paths followed.
+- **Master-plan line 51 mentions "`is_moderated = False` permanently on the model"**; the P-055 Scope does not list such a field. Followed the P-055 Scope; no `is_moderated` field was added.
+- **No profanity/text-filtering or any other pre-publish pass was added** — the P-055 spec explicitly forbids any "light review" step.
+- Post/Reel serializers use explicit `fields` tuples, so `comments_count` is NOT auto-exposed in any Post/Reel API response yet (same precedent as `likes_count`/`follower_count`). Add it explicitly when a part needs it exposed.
+
+### SEAM FOR P-057 (Report) — must be followed
+- **P-057 must NOT re-implement the threshold logic.** When a report against a Comment is accepted it must (1) increment via `Comment.objects.filter(pk=...).update(reports_count=F("reports_count") + 1)` (atomic, inside its own `transaction.atomic()` together with the Report row insert), then (2) call `social.services.check_and_hide_if_threshold_exceeded(comment)` and use the returned bool to know whether this report was the one that triggered hiding (e.g. for notifying moderators/author).
+- The service reads the persisted DB value, so P-057 does not need to `refresh_from_db()` first.
+- `reports_count` and `is_hidden` fields exist now; nothing in P-055 increments `reports_count` except tests.
+
+### Commands (all verified passing on the real stack)
+```powershell
+docker compose exec web python manage.py makemigrations content --name post_comments_count
+docker compose exec web python manage.py makemigrations content --name reel_comments_count
+docker compose exec web python manage.py makemigrations social --name comment
+docker compose exec web python manage.py migrate content
+docker compose exec web python manage.py migrate social
+docker compose exec web python manage.py check
+docker compose exec web python manage.py makemigrations --check --dry-run
+docker compose exec web black social/ config/urls.py content/models.py content/migrations/0006_post_comments_count.py content/migrations/0007_reel_comments_count.py
+docker compose exec web flake8 social/ config/urls.py content/models.py content/migrations/0006_post_comments_count.py content/migrations/0007_reel_comments_count.py
+docker compose exec web pytest social/ -v
+docker compose exec web pytest -q
+```
+
+### Tests / Verification results (61 new tests)
+- `social/tests/test_models.py` — `TestCommentsCountField` (3: defaults on Post/Reel, same field type/default as `likes_count`) + `TestCommentModel` (8: not Moderatable & no `status` field; Timestamped+SoftDelete bases; create on Post with defaults; create on Reel; zero `ModerationQueue` rows created; same user may comment repeatedly; soft-delete excludes from `.objects` but not `.all_objects`; user-delete cascades).
+- `social/tests/test_services.py` (new) — 8 service tests (threshold constant is a positive int; 0 reports / threshold−1 → `False`; at threshold and above → `True` with DB persisted; second call → `False` because already hidden; threshold tunable via `monkeypatch` of the module constant; hiding creates no `ModerationQueue` row) + 4 parametrized AST isolation tests (models/views/serializers/services never import `moderation`). Reports are persisted via `.update()` bypassing the instance to mimic P-057's `F()` increment.
+- `social/tests/test_api.py` — `TestCommentCreate` (19: 201 + counter on Post and Reel; **zero ModerationQueue rows via the API**; counter +1 per comment; business accounts may comment; 10 parametrized 400 cases [`story`/`product`/missing `content_type`, missing/non-integer/zero `object_id`, missing/empty/whitespace/over-length `text`] creating nothing; 404 nonexistent, 404 unpublished, 404 soft-deleted target; 401 unauthenticated) + `TestCommentList` (18: listable immediately after creation by an anonymous client; scoped to target and content type; newest-first cursor shape; hidden excluded for anonymous and unrelated user; included for own author; author sees own hidden but not others'; included for Moderator-group user; soft-deleted excluded for everyone; auto-hide end-to-end via the service seam; 5 parametrized 400 query cases; 404 nonexistent/unpublished; 405 on DELETE) + `TestCommentCountConcurrency` (1: two concurrent POSTs → `comments_count == 2`, mirrors `TestLikeConcurrency`).
+- Results: `social/` **117 passed** (56 → 117, zero regressions on Follow/Like/Save); `content/` 83 passed; **full project suite: 529 passed, 1 skipped** (the skip is the pre-existing `core/tests/test_storage_backends.py`, missing `moto`); `manage.py check` clean; `makemigrations --check` → No changes detected.
+
+### Known issues
+- `flake8` reports `E402` (module level import not at top of file) in `social/models.py` (2), `social/views.py` (6) and `social/tests/test_api.py` (11) — the same established, intentional-but-flagged style used by P-052/P-053/P-054 (each part's imports appended next to its own code). No `E501`/`F401`. Not fixed, consistent with prior parts.
+- `black` (run on the P-055 files) incidentally reformatted unrelated code inside `content/models.py` (`PublishedManager.get_queryset`, `ReelPublishedManager.get_queryset`, the `Reel.thumbnail` field, EOF newline). Logic unchanged. Windows-transfer artifact of the same class flagged in P-009/P-012/P-016/P-052: `content/models.py` now has mixed CRLF/LF line endings. Cosmetic only, not blocking.
+- Same cosmetic pytest-teardown `OperationalError` warning on concurrency tests as flagged in P-052 (now also appears for `TestCommentCountConcurrency`). Not new, not blocking.
+- Pre-existing, unrelated: `config/settings/test.py:20` `F405`; leftover text in `accounts/views.py` flagged in P-052.
+- `celerybeat-schedule` (runtime file tracked in the repo) shows as modified locally after every run; intentionally NOT included in the P-055 commit. Consider adding it to `.gitignore`.
+- `content/tests/test_models.py` was accidentally modified during Step 2 (a mis-pasted test block) — restored via `git restore` before commit; the diff that remained was only a line-ending change. Nothing from it is in the commit.
+
+### Remaining work
+- None for P-055's own scope. Not built, by design or spec: comment **DELETE** endpoint (the spec's prose mentions "GET/DELETE" but Scope/Validation list only POST/GET; if added later, it must decrement `comments_count` with `.filter(pk=..., comments_count__gt=0).update(F() - 1)` gated on the delete signal, and respect `is_hidden`); a report endpoint (P-057); comment edit; nested replies; likes on comments; a "who commented" author display object (`user` is currently only the user id — P-058 may need a display name/avatar, decide there).
+- `comments_count` has no serializer exposing it on Post/Reel yet (see Architecture decisions).
+- Tunable placeholders to revisit with real data: `COMMENT_AUTO_HIDE_THRESHOLD = 5` (`social/services.py`) and `COMMENT_MAX_LENGTH = 1000` (`social/serializers.py`).
+
+### GitHub references
+- Repo: https://github.com/Ahmed2132003/cavallo-app
+- Commit: `0c51ad1` — "P-055: social app - Comment model (deliberately not Moderatable) + auto-hide threshold" on `main` (`625627a..0c51ad1`).
+
+### Exact next starting point
+**Part P-056 (Share)** is next (Phase 9 sequence: Like → Save → Comment → **Share** → Report). Before writing any code, repeat the "check first" steps used since P-052: (1) read P-056's own spec section for app placement (very likely `social`, but confirm); (2) grep `content/serializers.py` / `products/serializers.py` for any existing `shares_count`/`share_count`-shaped placeholder — the spec's literal name is not automatically the real one; (3) confirm which content types are shareable (Post/Reel/Product?) and give Share its own explicit closed whitelist rather than reusing Like's/Save's/Comment's; (4) decide whether Share needs an atomic counter — if so mirror the P-052/P-053/P-055 pattern verbatim (`get_or_create`/insert → gate `.filter(pk=...).update(F() ± 1)` on the created signal → `transaction.atomic()`). Then **P-057 (Report)**, which must call `check_and_hide_if_threshold_exceeded()` as described in the SEAM section above.
