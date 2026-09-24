@@ -61,6 +61,7 @@ class Post(Moderatable, TimestampedModel, SoftDeleteModel):
     image = models.FileField(upload_to="posts/", null=True, blank=True)
     likes_count = models.PositiveIntegerField(default=0)
     comments_count = models.PositiveIntegerField(default=0)
+    shares_count = models.PositiveIntegerField(default=0)
 
     class Meta:
         indexes = [
@@ -176,6 +177,7 @@ class Reel(Moderatable, TimestampedModel, SoftDeleteModel):
     published_objects = ReelPublishedManager()
     likes_count = models.PositiveIntegerField(default=0)
     comments_count = models.PositiveIntegerField(default=0)
+    shares_count = models.PositiveIntegerField(default=0)
 
     class Meta:
         indexes = [

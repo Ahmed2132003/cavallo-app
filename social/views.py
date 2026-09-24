@@ -34,7 +34,7 @@ from core.permissions import HasCapability
 
 from businesses.models import BusinessProfile
 
-from .models import Comment, Follow, Like, Save
+from .models import Comment, Follow, Like, Save, Share
 
 User = get_user_model()
 
@@ -269,6 +269,7 @@ from .serializers import (
     CommentListQuerySerializer,
     CommentSerializer,
     SaveSerializer,
+    ShareCreateSerializer,
 )
 
 
@@ -433,3 +434,79 @@ def comment_collection_view(request, *args, **kwargs):
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return _comment_list_view(request, *args, **kwargs)
     return _comment_create_view(request, *args, **kwargs)
+
+
+# Whitelist for Part P-056 (Share) — its own explicit, closed whitelist,
+# separate from Like's, Save's and Comment's (same reasoning as
+# SAVE_ALLOWED_CONTENT_TYPES above). Only Post/Reel carry a
+# shares_count field; Story and Product are not shareable here.
+SHARE_ALLOWED_CONTENT_TYPES = {
+    "post": ("content", "Post"),
+    "reel": ("content", "Reel"),
+}
+
+
+def _resolve_share_target(content_type_str, object_id):
+    """
+    Returns (ContentType, model, obj). The target must be PUBLISHED
+    (same rule as Comment, P-055): sharing pending/rejected/deleted
+    content and bumping its counter is never valid.
+    """
+    if content_type_str not in SHARE_ALLOWED_CONTENT_TYPES:
+        raise ValidationError(
+            {
+                "content_type": (
+                    f"Unrecognized content_type '{content_type_str}'. "
+                    f"Must be one of: {', '.join(SHARE_ALLOWED_CONTENT_TYPES)}."
+                )
+            }
+        )
+    app_label, model_name = SHARE_ALLOWED_CONTENT_TYPES[content_type_str]
+    model = apps.get_model(app_label, model_name)
+    try:
+        obj = model.published_objects.get(pk=object_id)
+    except model.DoesNotExist:
+        raise NotFound(f"{model_name} not found.")
+    return ContentType.objects.get_for_model(model), model, obj
+
+
+class ShareCreateView(APIView):
+    """
+    POST /api/v1/shares/ — record a share event (Part P-056).
+
+    Body: {"content_type": "post"|"reel", "object_id": <id>}
+
+    ==========================================================
+    DELIBERATELY NON-IDEMPOTENT — NOT AN OVERSIGHT
+    ==========================================================
+    Every successful call creates a NEW Share row and increments
+    shares_count by exactly 1. There is intentionally no
+    get_or_create(), no dedup check and no `created` gating (unlike
+    Follow/Like in P-052/P-053): every call IS a genuine new share
+    event. Do NOT "fix" this into an idempotent toggle.
+
+    The increment is still atomic — `.filter(pk=...).update(F() + 1)`
+    inside the same transaction.atomic() as the insert — never a
+    read-then-write, so two near-simultaneous shares are both counted.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = ShareCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        content_type, model, obj = _resolve_share_target(
+            data["content_type"], data["object_id"]
+        )
+
+        with transaction.atomic():
+            Share.objects.create(
+                user=request.user,
+                content_type=content_type,
+                object_id=obj.pk,
+            )
+            model.objects.filter(pk=obj.pk).update(shares_count=F("shares_count") + 1)
+
+        return Response({"shared": True}, status=201)

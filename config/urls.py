@@ -83,4 +83,8 @@ urlpatterns = [
     # Own top-level prefix, same shape as likes/saves above. Comments
     # are the one content type that is NOT moderated pre-publish.
     path("api/v1/comments/", include("social.comment_urls")),
+    # Part P-056: Share tracking (append-only, deliberately
+    # non-idempotent). Own top-level prefix, same shape as
+    # likes/saves/comments above — targets Post or Reel via the body.
+    path("api/v1/shares/", include("social.share_urls")),
 ]

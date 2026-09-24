@@ -10,7 +10,7 @@ from content.models import Post, Reel
 from products.models import Product
 from core.models import SoftDeleteModel, TimestampedModel
 from moderation.models import Moderatable, ModerationQueue
-from social.models import Comment, Follow, Like, Save
+from social.models import Comment, Follow, Like, Save, Share
 from uuid import uuid4
 
 User = get_user_model()
@@ -372,3 +372,83 @@ class TestCommentModel:
         comment = _make_comment(user, _make_post())
         user.delete()
         assert not Comment.all_objects.filter(pk=comment.pk).exists()
+
+
+@pytest.mark.django_db
+class TestSharesCountField:
+    def test_post_shares_count_defaults_to_zero(self):
+        assert _make_post().shares_count == 0
+
+    def test_reel_shares_count_defaults_to_zero(self):
+        assert _make_reel().shares_count == 0
+
+    def test_shares_count_mirrors_likes_count_convention_on_both_models(self):
+        for model in (Post, Reel):
+            shares_field = model._meta.get_field("shares_count")
+            likes_field = model._meta.get_field("likes_count")
+            assert type(shares_field) is type(likes_field)
+            assert shares_field.default == 0
+
+
+def _make_sharer(suffix="sharer1"):
+    return User.objects.create_user(
+        username=suffix, password="pass12345", account_type="customer"
+    )
+
+
+def _make_share(user, target):
+    return Share.objects.create(
+        user=user,
+        content_type=ContentType.objects.get_for_model(type(target)),
+        object_id=target.pk,
+    )
+
+
+@pytest.mark.django_db
+class TestShareModel:
+    def test_share_is_timestamped_and_not_moderatable(self):
+        assert issubclass(Share, TimestampedModel)
+        assert not issubclass(Share, Moderatable)
+
+    def test_share_has_no_unique_together_or_constraints(self):
+        # DELIBERATE, and the OPPOSITE of Follow/Like/Save's tests:
+        # Share is an append-only event log, so a uniqueness
+        # constraint here would be a bug, not a safeguard.
+        assert Share._meta.unique_together == ()
+        assert list(Share._meta.constraints) == []
+
+    def test_create_on_post(self):
+        user = _make_sharer("sharer-p1")
+        post = _make_post()
+        share = _make_share(user, post)
+        assert share.pk is not None
+        assert share.content_object == post
+        assert share.created_at is not None
+        assert user.shares.count() == 1
+
+    def test_create_on_reel(self):
+        user = _make_sharer("sharer-r1")
+        reel = _make_reel()
+        share = _make_share(user, reel)
+        assert share.content_object == reel
+
+    def test_same_user_can_share_same_content_multiple_times(self):
+        # OPPOSITE of TestLikeModel.test_duplicate_like_raises_integrity_error:
+        # repeating the action here is legitimate and must NOT raise.
+        user = _make_sharer("sharer-twice")
+        post = _make_post()
+        _make_share(user, post)
+        _make_share(user, post)
+        assert Share.objects.filter(user=user, object_id=post.pk).count() == 2
+
+    def test_different_users_can_share_same_content(self):
+        post = _make_post()
+        _make_share(_make_sharer("sharer-a"), post)
+        _make_share(_make_sharer("sharer-b"), post)
+        assert Share.objects.filter(object_id=post.pk).count() == 2
+
+    def test_deleting_user_cascades_to_shares(self):
+        user = _make_sharer("sharer-cascade")
+        share = _make_share(user, _make_post())
+        user.delete()
+        assert not Share.objects.filter(pk=share.pk).exists()

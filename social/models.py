@@ -163,3 +163,36 @@ class Comment(TimestampedModel, SoftDeleteModel):
             f"comment:{self.pk} by user:{self.user_id} "
             f"on {self.content_type_id}:{self.object_id}"
         )
+
+
+class Share(TimestampedModel):
+    """
+    A share-tracking event: a User sharing a Post or Reel (Part P-056).
+
+    ==========================================================
+    DELIBERATELY NON-IDEMPOTENT — NOT AN OVERSIGHT
+    ==========================================================
+    Unlike Follow/Like/Save (idempotent toggles, each guarded by
+    unique_together), Share is a pure append-only event log. Sharing
+    the same content twice is a normal, legitimate action and MUST
+    create two rows and count twice.
+
+    Do NOT add unique_together, get_or_create(), or any dedup check
+    here. That would be a bug, not a fix.
+
+    The system only records THAT a share action happened, not to whom
+    or where (that happens outside this system, in the device's native
+    share sheet — see Flutter Part P-058).
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="shares",
+    )
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.PositiveIntegerField()
+    content_object = GenericForeignKey("content_type", "object_id")
+
+    def __str__(self):
+        return f"user:{self.user_id} shared {self.content_type_id}:{self.object_id}"

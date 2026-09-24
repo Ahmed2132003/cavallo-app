@@ -110,3 +110,14 @@ class CommentListQuerySerializer(serializers.Serializer):
 
     content_type = serializers.CharField()
     object_id = serializers.IntegerField(min_value=1)
+
+
+class ShareCreateSerializer(serializers.Serializer):
+    """
+    Input validation for POST /api/v1/shares/ (Part P-056). The closed
+    whitelist check (post/reel) lives in the view, next to
+    SHARE_ALLOWED_CONTENT_TYPES.
+    """
+
+    content_type = serializers.CharField()
+    object_id = serializers.IntegerField(min_value=1)

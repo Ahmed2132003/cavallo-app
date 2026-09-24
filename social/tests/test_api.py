@@ -9,6 +9,7 @@ instead of sharing one wrapping test transaction — otherwise a race
 condition could never actually manifest in the test.
 """
 
+import inspect
 import threading
 
 import pytest
@@ -1176,3 +1177,302 @@ class TestCommentCountConcurrency:
         assert Comment.objects.filter(object_id=post.pk).count() == 2
         post.refresh_from_db()
         assert post.comments_count == 2
+
+
+from social.models import Share
+
+
+def _shares_url():
+    return reverse("shares:create")
+
+
+@pytest.mark.django_db
+class TestShareCreate:
+    def test_share_post_returns_201_and_increments_counter(self, api_client):
+        user = _make_user("customer", "p056-s1@example.com")
+        post = _publish(_make_post())
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(
+            _shares_url(),
+            {"content_type": "post", "object_id": post.pk},
+            format="json",
+        )
+
+        assert response.status_code == 201
+        assert response.json() == {"shared": True}
+        post_ct = ContentType.objects.get_for_model(Post)
+        assert (
+            Share.objects.filter(
+                user=user, content_type=post_ct, object_id=post.pk
+            ).count()
+            == 1
+        )
+        post.refresh_from_db()
+        assert post.shares_count == 1
+
+    def test_share_reel_returns_201_and_increments_counter(self, api_client):
+        user = _make_user("customer", "p056-s2@example.com")
+        reel = _publish(_make_reel())
+        api_client.force_authenticate(user=user)
+
+        response = api_client.post(
+            _shares_url(),
+            {"content_type": "reel", "object_id": reel.pk},
+            format="json",
+        )
+
+        assert response.status_code == 201
+        reel_ct = ContentType.objects.get_for_model(Reel)
+        assert (
+            Share.objects.filter(
+                user=user, content_type=reel_ct, object_id=reel.pk
+            ).count()
+            == 1
+        )
+        reel.refresh_from_db()
+        assert reel.shares_count == 1
+
+    def test_sharing_same_content_twice_is_not_deduplicated(self, api_client):
+        """
+        DELIBERATELY the OPPOSITE assertion of every prior Phase 9
+        idempotency test (P-052 Follow, P-053 Like, P-054 Save).
+
+        Those tests prove that repeating the action creates NO second
+        row and NO second increment. Share is a genuine repeatable
+        event, so here repeating the action MUST create a second row
+        and MUST increment the counter a second time. If this test
+        ever fails because someone "fixed" Share into an idempotent
+        toggle, the fix is the bug — revert it.
+        """
+        user = _make_user("customer", "p056-s3@example.com")
+        post = _publish(_make_post())
+        api_client.force_authenticate(user=user)
+        payload = {"content_type": "post", "object_id": post.pk}
+
+        first = api_client.post(_shares_url(), payload, format="json")
+        second = api_client.post(_shares_url(), payload, format="json")
+
+        assert first.status_code == 201
+        assert second.status_code == 201
+        assert Share.objects.filter(user=user, object_id=post.pk).count() == 2
+        post.refresh_from_db()
+        assert post.shares_count == 2
+
+    def test_different_users_sharing_same_content_are_each_counted(self, api_client):
+        post = _publish(_make_post())
+        payload = {"content_type": "post", "object_id": post.pk}
+        for email in ("p056-s4a@example.com", "p056-s4b@example.com"):
+            api_client.force_authenticate(user=_make_user("customer", email))
+            assert (
+                api_client.post(_shares_url(), payload, format="json").status_code
+                == 201
+            )
+
+        assert Share.objects.filter(object_id=post.pk).count() == 2
+        post.refresh_from_db()
+        assert post.shares_count == 2
+
+    def test_share_does_not_touch_other_counters(self, api_client):
+        user = _make_user("customer", "p056-s5@example.com")
+        post = _publish(_make_post())
+        api_client.force_authenticate(user=user)
+
+        api_client.post(
+            _shares_url(),
+            {"content_type": "post", "object_id": post.pk},
+            format="json",
+        )
+
+        post.refresh_from_db()
+        assert post.shares_count == 1
+        assert post.likes_count == 0
+        assert post.comments_count == 0
+
+    def test_share_does_not_affect_other_objects(self, api_client):
+        user = _make_user("customer", "p056-s6@example.com")
+        target = _publish(_make_post())
+        other = _publish(_make_post())
+        api_client.force_authenticate(user=user)
+
+        api_client.post(
+            _shares_url(),
+            {"content_type": "post", "object_id": target.pk},
+            format="json",
+        )
+
+        other.refresh_from_db()
+        assert other.shares_count == 0
+
+    def test_share_creates_no_moderation_queue_row(self, api_client):
+        user = _make_user("customer", "p056-s7@example.com")
+        post = _publish(_make_post())
+        api_client.force_authenticate(user=user)
+        before = ModerationQueue.objects.count()
+        # Sanity: the Post itself WAS enqueued, so the moderation
+        # signal is live and this negative test is meaningful.
+        assert before >= 1
+
+        response = api_client.post(
+            _shares_url(),
+            {"content_type": "post", "object_id": post.pk},
+            format="json",
+        )
+
+        assert response.status_code == 201
+        assert ModerationQueue.objects.count() == before
+
+
+@pytest.mark.django_db
+class TestShareValidation:
+    def _authed(self, api_client, email):
+        api_client.force_authenticate(user=_make_user("customer", email))
+        return api_client
+
+    def test_story_content_type_returns_400(self, api_client):
+        client = self._authed(api_client, "p056-v1@example.com")
+        response = client.post(
+            _shares_url(), {"content_type": "story", "object_id": 1}, format="json"
+        )
+        assert response.status_code == 400
+        assert Share.objects.count() == 0
+
+    def test_product_content_type_returns_400(self, api_client):
+        client = self._authed(api_client, "p056-v2@example.com")
+        response = client.post(
+            _shares_url(), {"content_type": "product", "object_id": 1}, format="json"
+        )
+        assert response.status_code == 400
+        assert Share.objects.count() == 0
+
+    def test_missing_content_type_returns_400(self, api_client):
+        client = self._authed(api_client, "p056-v3@example.com")
+        response = client.post(_shares_url(), {"object_id": 1}, format="json")
+        assert response.status_code == 400
+
+    def test_missing_object_id_returns_400(self, api_client):
+        client = self._authed(api_client, "p056-v4@example.com")
+        response = client.post(_shares_url(), {"content_type": "post"}, format="json")
+        assert response.status_code == 400
+
+    def test_zero_object_id_returns_400(self, api_client):
+        client = self._authed(api_client, "p056-v5@example.com")
+        response = client.post(
+            _shares_url(), {"content_type": "post", "object_id": 0}, format="json"
+        )
+        assert response.status_code == 400
+
+    def test_non_integer_object_id_returns_400(self, api_client):
+        client = self._authed(api_client, "p056-v6@example.com")
+        response = client.post(
+            _shares_url(), {"content_type": "post", "object_id": "abc"}, format="json"
+        )
+        assert response.status_code == 400
+
+    def test_nonexistent_object_returns_404(self, api_client):
+        client = self._authed(api_client, "p056-v7@example.com")
+        response = client.post(
+            _shares_url(),
+            {"content_type": "post", "object_id": 999999},
+            format="json",
+        )
+        assert response.status_code == 404
+        assert Share.objects.count() == 0
+
+    def test_unpublished_post_returns_404_with_no_side_effects(self, api_client):
+        client = self._authed(api_client, "p056-v8@example.com")
+        post = _make_post()  # default status: pending_review (unpublished)
+
+        response = client.post(
+            _shares_url(),
+            {"content_type": "post", "object_id": post.pk},
+            format="json",
+        )
+
+        assert response.status_code == 404
+        assert Share.objects.count() == 0
+        post.refresh_from_db()
+        assert post.shares_count == 0
+
+    def test_unpublished_reel_returns_404_with_no_side_effects(self, api_client):
+        client = self._authed(api_client, "p056-v9@example.com")
+        reel = _make_reel()  # default: pending_review + not yet processed
+
+        response = client.post(
+            _shares_url(),
+            {"content_type": "reel", "object_id": reel.pk},
+            format="json",
+        )
+
+        assert response.status_code == 404
+        assert Share.objects.count() == 0
+        reel.refresh_from_db()
+        assert reel.shares_count == 0
+
+    def test_unauthenticated_share_returns_401_with_no_side_effects(self, api_client):
+        post = _publish(_make_post())
+        response = api_client.post(
+            _shares_url(),
+            {"content_type": "post", "object_id": post.pk},
+            format="json",
+        )
+        assert response.status_code == 401
+        assert Share.objects.count() == 0
+        post.refresh_from_db()
+        assert post.shares_count == 0
+
+    def test_get_is_not_allowed(self, api_client):
+        client = self._authed(api_client, "p056-v10@example.com")
+        assert client.get(_shares_url()).status_code == 405
+
+
+from social.views import ShareCreateView
+
+
+@pytest.mark.django_db(transaction=True)
+class TestShareCountConcurrency:
+    def test_concurrent_shares_are_both_counted(self):
+        """
+        Share has no idempotency concern, but the atomicity of the
+        counter increment still matters: two near-simultaneous shares
+        must BOTH register (2 rows, shares_count == 2) rather than one
+        being lost to a read-then-write race.
+        """
+        sharer = _make_user("customer", "p056-conc1@example.com")
+        post = _publish(_make_post())
+        results = []
+
+        def _do_share():
+            client = APIClient()
+            client.force_authenticate(user=sharer)
+            resp = client.post(
+                _shares_url(),
+                {"content_type": "post", "object_id": post.pk},
+                format="json",
+            )
+            results.append(resp.status_code)
+
+        t1 = threading.Thread(target=_do_share)
+        t2 = threading.Thread(target=_do_share)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert results == [201, 201]
+        assert Share.objects.filter(object_id=post.pk).count() == 2
+        post.refresh_from_db()
+        assert post.shares_count == 2
+
+
+class TestShareViewStructure:
+    def test_view_does_not_use_get_or_create(self):
+        # Guard against someone copying the toggle pattern from
+        # Like/Follow (P-052/P-053) into Share.
+        source = inspect.getsource(ShareCreateView.post)
+        assert "get_or_create" not in source
+
+    def test_view_uses_atomic_f_increment(self):
+        source = inspect.getsource(ShareCreateView.post)
+        assert "transaction.atomic" in source
+        assert 'F("shares_count")' in source
