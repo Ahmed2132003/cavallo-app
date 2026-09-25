@@ -9,6 +9,11 @@ out-of-range page_size is a 400, not a 500: get_home_feed() raises
 ValueError for both (InvalidCursorError included, since it subclasses
 ValueError), and this view is the one place that catches it and turns
 it into a DRF ValidationError.
+
+Part P-060 — Redis caching of the first page (no ?cursor= supplied).
+See FEED_HOME_CACHE_TTL_SECONDS / _feed_home_cache_key below for the
+caching contract and its one documented deviation from the raw exec
+spec (page_size scoping).
 """
 
 from rest_framework.exceptions import ValidationError
@@ -16,10 +21,27 @@ from rest_framework.generics import GenericAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from core.cache import cache_get_or_set
 from feed.serializers import FeedItemSerializer
 from feed.services import get_home_feed
 
 DEFAULT_PAGE_SIZE = 20
+
+# Part P-060: 90s = منتصف الـ range اللي حدده architecture Section 16 (60-120s).
+# مفيش invalidate-on-write هنا (بعكس P-030) لأن الـ staleness هنا مقبولة
+# معماريًا بنص TTL، مش حاجة تحتاج تصحيح فوري زي بروفايل التاجر.
+FEED_HOME_CACHE_TTL_SECONDS = 90
+
+
+def _feed_home_cache_key(user_id):
+    """Cache key convention لصفحة 1 من الـ Home Feed الخاصة بيوزر معين.
+
+    بيتبع نفس المثال المكتوب في core/cache.py's docstring ("feed:42:page1")
+    مش الصيغة "feed:home:{user_id}:page1" المكتوبة في الـ spec الخام —
+    الاتنين ماتنفذوش في كود قبل كده فمفيش تعارض حقيقي، بس اخترنا نتبع
+    الـ convention اللي اتحطت فعليًا في core/cache.py.
+    """
+    return f"feed:{user_id}:page1"
 
 
 class HomeFeedView(GenericAPIView):
@@ -38,7 +60,7 @@ class HomeFeedView(GenericAPIView):
             page_size = DEFAULT_PAGE_SIZE
 
         try:
-            result = get_home_feed(request.user, cursor=cursor, page_size=page_size)
+            result = self._get_feed_page(request.user, cursor, page_size)
         except ValueError as exc:
             # Covers both InvalidCursorError (bad `cursor`) and an
             # out-of-range `page_size` — get_home_feed() raises
@@ -50,4 +72,29 @@ class HomeFeedView(GenericAPIView):
         serializer = self.get_serializer(result["items"], many=True)
         return Response(
             {"items": serializer.data, "next_cursor": result["next_cursor"]}
+        )
+
+    def _get_feed_page(self, user, cursor, page_size):
+        """
+        Part P-060: صفحة 1 (من غير cursor) بالـ page_size الافتراضي بس
+        هي اللي بتتخزن في الكاش لمدة FEED_HOME_CACHE_TTL_SECONDS. أي
+        طلب فيه cursor بيتخطى الكاش ويحسب من جديد دايمًا.
+
+        Deviation موثّقة عن الـ exec spec الخام: الـ spec الأصلي بيعمل
+        hardcode لـ page_size=20 جوه الـ lambda حتى لو العميل طلب
+        page_size مختلف في أول صفحة — ده معناه رد غلط للعميل. بدل كده،
+        أي طلب لصفحة 1 بـ page_size مش الافتراضي بيتخطى الكاش تمامًا
+        ويتحسب Live، لأن مفتاح الكاش مفيهوش page_size qualifier،
+        وتخزين نتيجة بحجم مختلف تحته هيبوظ أول طلب تاني بالـ default.
+        """
+        if cursor is not None or page_size != DEFAULT_PAGE_SIZE:
+            return get_home_feed(user, cursor=cursor, page_size=page_size)
+
+        cache_key = _feed_home_cache_key(user.id)
+
+        def _compute():
+            return get_home_feed(user, cursor=None, page_size=DEFAULT_PAGE_SIZE)
+
+        return cache_get_or_set(
+            cache_key, _compute, ttl_seconds=FEED_HOME_CACHE_TTL_SECONDS
         )
