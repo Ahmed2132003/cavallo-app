@@ -7808,3 +7808,62 @@ None inside P-058 scope. Decisions/backend parts listed under Known gaps 1–4 a
 
 ### Exact next starting point
 **Part P-059 — Feed Query Service (Hybrid: Following-First, Backfilled With Featured/General)** — backend, Phase 10 (P-059 → P-062; P-060 is Redis feed caching, the Flutter home feed is P-061). Before writing code: read P-059's spec in the master plan; the feed's first-priority source is each user's followed-businesses set (`social.Follow`, P-052); Post/Reel are read through `published_objects` (never `.objects`); the feed must NOT expose counters that no serializer exposes yet unless P-059 adds them (see Known gaps 1). Latest migrations: `social/0005_share`, `content/0009_reel_shares_count`, `reports/0001_initial`.
+
+## Part P-059 — Feed Query Service (Hybrid: Following-First, Backfilled With Featured/General)
+
+**Status:** COMPLETE. Commit `990e4b1` on `main` (github.com/Ahmed2132003/cavallo-app).
+Baseline before this part: `b06e633` / 276 passed (businesses+content+social).
+Full suite after this part: **752 passed, 1 skipped** (the 1 skip is the pre-existing moto skip, unrelated to this part). `feed/` alone: 120 passed. `black --check .` / `flake8 .` clean inside `feed/`; every remaining warning outside `feed/` (30 files for black, ~52 lines for flake8, mostly missing-EOF-newline W292 and a handful of E402/E303 in `content/`, `moderation/`, `social/`, `core/`, `manage.py`) is pre-existing and out of this part's scope — confirmed not introduced by P-059.
+
+### What was implemented
+
+A new, deliberately model-less `feed` app exposing `GET /api/v1/feed/home/` — the Home Feed: content from businesses the user follows, ranked newest-first; when that doesn't fill the requested page, backfilled with Featured-first general content the user doesn't already follow, excluding the user's own business. Spans `Post.published_objects` and `Reel.published_objects` only (never `.objects`) via a custom cursor that survives the following → backfill phase transition with no duplicate and no missing item, proven by dedicated tests at both the service and HTTP level.
+
+### Files created
+
+- `feed/apps.py`, `feed/__init__.py`, `feed/tests/__init__.py` — app scaffolding (no models, no migrations by design).
+- `feed/cursor.py` — `FeedCursor` dataclass, `encode_cursor()`/`decode_cursor()`, `InvalidCursorError`. Wire format: `base64url(compact JSON)` unpadded. Following-phase payload: `{"v":1,"p":"f","ts":<ISO-8601 UTC>,"t":"post"|"reel","id":<int>}`. Backfill-phase payload: same + `"ft":0|1` (the item's `is_featured`). Any shape deviation → `InvalidCursorError` (a `ValueError`), deliberately generic (no hint at why it failed).
+- `feed/services.py`:
+  - `FeedEntry` — one feed item (`content_type`, `obj`, `is_featured`), with `.to_cursor(phase)`.
+  - `fetch_following_tier(followed_business_ids, *, after, limit)` — Post+Reel of followed businesses, ordered `(created_at, content-type rank, id)` all descending. Merge strategy: fetch up to `limit` rows from each model (already correctly ordered), merge in Python, keep top `limit` — exact, not approximate; documented MVP trade-off (up to 2×limit rows/2 queries per call; a SQL UNION is the future optimisation).
+  - `fetch_backfill_tier(excluded_business_ids, *, after, limit)` — Post+Reel NOT from excluded businesses, ordered `(is_featured, created_at, content-type rank, id)` all descending, `is_featured` resolved via `business__is_featured`. Kept independent of `get_home_feed()` so P-062 (Discover) can reuse it directly.
+  - `get_home_feed(user, cursor, page_size=20)` — the merge. Cursor phase = the tier the LAST item of the previous page came from (never "mid-backfill"). `cursor is None` or phase `following` → query following tier first; if it returns fewer than `page_size`, backfill the remainder from the top (`after=None`) in the SAME page (the one possible transition). Phase `backfill` → following tier is not re-queried; resume backfill from the cursor. `next_cursor = None` when the page returned fewer than `page_size` (both tiers exhausted). `MAX_PAGE_SIZE = 50`. Raises `ValueError` (or `InvalidCursorError`, a subclass) for bad input — the view turns this into a 400.
+  - Own-business exclusion resolved via `BusinessProfile.objects.filter(user=user).values_list("id", flat=True).first()` — confirmed field name `user` on `BusinessProfile` and `follower`/`business` on `Follow` via `_meta.get_fields()` on the real machine before writing this.
+- `feed/serializers.py` — `FeedItemSerializer`, a thin `to_representation()` delegating to `content.serializers.PostPublicSerializer`/`ReelPublicSerializer` (P-043) per content type, adding only the `content_type` discriminator P-061 (Flutter) needs. No new duplicated field definitions.
+- `feed/views.py` — `HomeFeedView` (`GenericAPIView`, `IsAuthenticated`), `GET` only, reads `cursor`/`page_size` query params, catches `ValueError` from `get_home_feed()` and re-raises as DRF `ValidationError` (400).
+- `feed/urls.py` — `path("home/", HomeFeedView.as_view(), name="home-feed")`.
+- Tests: `feed/tests/helpers.py` (shared fixtures: `make_business`, `make_customer`, `make_follow`, `make_post`, `make_reel`, `ts()`), `feed/tests/test_cursor.py` (80 tests, pure encode/decode), `feed/tests/test_following_tier.py` (13 tests), `feed/tests/test_backfill_tier.py`, `feed/tests/test_get_home_feed.py` (service-level merge/transition/pagination), `feed/tests/test_api.py` (8 HTTP tests: auth required, following-only, hybrid fill, zero-follows, unpublished content hidden, the critical cross-page pagination test across page sizes 1–10, malformed cursor → 400, oversized page_size → 400).
+
+### Files modified
+
+- `businesses/models.py` — added `BusinessProfile.is_featured` (`BooleanField(default=False)`), a **placeholder**: nothing sets it True automatically yet (Admin/shell only). Phase 15 (P-086/P-087/P-088) wires it to `FeaturedSubscription` state. Migration: `businesses/migrations/0005_businessprofile_is_featured.py`. Not exposed on any serializer (BusinessProfileSerializer uses an explicit field list).
+- `config/urls.py` — added `path("api/v1/feed/", include("feed.urls"))` as its own top-level prefix (same shape as likes/saves/comments/shares), since the feed isn't business-scoped.
+- `businesses/tests/test_is_featured.py` (new, part of the same is_featured addition): 2 tests (defaults False, settable/persists).
+
+### Architecture decisions / deviations (documented, not silent)
+
+- **Custom cursor, not `core.pagination.StandardCursorPagination`**: that class orders one queryset by one field; the Home Feed merges two tables and two tiers, so it needs a cursor carrying phase + composite position. Still strictly cursor-based (never offset/limit) — satisfies architecture Section 9 point 7's actual requirement.
+- **`feed` app is model-less by design**: pure query/aggregation layer over `Post`, `Reel`, `Follow`, `BusinessProfile`. No migrations for `feed` itself (confirmed via `makemigrations --check --dry-run` = "No changes detected" at every step).
+- **Stories NOT interleaved into this feed**: confirmed no evidence in the source architecture PDF that they should be (page 12: stories live in their own bar, separate from the scrolling feed). No correction flagged.
+- **`is_featured` lives on `BusinessProfile`, not duplicated on `Post`/`Reel`**: resolved via `business__is_featured` join in the backfill tier's queryset ordering/filtering.
+
+### Known issues / deliberately left as-is (flagged for later parts, not fixed here)
+
+- A user can follow their own business (`FollowToggleView` doesn't prevent it) — if they do, their own content appears in their *following* tier (only the *backfill* tier excludes the requester's own business, per this part's spec). Left as-is; not a P-059 concern.
+- Soft-deleted `BusinessProfile` content isn't specially filtered in the feed beyond the normal `published_objects` check — no "Suspend Business" admin action exists yet to make this a live concern. Flag for whenever that Admin feature lands.
+- Merge strategy reads up to `2 × page_size` rows per tier per request (2 queries/tier) — fine at Stage-1/single-VPS scale (architecture Section 2); a SQL UNION is the natural future optimisation once real usage data justifies it.
+
+### Commands to reproduce validation
+
+```powershell
+docker compose exec web python manage.py check
+docker compose exec web python manage.py makemigrations --check --dry-run
+docker compose exec web pytest feed/ -q
+docker compose exec web pytest -q
+docker compose exec web black --check feed/
+docker compose exec web flake8 feed/
+```
+
+### Exact next starting point
+
+Ready to start **Part P-060 (Redis caching of `get_home_feed()`'s output)**, per this part's own "Out of Scope" note (P-059 explicitly excluded caching). P-061 (Flutter) can proceed independently against `GET /api/v1/feed/home/` — response shape: `{"items": [{"content_type": "post"|"reel", "id", "business", "caption", "image"|"video"/"thumbnail"/"duration_seconds", "created_at", "updated_at"}], "next_cursor": <opaque string>|null}`. `next_cursor` must be sent back verbatim as `?cursor=` on the next request; it is never parsed or built client-side.
