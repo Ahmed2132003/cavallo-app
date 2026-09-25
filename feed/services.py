@@ -1,10 +1,6 @@
 """
 Part P-059 — Home Feed query service.
 
-This module is built up across several steps of P-059. It currently
-holds the shared building blocks and the FOLLOWING tier; the BACKFILL
-tier and get_home_feed() are added in the following steps.
-
 Architecture rules
 ------------------
 - Post and Reel are read ONLY through `published_objects` (P-043), never
@@ -28,6 +24,31 @@ Ordering inside a tier is a TOTAL order, so a cursor can never land in
 an ambiguous spot:
 
     following tier:  (created_at, content-type rank, id), all descending
+    backfill tier:   (is_featured, created_at, content-type rank, id),
+                      all descending
+
+Home Feed algorithm (get_home_feed)
+------------------------------------
+A cursor's `phase` is the tier the LAST item of the previous page came
+from — not "was I in the middle of backfilling". That is enough to
+resume correctly:
+
+  - cursor is None, or phase == following: query the following tier
+    first (resuming from the cursor if it is a following cursor, or
+    from the top otherwise). If it returns fewer items than the page
+    needs, the following tier is exhausted for this user right now, so
+    the remainder of THIS SAME page is filled from the top of the
+    backfill tier (after=None) — this is the one following -> backfill
+    transition, and it can only happen once, on this page.
+  - cursor phase == backfill: the following tier was already exhausted
+    on an earlier page (that is the only way a backfill cursor exists),
+    so it is not queried again; resume the backfill tier from the
+    cursor.
+
+The next cursor is taken from the LAST item actually returned: backfill
+phase if any backfill items were served this page, following phase
+otherwise. A page with fewer items than requested is the end of the
+feed (both tiers were exhausted), and gets next_cursor=None.
 """
 
 from dataclasses import dataclass
@@ -35,14 +56,21 @@ from typing import Any, Iterable, Optional
 
 from django.db.models import Q
 
+from businesses.models import BusinessProfile
 from content.models import Post, Reel
+from social.models import Follow
 from feed.cursor import (
     CONTENT_TYPE_POST,
     CONTENT_TYPE_RANK,
     CONTENT_TYPE_REEL,
+    PHASE_BACKFILL,
     PHASE_FOLLOWING,
     FeedCursor,
+    decode_cursor,
+    encode_cursor,
 )
+
+MAX_PAGE_SIZE = 50
 
 # (content_type label, model) pairs, in one place so every tier iterates
 # the same sources. Each model is only ever used via `.published_objects`.
@@ -84,6 +112,16 @@ def following_sort_key(entry: FeedEntry):
     return (entry.created_at, CONTENT_TYPE_RANK[entry.content_type], entry.id)
 
 
+def backfill_sort_key(entry: FeedEntry):
+    """Total order of the backfill tier (sort with reverse=True)."""
+    return (
+        entry.is_featured,
+        entry.created_at,
+        CONTENT_TYPE_RANK[entry.content_type],
+        entry.id,
+    )
+
+
 def _following_rows_after(content_type: str, cursor: FeedCursor) -> Q:
     """
     Rows of `content_type` that come strictly AFTER `cursor` in the
@@ -105,6 +143,27 @@ def _following_rows_after(content_type: str, cursor: FeedCursor) -> Q:
     return Q(created_at__lt=cursor.created_at) | Q(
         created_at=cursor.created_at, id__lt=cursor.object_id
     )
+
+
+def _backfill_rows_after(content_type: str, cursor: FeedCursor) -> Q:
+    """
+    Rows of `content_type` that come strictly AFTER `cursor` in the
+    descending (is_featured, created_at, rank, id) order.
+
+    `is_featured` is resolved per row via `business__is_featured`, unlike
+    `rank`, which is fixed for the whole query (each query only ever
+    touches one content type). A row is "after" the cursor when either:
+      - its is_featured is False and the cursor's is True (any timestamp), or
+      - its is_featured matches the cursor's, and it is "after" on the same
+        (created_at, rank, id) total order the following tier already
+        uses (reused as-is: that comparison never looks at is_featured).
+    """
+    same_featured_tiebreak = _following_rows_after(content_type, cursor)
+    if cursor.is_featured:
+        return Q(business__is_featured=False) | (
+            Q(business__is_featured=True) & same_featured_tiebreak
+        )
+    return Q(business__is_featured=False) & same_featured_tiebreak
 
 
 def fetch_following_tier(
@@ -134,3 +193,97 @@ def fetch_following_tier(
 
     entries.sort(key=following_sort_key, reverse=True)
     return entries[:limit]
+
+
+def fetch_backfill_tier(
+    excluded_business_ids: Iterable[int],
+    *,
+    after: Optional[FeedCursor],
+    limit: int,
+) -> list:
+    """
+    Published Posts + Reels NOT from `excluded_business_ids`, ordered
+    Featured-first then newest first, resuming strictly after `after`
+    (a backfill-phase cursor) or from the very top when `after` is None.
+    Returns at most `limit` FeedEntry. Kept independent of
+    `get_home_feed()` so P-062 (Discover) can reuse it directly.
+    """
+    if after is not None and after.phase != PHASE_BACKFILL:
+        raise ValueError("The backfill tier can only resume a backfill cursor")
+    if limit <= 0:
+        return []
+    excluded_ids = list(excluded_business_ids)
+
+    entries = []
+    for content_type, model in _CONTENT_SOURCES:
+        queryset = model.published_objects.exclude(business_id__in=excluded_ids)
+        if after is not None:
+            queryset = queryset.filter(_backfill_rows_after(content_type, after))
+        queryset = queryset.select_related("business").order_by(
+            "-business__is_featured", "-created_at", "-id"
+        )
+        for obj in queryset[:limit]:
+            entries.append(
+                FeedEntry(
+                    content_type=content_type,
+                    obj=obj,
+                    is_featured=obj.business.is_featured,
+                )
+            )
+
+    entries.sort(key=backfill_sort_key, reverse=True)
+    return entries[:limit]
+
+
+def get_home_feed(user, cursor: Optional[str], page_size: int = 20) -> dict:
+    """
+    The Home Feed: followed-businesses content first, backfilled with
+    Featured-first general content when the followed tier does not fill
+    the page. Returns {"items": [FeedEntry, ...], "next_cursor": str|None}.
+
+    Raises InvalidCursorError (a ValueError) if `cursor` is malformed,
+    and ValueError if `page_size` is out of range — both are caller
+    input errors for the view to turn into a 400.
+    """
+    if not isinstance(page_size, int) or page_size <= 0 or page_size > MAX_PAGE_SIZE:
+        raise ValueError(f"page_size must be between 1 and {MAX_PAGE_SIZE}")
+
+    decoded_cursor = decode_cursor(cursor) if cursor else None
+
+    followed_business_ids = list(
+        Follow.objects.filter(follower=user).values_list("business_id", flat=True)
+    )
+    own_business_id = (
+        BusinessProfile.objects.filter(user=user).values_list("id", flat=True).first()
+    )
+    excluded_business_ids = set(followed_business_ids)
+    if own_business_id is not None:
+        excluded_business_ids.add(own_business_id)
+
+    following_items = []
+    backfill_items = []
+
+    if decoded_cursor is None or decoded_cursor.phase == PHASE_FOLLOWING:
+        following_items = fetch_following_tier(
+            followed_business_ids, after=decoded_cursor, limit=page_size
+        )
+        remaining = page_size - len(following_items)
+        if remaining > 0:
+            backfill_items = fetch_backfill_tier(
+                excluded_business_ids, after=None, limit=remaining
+            )
+    else:
+        backfill_items = fetch_backfill_tier(
+            excluded_business_ids, after=decoded_cursor, limit=page_size
+        )
+
+    items = following_items + backfill_items
+
+    next_cursor = None
+    if len(items) >= page_size:
+        if backfill_items:
+            next_cursor = encode_cursor(backfill_items[-1].to_cursor(PHASE_BACKFILL))
+        elif following_items:
+            next_cursor = encode_cursor(following_items[-1].to_cursor(PHASE_FOLLOWING))
+
+    return {"items": items, "next_cursor": next_cursor}

@@ -88,4 +88,8 @@ urlpatterns = [
     # likes/saves/comments above — targets Post or Reel via the body.
     path("api/v1/shares/", include("social.share_urls")),
     path("api/v1/reports/", include("reports.urls")),
+    # Part P-059: Home Feed — own top-level prefix, same shape as
+    # likes/saves/comments/shares above, since the feed isn't
+    # business-scoped.
+    path("api/v1/feed/", include("feed.urls")),
 ]

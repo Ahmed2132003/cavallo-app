@@ -14,6 +14,7 @@ from django.contrib.auth import get_user_model
 from businesses.models import BusinessProfile
 from businesses.services import create_business_profile
 from content.models import Post, Reel
+from social.models import Follow
 
 User = get_user_model()
 
@@ -48,6 +49,10 @@ def make_customer():
     return User.objects.create_user(
         username=email, email=email, password="testpass123", account_type="customer"
     )
+
+
+def make_follow(follower_user, business: BusinessProfile) -> Follow:
+    return Follow.objects.create(follower=follower_user, business=business)
 
 
 def make_post(business, *, at: datetime, status: str = "published", caption="post"):
