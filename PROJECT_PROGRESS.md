@@ -7867,3 +7867,91 @@ docker compose exec web flake8 feed/
 ### Exact next starting point
 
 Ready to start **Part P-060 (Redis caching of `get_home_feed()`'s output)**, per this part's own "Out of Scope" note (P-059 explicitly excluded caching). P-061 (Flutter) can proceed independently against `GET /api/v1/feed/home/` — response shape: `{"items": [{"content_type": "post"|"reel", "id", "business", "caption", "image"|"video"/"thumbnail"/"duration_seconds", "created_at", "updated_at"}], "next_cursor": <opaque string>|null}`. `next_cursor` must be sent back verbatim as `?cursor=` on the next request; it is never parsed or built client-side.
+
+## Part P-060 — Redis Feed Caching (60–120s TTL, Per-User First Page) — ✅ COMPLETE
+
+**Status:** COMPLETE. Commit `257b5df` on `main` (github.com/Ahmed2132003/cavallo-app).
+Baseline before this part: `990e4b1` (P-059) / 752 passed, 1 skipped.
+Full suite after this part: **757 passed, 1 skipped, 1 warning** (the warning is a
+pre-existing test-DB teardown race in `reports/tests/test_throttles.py`,
+unrelated to this part). `feed/` alone: **125 passed** (120 from P-059 + 5 new).
+`black --check feed/` — 16 files unchanged. `flake8 feed/` — clean.
+
+### What was implemented
+
+Wraps `get_home_feed()`'s first page (no `?cursor=`, default `page_size=20`)
+in `core.cache.cache_get_or_set` (P-014) at a 90-second TTL — the documented
+midpoint of architecture Section 16's 60–120s Feed range. No
+invalidate-on-write: per Section 16's own framing, the Feed's staleness is an
+accepted TTL-bounded trade-off, unlike Business Profile's P-030
+invalidate-on-write pattern.
+
+### Files modified
+
+- `feed/views.py`:
+  - `FEED_HOME_CACHE_TTL_SECONDS = 90` (module-level constant).
+  - `_feed_home_cache_key(user_id)` — returns `"feed:{user_id}:page1"`.
+  - `HomeFeedView._get_feed_page()` — new method: a cursor-bearing request,
+    or a page-1 request with an explicit `page_size` other than the default
+    20, always bypasses the cache and calls `get_home_feed()` directly. Only
+    a page-1 request at the default `page_size` uses `cache_get_or_set`.
+
+### Files created
+
+- `feed/tests/test_caching.py` — 5 tests (`TestHomeFeedCachingFirstPage`:
+  2 tests; `TestHomeFeedCachingBypass`: 3 tests). All use
+  `mock.patch("feed.views.get_home_feed", wraps=...)` call-count assertions,
+  not `assertNumQueries` (documented reason: P-059's own query count per
+  request varies with the following/backfill transition, so a call-count on
+  the service function is the stable thing to assert here).
+
+### Architecture decisions / deviations (documented, not silent)
+
+- **Cache key format**: this part's own raw spec text says
+  `feed:home:{user_id}:page1`; the actual key used is `feed:{user_id}:page1`,
+  matching the literal example already in `core/cache.py`'s docstring
+  (`"feed:42:page1"`) from P-014. No prior code used the `feed:home:...`
+  form, so there was no real convention to break — `core/cache.py`'s
+  existing documented example was followed instead.
+- **`page_size` scoping (real deviation from the raw exec prompt)**: the
+  exec prompt's sample call hardcodes `page_size=20` inside the cached
+  lambda regardless of what the client requested, which would silently
+  return 20 items to a client that explicitly asked for a different
+  `page_size` on page 1. Instead: the cache key carries no `page_size`
+  qualifier, so any page-1 request whose `page_size` differs from the
+  default (20) bypasses the cache entirely and always computes fresh.
+  This is exercised by `test_explicit_non_default_page_size_on_page_one_is_never_cached`
+  and `test_default_page_size_cache_does_not_leak_into_explicit_page_size_request`.
+
+### Known issues / flagged for follow-up
+
+- No cache invalidation exists for this key by design (see "What was
+  implemented"). If a future part needs tighter freshness for the Home
+  Feed, that is a scope change to this part's own accepted trade-off, not a
+  bug here.
+- `reports/tests/test_throttles.py::TestReportThrottleConfig::test_rate_can_be_overridden_via_settings`
+  logs a pre-existing `OperationalError` on test-DB teardown ("database
+  ... is being accessed by other users") — confirmed unrelated to this
+  part (it fired on the same full-suite run before and after P-060's
+  changes were added), pre-existing and out of scope.
+
+### Commands to reproduce validation
+
+```powershell
+docker compose exec web python manage.py check
+docker compose exec web python manage.py makemigrations --check --dry-run
+docker compose exec web pytest feed/ -q
+docker compose exec web pytest -q
+docker compose exec web black --check feed/
+docker compose exec web flake8 feed/
+```
+
+### Exact next starting point
+
+**Part P-061 (Flutter home feed screen)** and **P-062 (Discover)** can now
+both proceed — P-061 against `GET /api/v1/feed/home/` (response shape
+unchanged by P-060: caching is transparent to the client, same
+`{"items": [...], "next_cursor": ...}` shape from P-059), P-062 can reuse
+`feed.services.fetch_backfill_tier()` directly, per P-059's own note. This
+closes out Phase 10's backend (P-059, P-060) — P-061/P-062 are the last
+parts of Phase 10.
