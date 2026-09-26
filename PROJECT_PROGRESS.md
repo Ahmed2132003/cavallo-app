@@ -7955,3 +7955,53 @@ unchanged by P-060: caching is transparent to the client, same
 `feed.services.fetch_backfill_tier()` directly, per P-059's own note. This
 closes out Phase 10's backend (P-059, P-060) — P-061/P-062 are the last
 parts of Phase 10.
+
+## P-061 — Flutter: Home Feed Screen (Infinite Scroll, Cursor Pagination)
+
+**Status:** ✅ Complete — full test suite green (498/498 passed), `flutter analyze` clean, manual validation done with two real accounts (following + zero-follows) against the real backend.
+
+### What was implemented
+- Real `/home` landing screen (`HomeFeedScreen`), replacing P-007's placeholder.
+- Cursor-paginated infinite scroll (loadMore triggers at 80% scroll extent), backed by `homeFeedProvider` (`AsyncNotifier<FeedState>`).
+- Pull-to-refresh (`RefreshIndicator`) — discards local state, re-fetches a genuine first page (cursor: null), replaces (not appends to) the list.
+- `PostCard`/`ReelCard` (Part P-045) reused with zero modification, per spec — confirmed no changes needed.
+- Per-item `businessName` resolved independently via `businessProfilePublicProvider` (Part P-029) — one slow/failed lookup never blocks the rest of the list.
+- Old P-007 placeholder's 5 debug affordances ("Edit business profile", "Business Console (debug)", "Moderation queue (debug)", "View Story (debug)", "Logout (debug)") preserved, moved into a `_DebugMenu` overflow menu on the new screen's AppBar, same visibility conditions as before.
+
+### Files created
+- `lib/features/feed/domain/feed_item_entity.dart` — `FeedItem` sealed class (`PostFeedItem`/`ReelFeedItem`), wraps existing `PublicPost`/`PublicReel` unchanged.
+- `lib/features/feed/domain/feed_page_entity.dart` — `FeedPage {items, nextCursor}`.
+- `lib/features/feed/domain/feed_repository.dart` — abstract `FeedRepository`.
+- `lib/features/feed/data/feed_repository.dart` — `FeedRepositoryImpl`, calls `GET /api/v1/feed/home/`, parses items via existing `PostPublicResponseDto`/`ReelPublicResponseDto` (no new per-item DTO), treats `next_cursor` as fully opaque.
+- `lib/features/feed/presentation/home_feed_provider.dart` — `FeedState`, `HomeFeedNotifier`/`homeFeedProvider` (`AsyncNotifier`, autoDispose, retry disabled). `refresh()` fully replaces state; `loadMore()` appends, no-op when exhausted or already in flight.
+- `lib/features/feed/presentation/home_feed_screen.dart` — the real screen (ScrollController + RefreshIndicator + `_FeedListItem`/`_DebugMenu`).
+- `test/features/feed/data/feed_repository_test.dart` — 6 tests.
+- `test/features/feed/presentation/home_feed_provider_test.dart` — 4 tests.
+- `test/features/feed/presentation/home_feed_screen_test.dart` — 6 widget tests.
+
+### Files modified
+- `lib/routing/app_router.dart` — `/home` now builds `HomeFeedScreen` instead of the deleted `HomeScreen` placeholder.
+- `test/routing/moderation_router_gate_test.dart` — `HomeScreen` → `HomeFeedScreen` (import + `find.byType`).
+- `test/features/business_profile/business_profile_router_gate_test.dart` — same `HomeScreen` → `HomeFeedScreen` fix.
+- `test/routing/app_router_test.dart` — removed `RouteNames.home` from the generic "every protected placeholder route resolves" loop (the old `'Route: home'` text assertion no longer applies); added a dedicated `Part P-061: home route resolves to the real HomeFeedScreen (signed in)` test, same pattern as the P-029/P-034 placeholder-replacement precedents in this file.
+
+### Files deleted
+- `lib/features/feed/presentation/home_screen.dart` (P-007 placeholder)
+- `test/features/feed/presentation/home_screen_test.dart` (its old debug-button tests, superseded by `home_feed_screen_test.dart`)
+
+### Commands
+```powershell
+flutter analyze
+flutter test
+```
+
+### Verification results
+- `flutter analyze` → No issues found.
+- `flutter test` → 498/498 passed.
+- Manual validation (real backend, two real customer accounts): Account A (following 2–3 businesses) — following-tier content shown first, backfilled correctly, infinite scroll and pull-to-refresh both correct, tap-through to post/reel detail correct. Account B (zero follows) — full all-backfill feed populated correctly from page 1, confirming the hybrid feed design end-to-end from the Flutter side.
+
+### Known issues (NOT part of P-061 — flagging for a separate fix)
+- **Cross-account like/comment state leakage (Part P-058, pre-existing):** `contentInteractionProvider` (`social_interaction_provider.dart`) is keyed only by `(contentType, objectId)`, not by user/session. Observed during P-061's manual testing: a post liked under Account A appeared already-liked (and with an inflated like count) when viewed under Account B. Root cause is not yet confirmed — needs to be reproduced on two fully separate app instances running simultaneously (not sequential logout/login in one instance) to isolate whether this is (a) the Flutter-side provider not being invalidated on logout, or (b) the backend not scoping `is_liked`/`likes_count` to `request.user`. Needs its own bug ticket under P-058; out of scope for P-061 (PostCard/ReelCard and the social interaction layer were both explicitly required to stay unmodified by this part).
+
+### Next starting point
+P-062 (Discover screen) per the original plan. The like/comment cross-account issue above should be triaged before or alongside it, since it affects the same cards P-062 will also reuse.
