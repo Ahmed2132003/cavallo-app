@@ -7,8 +7,11 @@ belong under api/v1/businesses/.
 
 from django.urls import path
 
-from feed.views import HomeFeedView
+from feed.views import DiscoverFeedView, HomeFeedView
 
 urlpatterns = [
     path("home/", HomeFeedView.as_view(), name="home-feed"),
+    # Part P-062. Backfill-tier-only "browse broadly" feed — see
+    # DiscoverFeedView's own docstring.
+    path("discover/", DiscoverFeedView.as_view(), name="discover-feed"),
 ]

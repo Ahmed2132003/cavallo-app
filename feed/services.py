@@ -287,3 +287,52 @@ def get_home_feed(user, cursor: Optional[str], page_size: int = 20) -> dict:
             next_cursor = encode_cursor(following_items[-1].to_cursor(PHASE_FOLLOWING))
 
     return {"items": items, "next_cursor": next_cursor}
+
+
+def get_discover_feed(user, cursor: Optional[str], page_size: int = 20) -> dict:
+    """
+    Part P-062 — Discover feed: backfill-tier-only, no following tier.
+
+    Reuses `fetch_backfill_tier()` directly — that function's own
+    docstring says it was kept independent of `get_home_feed()`
+    specifically so this part could do exactly that; no new ordering
+    logic is written here. Excludes the same business_ids
+    `get_home_feed()` excludes (followed businesses + the user's own
+    business, if any): Discover's whole point is surfacing businesses
+    the user does NOT already follow — content from followed businesses
+    already has a home in the Home Feed's following tier, and showing
+    it again here would defeat the "browse broadly, find something new"
+    purpose the presentation deck gives this screen.
+
+    A cursor this function issues is always phase == PHASE_BACKFILL
+    (there is no following tier here to ever produce a PHASE_FOLLOWING
+    cursor). A cursor of the other phase, or a malformed one, raises
+    the same ValueError get_home_feed() raises for its own bad cursors
+    — the view is the one place that turns it into a 400.
+    """
+    if not isinstance(page_size, int) or page_size <= 0 or page_size > MAX_PAGE_SIZE:
+        raise ValueError(f"page_size must be between 1 and {MAX_PAGE_SIZE}")
+
+    decoded_cursor = decode_cursor(cursor) if cursor else None
+    if decoded_cursor is not None and decoded_cursor.phase != PHASE_BACKFILL:
+        raise ValueError("Discover feed cursor must be a backfill-phase cursor")
+
+    followed_business_ids = list(
+        Follow.objects.filter(follower=user).values_list("business_id", flat=True)
+    )
+    own_business_id = (
+        BusinessProfile.objects.filter(user=user).values_list("id", flat=True).first()
+    )
+    excluded_business_ids = set(followed_business_ids)
+    if own_business_id is not None:
+        excluded_business_ids.add(own_business_id)
+
+    items = fetch_backfill_tier(
+        excluded_business_ids, after=decoded_cursor, limit=page_size
+    )
+
+    next_cursor = None
+    if len(items) >= page_size:
+        next_cursor = encode_cursor(items[-1].to_cursor(PHASE_BACKFILL))
+
+    return {"items": items, "next_cursor": next_cursor}

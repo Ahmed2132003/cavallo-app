@@ -23,7 +23,7 @@ from rest_framework.response import Response
 
 from core.cache import cache_get_or_set
 from feed.serializers import FeedItemSerializer
-from feed.services import get_home_feed
+from feed.services import get_discover_feed, get_home_feed
 
 DEFAULT_PAGE_SIZE = 20
 
@@ -97,4 +97,45 @@ class HomeFeedView(GenericAPIView):
 
         return cache_get_or_set(
             cache_key, _compute, ttl_seconds=FEED_HOME_CACHE_TTL_SECONDS
+        )
+
+
+class DiscoverFeedView(GenericAPIView):
+    """
+    Part P-062 — GET /api/v1/feed/discover/?cursor=<opaque>&page_size=<int>
+
+    Authenticated only — same reasoning as HomeFeedView: excluding the
+    user's followed businesses needs a user to resolve Follow rows for.
+    Backfill-tier-only (no following tier at all) — see
+    `get_discover_feed()`'s own docstring for why.
+
+    Deliberately NOT cached, unlike HomeFeedView/P-060: this part's own
+    Definition of Done does not call for a cache, and unlike Home
+    Feed's "page 1, no cursor" case, there's no single canonical first
+    page to key a cache on that would stay valid across users with
+    different follow sets sharing the same cache entry.
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = FeedItemSerializer
+
+    def get(self, request):
+        cursor = request.query_params.get("cursor") or None
+        page_size_raw = request.query_params.get("page_size")
+        if page_size_raw is not None:
+            try:
+                page_size = int(page_size_raw)
+            except ValueError:
+                raise ValidationError({"page_size": "Must be an integer."})
+        else:
+            page_size = DEFAULT_PAGE_SIZE
+
+        try:
+            result = get_discover_feed(request.user, cursor, page_size)
+        except ValueError as exc:
+            raise ValidationError({"detail": str(exc)})
+
+        serializer = self.get_serializer(result["items"], many=True)
+        return Response(
+            {"items": serializer.data, "next_cursor": result["next_cursor"]}
         )
