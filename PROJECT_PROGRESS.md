@@ -8183,3 +8183,109 @@ Commits on `cavallo-app` (`main`): `6758880` (main implementation),
 `search_vector` infrastructure on both models. Query the exact field
 names above; no fuzzy/typo-tolerant matching is required for MVP
 (explicitly out of scope per ADR-003).
+
+## Part P-109 — ratings App: Business Rating/Review Model — COMPLETE
+
+**Status:** ✅ Fully closed and pushed. All Definition of Done items met.
+**Note on numbering:** deliberately out-of-sequence ID, executed BEFORE
+P-063/P-064 per its own spec (closes a real gap Search's rating filter
+needed).
+
+### What was implemented
+- New `ratings` app: `Rating(customer, business, score[1-5], review_text)`,
+  `unique_together = ("customer", "business")` — a customer rating a
+  business again UPDATES the same row, never creates a second one.
+- `ratings.services.rate_business()`: inside `transaction.atomic()`,
+  `update_or_create()`s the Rating row, then recomputes
+  `average_rating`/`ratings_count` FRESH from `Avg`/`Count` over the
+  Rating table (deliberately NOT an F()-increment — see that
+  function's own docstring for why an upsert doesn't compose with a
+  simple increment).
+- `BusinessProfile.average_rating` (Decimal 3,2, default 0) and
+  `ratings_count` (PositiveInteger, default 0) — additive migration.
+- `POST /api/v1/businesses/{id}/rate/` — authenticated, upsert.
+- `GET /api/v1/businesses/{id}/ratings/` — public, paginated
+  (StandardCursorPagination), lists reviews for one business, newest
+  first.
+- Abuse reports on a review reuse the existing generic Report
+  mechanism (P-057/P-058) — no parallel moderation path built.
+- No Flutter "all reviews" browsing screen built (optional, flagged,
+  out of this part's Definition of Done) — the list endpoint exists
+  so one can be added later without a further backend part.
+
+### Files created
+- `ratings/__init__.py`, `apps.py`, `models.py`, `services.py`,
+  `serializers.py`, `views.py`, `urls.py`, `admin.py`
+- `ratings/migrations/__init__.py`, `ratings/migrations/0001_initial.py`
+- `ratings/tests/__init__.py`, `test_services.py`, `test_api.py`
+
+### Files modified
+- `businesses/models.py` — added `average_rating`, `ratings_count`
+- `businesses/migrations/0008_businessprofile_average_rating_and_more.py`
+- `config/settings/base.py` — `"ratings"` added to `INSTALLED_APPS`
+- `config/urls.py` — `path("api/v1/businesses/", include("ratings.urls"))`
+
+### Architecture decisions
+- Deliberate departure from Phase 9's F()-increment counter pattern
+  (see `ratings/services.py` module docstring) — a rating upsert's
+  average must be recomputed fresh from the Rating table on every
+  write, not incrementally adjusted. Flagged explicitly so a future
+  engineer doesn't "fix" this into the increment pattern.
+- `Rating` does not inherit `SoftDeleteModel` — no delete/retraction
+  flow was in this part's scope; a "remove my rating" feature would be
+  a new part, not a field added quietly here.
+
+### Bugs found and fixed during this part
+- The first delivery of the file set omitted `ratings/migrations/__init__.py`
+  (a packaging omission, not a code defect). Its absence made Django
+  treat `ratings` as an "unmigrated" app and attempt a pre-migration
+  `syncdb`, which failed on the FK to `accounts_user` (table not
+  created yet at that point). Fixed by adding the empty `__init__.py`;
+  confirmed working on the next test run.
+
+### Exact field names (for P-064 to filter/sort on)
+`BusinessProfile.average_rating`, `BusinessProfile.ratings_count`.
+
+### Commands
+```bash
+docker compose exec web python manage.py migrate
+docker compose exec web pytest ratings -q
+```
+
+### Tests
+`ratings/tests/test_services.py` + `test_api.py` — 14 tests. Covers:
+first rating creation and average calculation; rating-update (upsert)
+correctly recomputing the average without double-counting (this
+part's most critical case); multi-customer average correctness (5, 3,
+4 → 4.00); one customer updating their rating doesn't corrupt other
+customers' contribution to the average; score validation (0/6/-1
+rejected with 400); authentication required on the rate endpoint
+(401 unauthenticated); 404 on an unknown business id; public,
+unauthenticated access to the ratings list; ratings list correctly
+scoped to one business only.
+
+### Verification results
+`14 passed in 17.28s` — confirmed by Ahmed in the real dev environment
+(`docker compose exec web pytest ratings -q`), against the real
+Postgres database, not a mocked/sqlite run.
+
+### GitHub references
+Commit `8202a15` on `cavallo-app` (`main`), pushed from `ef2288f`.
+Verified present on `origin/main` (`git fetch` + `git log origin/main -1`
+confirms all 17 files landed: `ratings/*`, `businesses/models.py`,
+`businesses/migrations/0008_*`, `config/settings/base.py`,
+`config/urls.py`).
+
+### Known issues
+None open. The migration-package omission above was caught and fixed
+before this part was marked complete.
+
+### Remaining work / Next starting point
+**P-064 — Search endpoint with filters** is now fully unblocked:
+`BusinessProfile.average_rating` exists and is real (not a stub), so
+the `min_rating` filter can be built against it exactly as originally
+spec'd. Also carry forward from the earlier P-064 review: `Product`
+has no `country`/`city` fields of its own — that filter must join
+through `product.business.country` / `product.business.city`, not a
+direct `Product` field, contrary to the original part text's
+assumption.
