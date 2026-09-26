@@ -8059,3 +8059,32 @@ flutter test
 
 ### Next starting point
 **P-062 (Discover screen)** — was explicitly blocked on this bugfix per P-061's Progress note, since it reuses the same PostCard/ReelCard/ContentActionRow. Can now proceed; re-run its own manual testing using the two-simultaneous-instance method by default, since it inherits the same seeding/reseed/autoDispose fix.
+
+Part P-062 — Flutter: Discover Screen (Stories Bar + Featured/Recommended Sections) → "Next starting point"
+
+## Part P-062 — CLOSEOUT (post-handoff fix + final full-repo verification)
+
+**Status:** ✅ Fully closed. The one gap flagged in this part's earlier handoff (stale placeholder-route test + un-run full regression + un-run manual Story-expiry check) is now resolved. Phase 10 (P-059 → P-062) is genuinely complete end to end — no outstanding items remain for this part.
+
+### Bug found and fixed after the earlier handoff
+`test/routing/app_router_test.dart`'s `'every protected placeholder route resolves (signed in)'` test still listed `RouteNames.discover` inside `protectedSimpleRoutes` and asserted the old P-007 placeholder text `find.text('Route: discover')`. That text stopped existing the moment P-062's real `DiscoverScreen` replaced the placeholder (same class of staleness the file had already fixed for `home`/P-061, `login`/P-021b, `register`/P-021c, `businessProfile`/P-029, `productDetail`/P-034 — `discover` was simply the one left over). Fixed by:
+- Removing `RouteNames.discover` from `protectedSimpleRoutes`.
+- Adding a dedicated `'Part P-062: discover route resolves to the real DiscoverScreen (signed in)'` test, mirroring the existing P-061 home test exactly (`find.byType(DiscoverScreen)`, no repository override — resolves via loading → real/failed fetch → error state either way).
+- Added the missing `discover_screen.dart` import to the test file.
+
+Confirmed via `grep` across the whole repo that no other test file referenced the stale `'Route: discover'` string — this was an isolated, single-file break.
+
+Mobile commit: `96771b4` (cavallo-mobile, `main`), 1 file changed (`test/routing/app_router_test.dart`).
+
+### Full regression pass (previously flagged as not run — now run and green)
+- Backend (`docker compose exec web pytest -q`, from `D:\Cavallo\scd-backend`): **771 passed, 1 skipped**, no failures, across the entire suite (not just the two P-062 test files).
+- Mobile (`flutter test`, from `D:\Cavallo\social_commerce_app`): **525/525 passed**, no failures, across the entire suite (not just `test/features/discover/` or `test/routing/`).
+
+### Manual verification (previously flagged as outstanding — now done)
+The Definition of Done's manual Story-expiry check was executed against the real backend: published a Story from a Business account, backdated its expiry, opened Discover with no sweep job run, and confirmed the Story disappeared from `StoriesBarWidget` — query-driven visibility (via `StoryPublicListView`, P-048) holds from Discover's consumption path too, exactly as required. Passed.
+
+### Updated status
+Phase 10 status changes from "COMPLETE (P-059 → P-062 all validated)" to: **COMPLETE — including full-repo regression (771/1-skip backend, 525/525 mobile) and the manual Story-expiry check, both now actually executed rather than flagged as outstanding.**
+
+### Next starting point
+Phase 11 (Search & Filters) begins next, with nothing carried over from Phase 10. Its Search results screen may still want to cross-reference `get_discover_feed()` / `fetch_backfill_tier()` for the same general-content ordering logic, per P-062's own handoff note.
