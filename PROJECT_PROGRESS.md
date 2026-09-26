@@ -8009,3 +8009,53 @@ flutter test
 
 ### Next starting point
 BUGFIX-058 (per-user Like/Comment/Save state) should be triaged before or alongside P-062 (Discover screen), since Discover will reuse the same PostCard/ReelCard/ContentActionRow affected by this bug.
+
+## BUGFIX-058 — Backend + Flutter: Per-User Like/Comment/Save/Share State (fixes cross-account state leakage)
+
+**Status:** ✅ Complete — backend serializer changes + tests pushed (cavallo-app `d6c94eb`), mobile changes + tests pushed (cavallo-mobile `7823eb3`), full mobile suite green (`flutter analyze` clean, `flutter test` 501/501 passed), backend `pytest` confirmed passing, manual two-account verification (including the two-simultaneous-instance scenario) confirmed working.
+
+### Root cause (confirmed by direct code inspection, not guesswork)
+1. **Backend (cavallo-app):** `PostPublicSerializer`/`ReelPublicSerializer` (`content/serializers.py`) exposed no `is_liked`/`is_saved`/`likes_count`/`comments_count`/`shares_count` fields at all, even though `social.models.Like`/`Save` were already correctly per-user (`unique_together = (user, content_type, object_id)`). `likes_count`/`comments_count`/`shares_count` already existed as denormalized fields on `Post`/`Reel` (confirmed via `content/models.py` and migrations `0004_post_likes_count.py`/`0005_reel_likes_count.py`/`0006_post_comments_count.py`) — no new migration was needed, only serialization.
+2. **Mobile (cavallo-mobile):** `ContentActionRow` (`content_action_row.dart`) never called `contentInteractionProvider(key).notifier.seed(...)` at all and never accepted a `PublicPost`/`PublicReel` — it always started at `isLiked: false`/0-counts and was mutated purely by local optimistic `toggleLike()` calls. `contentInteractionProvider`/`businessFollowProvider` (`social_interaction_provider.dart`) were plain `NotifierProvider.family` — not `.autoDispose` — with nothing invalidating them on logout, so a locally-toggled value for one account persisted in memory and leaked to whichever account viewed the same content next in the same running app session.
+- Two-simultaneous-instance investigation result: confirmed via code inspection that the leak is structural (no seed input existed at all on the mobile side, independent of process boundaries) — not merely an artifact of the sequential-login test pattern used during P-061's manual testing.
+
+### What was implemented
+**Backend:**
+- `content/serializers.py`: added `is_liked`/`is_saved` as `SerializerMethodField`s (computed from `self.context['request'].user`, `False` for anonymous) and `likes_count`/`comments_count`/`shares_count` to both `PostPublicSerializer` and `ReelPublicSerializer`. `feed.serializers.FeedItemSerializer` (P-059) fully delegates to these, so the home feed picks up the fix automatically; the business-profile-public endpoint reuses the same `PostPublicListView`/`ReelPublicListView` filtered by `?business_id=`, so it's covered too (no separate "P-029 serializer" exists).
+- `content/tests/test_bugfix_058_per_user_state.py`: two different users against the same Post/Reel see correct, different `is_liked`/`is_saved`; anonymous sees `False`; counters serialize correctly.
+
+**Mobile:**
+- `PublicPost`/`PublicReel` (`public_post_entity.dart`/`public_reel_entity.dart`) and their DTOs (`post_public_response_dto.dart`/`reel_public_response_dto.dart`) extended with `isLiked`/`isSaved`/`likesCount`/`commentsCount`/`sharesCount`/`updatedAt` — all optional with `false`/`0`/`null` defaults so no existing test fixture broke.
+- `ContentActionRow` (`content_action_row.dart`) converted to `ConsumerStatefulWidget`: seeds `contentInteractionProvider` from real per-viewer data via `Future.microtask` (provider state can't be written during build — same precedent as `FollowButton`, P-058) on `initState` and again on `didUpdateWidget` only when the incoming raw values actually changed (re-seed trigger), so a genuinely new fetch (pull-to-refresh, account switch reusing the widget tree) re-seeds while the user's own optimistic toggle is never clobbered. `post_card.dart`/`reel_card.dart`/`post_detail_screen.dart`/`reel_detail_screen.dart` updated to pass the five new fields + `updatedAt` through.
+- `social_interaction_provider.dart`: `contentInteractionProvider` and `businessFollowProvider` both changed to `.autoDispose` families (Riverpod 3.3.2 unifies `Ref`, no separate `AutoDisposeNotifier` type needed — verified against the actual installed version, and against the existing `ModerationQueueNotifier`/`HomeFeedNotifier` `.autoDispose` precedent in this codebase).
+- `session_provider.dart`: `SessionNotifier.logout()`'s `finally` block now also calls `ref.invalidate(contentInteractionProvider)` and `ref.invalidate(businessFollowProvider)` (no key argument — invalidates every live instance of each family at once), guaranteeing immediate correctness even for a still-mounted widget, complementing `.autoDispose`'s eventual-reclaim behavior.
+- Old "KNOWN GAP" docstring in `content_action_row.dart` removed/updated.
+- New tests: `content_action_row_test.dart` — seeded `isLiked: true`/`isSaved: true`/real counts render immediately with zero interaction; re-seed on new per-viewer data for the same `(contentType, objectId)` confirmed via `didUpdateWidget`. `session_provider_test.dart` — provider-level test proving `logout()` force-clears a previously-seeded `contentInteractionProvider` key (not just that invalidation is reachable in theory), then confirms a subsequent `login()` as a different account does not inherit the previous account's value.
+- Unrelated, pre-existing local-only issue found and fixed en route (not part of this bugfix's actual scope): `lib/features/content/domain/reel_entity.dart` on Ahmed's local machine differed from the clean GitHub version (missing `Reel`/`ReelProcessingStatus`), causing 39 unrelated `flutter analyze` errors; replaced with the clean GitHub copy to unblock validation of the BUGFIX-058 changes themselves.
+
+### Files modified
+- Backend: `content/serializers.py`
+- Backend — new: `content/tests/test_bugfix_058_per_user_state.py`
+- Mobile: `lib/features/content/domain/public_post_entity.dart`, `public_reel_entity.dart`, `lib/features/content/data/dtos/post_public_response_dto.dart`, `reel_public_response_dto.dart`, `lib/features/social/presentation/content_action_row.dart`, `social_interaction_provider.dart`, `lib/features/content/presentation/post_card.dart`, `reel_card.dart`, `post_detail_screen.dart`, `reel_detail_screen.dart`, `lib/features/auth/presentation/session_provider.dart`
+- Mobile — tests modified: `test/features/social/content_action_row_test.dart`, `test/features/auth/presentation/session_provider_test.dart`
+- Mobile — unrelated local fix: `lib/features/content/domain/reel_entity.dart` (restored to clean GitHub content)
+
+### Commands to reproduce validation
+```powershell
+# Backend, from D:\Cavallo\scd-backend
+docker compose exec web pytest content/tests/test_bugfix_058_per_user_state.py -v
+docker compose exec web pytest -q
+
+# Mobile, from D:\Cavallo\social_commerce_app
+flutter analyze
+flutter test
+```
+
+### Verification results
+- `flutter analyze` → No issues found.
+- `flutter test` → 501/501 passed (full suite, including the new BUGFIX-058 tests and every pre-existing test).
+- Backend `pytest` → confirmed passing by Ahmed on the real machine (Postgres/Redis via docker compose; not runnable in the authoring sandbox, same constraint noted on prior parts).
+- Manual verification: two real customer accounts, two simultaneously-running separate app instances, viewing the same post — each account showed only its own Like/Save state and accurate counts immediately on load, no toggle required. Logging out of one account and into a different one within the same running app instance showed the new account's correct state for previously-viewed content, not the prior account's locally-toggled state.
+
+### Next starting point
+**P-062 (Discover screen)** — was explicitly blocked on this bugfix per P-061's Progress note, since it reuses the same PostCard/ReelCard/ContentActionRow. Can now proceed; re-run its own manual testing using the two-simultaneous-instance method by default, since it inherits the same seeding/reseed/autoDispose fix.
