@@ -26,6 +26,8 @@ accounts.User - per the architecture's ER diagram (Section 9) and the
 convention P-024 established for every content model.
 """
 
+from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVectorField
 from django.db import models
 
 from core.models import SoftDeleteModel, TimestampedModel
@@ -134,6 +136,12 @@ class Product(TimestampedModel, SoftDeleteModel):
     # presentation slide 16) - distinct from is_deleted, which is the
     # generic soft-delete flag inherited from SoftDeleteModel.
     is_active = models.BooleanField(default=True)
+    # Part P-063 (Phase 11, ADR-003): denormalized full-text search
+    # vector over name + description. Kept in sync exclusively by
+    # search/signals.py's post_save handler (STEP 3) via a direct
+    # .update() on the queryset - never written to from model code,
+    # a serializer, or a view. Null until the first save/signal run.
+    search_vector = SearchVectorField(null=True, blank=True)
 
     class Meta:
         verbose_name = "Product"
@@ -148,6 +156,11 @@ class Product(TimestampedModel, SoftDeleteModel):
                 fields=["category", "business"],
                 name="products_category_business",
             ),
+            # Part P-063: GIN index over search_vector, per architecture
+            # Section 9's indexing guidance for Postgres full-text
+            # search columns. Required for SearchQuery lookups against
+            # this table to be fast rather than a sequential scan.
+            GinIndex(fields=["search_vector"], name="products_search_vector_gin"),
         ]
 
     def __str__(self):

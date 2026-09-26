@@ -11,6 +11,7 @@ condition could never actually manifest in the test.
 
 import inspect
 import threading
+from uuid import uuid4
 
 import pytest
 from django.urls import reverse
@@ -34,7 +35,7 @@ def _make_user(account_type: str, email: str) -> User:
 
 
 def _make_business() -> BusinessProfile:
-    owner = _make_user("business", f"p052-owner-{id(object())}@example.com")
+    owner = _make_user("business", f"p052-owner-{uuid4().hex[:12]}@example.com")
     return BusinessProfile.objects.create(
         user=owner,
         business_name="Acme Trading",

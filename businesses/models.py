@@ -27,6 +27,8 @@ directly instead of duplicating the raw strings.
 """
 
 from django.conf import settings
+from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVectorField
 from django.db import models
 
 from core.models import SoftDeleteModel, TimestampedModel
@@ -106,10 +108,23 @@ class BusinessProfile(TimestampedModel, SoftDeleteModel):
     # clears it). It deliberately lives here, NOT duplicated on
     # Post/Reel: feed queries resolve it through `business__is_featured`.
     is_featured = models.BooleanField(default=False)
+    # Part P-063 (Phase 11, ADR-003): denormalized full-text search
+    # vector over business_name + description. Kept in sync exclusively
+    # by search/signals.py's post_save handler (STEP 3) via a direct
+    # .update() on the queryset - never written to from model code, a
+    # serializer, or a view. Null until the first save/signal run.
+    search_vector = SearchVectorField(null=True)
 
     class Meta:
         verbose_name = "Business Profile"
         verbose_name_plural = "Business Profiles"
+        indexes = [
+            # Part P-063: GIN index over search_vector, per architecture
+            # Section 9's indexing guidance for Postgres full-text
+            # search columns. Required for SearchQuery lookups against
+            # this table to be fast rather than a sequential scan.
+            GinIndex(fields=["search_vector"], name="business_search_vector_gin"),
+        ]
 
     def __str__(self):
         return self.business_name

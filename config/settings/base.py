@@ -71,6 +71,8 @@ INSTALLED_APPS = [
     "social",
     "reports",
     "feed",  # Part P-059: model-less Home Feed query/aggregation layer.
+    "search",  # Part P-063: Postgres full-text search infra (ADR-003).
+
 
 ]
 
