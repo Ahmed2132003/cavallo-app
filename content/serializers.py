@@ -4,6 +4,38 @@ from rest_framework import serializers
 from content.models import Post, Reel
 from core.media import validate_upload
 from moderation.models import ModerationLog, ModerationQueue
+from social.models import Like, Save
+
+
+def _get_is_liked(obj, context):
+    """
+    Part BUGFIX-058. True iff request.user has an active Like row on
+    this object. Returns False for an unauthenticated/anonymous
+    request rather than querying with a null user — the public
+    endpoints this serializer backs (PostPublicListView,
+    ReelPublicListView, and the home feed via FeedItemSerializer) are
+    reachable without auth, and must not leak or error in that case.
+    """
+    request = context.get("request")
+    user = getattr(request, "user", None)
+    if user is None or not user.is_authenticated:
+        return False
+    content_type = ContentType.objects.get_for_model(obj.__class__)
+    return Like.objects.filter(
+        user=user, content_type=content_type, object_id=obj.pk
+    ).exists()
+
+
+def _get_is_saved(obj, context):
+    """Part BUGFIX-058. Same shape as _get_is_liked, for social.models.Save."""
+    request = context.get("request")
+    user = getattr(request, "user", None)
+    if user is None or not user.is_authenticated:
+        return False
+    content_type = ContentType.objects.get_for_model(obj.__class__)
+    return Save.objects.filter(
+        user=user, content_type=content_type, object_id=obj.pk
+    ).exists()
 
 
 def _get_rejection_reason(obj):
@@ -168,7 +200,17 @@ class PostPublicSerializer(serializers.ModelSerializer):
     Post.published_objects), so re-exposing that field here would only
     ever show one constant value while creating a place a future
     moderation-metadata field could leak through by accident.
+
+    Part BUGFIX-058: adds `is_liked`/`is_saved` (per-request-user,
+    SerializerMethodField, False when unauthenticated) and
+    `likes_count`/`comments_count`/`shares_count` (the existing
+    denormalized counters already on the Post model -- no migration
+    needed). Fixes the cross-account like/save state leak documented
+    in cavallo-mobile's ContentActionRow "KNOWN GAP".
     """
+
+    is_liked = serializers.SerializerMethodField()
+    is_saved = serializers.SerializerMethodField()
 
     class Meta:
         model = Post
@@ -177,10 +219,21 @@ class PostPublicSerializer(serializers.ModelSerializer):
             "business",
             "caption",
             "image",
+            "likes_count",
+            "comments_count",
+            "shares_count",
+            "is_liked",
+            "is_saved",
             "created_at",
             "updated_at",
         )
         read_only_fields = fields
+
+    def get_is_liked(self, obj):
+        return _get_is_liked(obj, self.context)
+
+    def get_is_saved(self, obj):
+        return _get_is_saved(obj, self.context)
 
 
 class ReelPublicSerializer(serializers.ModelSerializer):
@@ -196,7 +249,17 @@ class ReelPublicSerializer(serializers.ModelSerializer):
     `status` — it would only ever show one constant value here while
     needlessly exposing an internal pipeline-state field to an
     unauthenticated caller.
+
+    Part BUGFIX-058: adds `is_liked`/`is_saved` (per-request-user,
+    SerializerMethodField, False when unauthenticated) and
+    `likes_count`/`comments_count`/`shares_count` (the existing
+    denormalized counters already on the Reel model -- no migration
+    needed). Fixes the cross-account like/save state leak documented
+    in cavallo-mobile's ContentActionRow "KNOWN GAP".
     """
+
+    is_liked = serializers.SerializerMethodField()
+    is_saved = serializers.SerializerMethodField()
 
     class Meta:
         model = Reel
@@ -207,7 +270,18 @@ class ReelPublicSerializer(serializers.ModelSerializer):
             "video",
             "thumbnail",
             "duration_seconds",
+            "likes_count",
+            "comments_count",
+            "shares_count",
+            "is_liked",
+            "is_saved",
             "created_at",
             "updated_at",
         )
         read_only_fields = fields
+
+    def get_is_liked(self, obj):
+        return _get_is_liked(obj, self.context)
+
+    def get_is_saved(self, obj):
+        return _get_is_saved(obj, self.context)
