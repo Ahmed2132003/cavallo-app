@@ -46,6 +46,12 @@ urlpatterns = [
     # inside `businesses`. No pattern collision: businesses.urls only
     # declares "me/" and "<int:pk>/", never "<int:pk>/follow/".
     path("api/v1/businesses/", include("social.urls")),
+    # Part P-109: rate/ratings — a third include under the SAME
+    # api/v1/businesses/ prefix as the two lines above, since Rating
+    # lives in its own `ratings` app rather than inside `businesses`
+    # or `social`. No pattern collision: businesses.urls only declares
+    # "me/" and "<int:pk>/", social.urls only "<int:pk>/follow/".
+    path("api/v1/businesses/", include("ratings.urls")),
     path("api/v1/customers/", include("businesses.customer_urls")),
     # Part P-032: second real application of P-026's IDOR-prevention
     # pattern, this time against a many-owned-resources relationship

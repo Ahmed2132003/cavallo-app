@@ -72,6 +72,7 @@ INSTALLED_APPS = [
     "reports",
     "feed",  # Part P-059: model-less Home Feed query/aggregation layer.
     "search",  # Part P-063: Postgres full-text search infra (ADR-003).
+    "ratings",  # Part P-109: Rating model + average_rating/ratings_count.
 
 
 ]

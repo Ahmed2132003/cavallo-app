@@ -114,6 +114,21 @@ class BusinessProfile(TimestampedModel, SoftDeleteModel):
     # .update() on the queryset - never written to from model code, a
     # serializer, or a view. Null until the first save/signal run.
     search_vector = SearchVectorField(null=True, blank=True)
+    # Part P-109 (Phase 11, out-of-sequence ID - see that part's own
+    # docstring for why): denormalized rating aggregate, per
+    # architecture Section 5 rule 4 (never COUNT()/AVG() a live table
+    # on read). ONLY ever written by ratings.services.rate_business()
+    # via BusinessProfile.objects.filter(pk=...).update(...), recomputed
+    # fresh from the Rating table on every rate/update - never an
+    # F()-increment (an upsert's average doesn't compose with a simple
+    # increment; see that service's own docstring). default=0 for both
+    # so an unrated business reads as "0.00, 0 reviews" rather than
+    # null. Exact field names locked for P-064's search filter to
+    # consume.
+    average_rating = models.DecimalField(
+        max_digits=3, decimal_places=2, default=0
+    )
+    ratings_count = models.PositiveIntegerField(default=0)
 
     class Meta:
         verbose_name = "Business Profile"
