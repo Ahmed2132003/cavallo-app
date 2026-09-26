@@ -113,7 +113,7 @@ class BusinessProfile(TimestampedModel, SoftDeleteModel):
     # by search/signals.py's post_save handler (STEP 3) via a direct
     # .update() on the queryset - never written to from model code, a
     # serializer, or a view. Null until the first save/signal run.
-    search_vector = SearchVectorField(null=True)
+    search_vector = SearchVectorField(null=True, blank=True)
 
     class Meta:
         verbose_name = "Business Profile"
