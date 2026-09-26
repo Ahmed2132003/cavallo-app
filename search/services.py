@@ -19,11 +19,9 @@ Architecture rules
   assumption, and explicitly flagged as a carry-forward note at the
   end of P-109's progress entry). Those two filters reach Product only
   through `business__country` / `business__city`.
-- Per this part's own Detailed Implementation section: `category`
-  filters Product only (BusinessProfile also has its own `category`
-  FK from P-026, but the part text does not list `category` among the
-  filters that apply to BusinessProfile — flagged in this part's
-  handoff, not silently assumed either way).
+- `category` filters BOTH BusinessProfile and Product (revised in
+  STEP 2 — see build_business_queryset()'s own docstring for why the
+  original "Product-only" reading was reversed).
 - `min_price`/`max_price` filter `Product.price` only, and are never
   named or documented anywhere as anything resembling a transactional
   range (Section 20 / P-031's own convention).
@@ -165,9 +163,15 @@ def _rows_after(is_featured_field: str, secondary_field: str, *, content_type: s
 
 def build_business_queryset(filters: SearchFilters) -> QuerySet:
     """BusinessProfile rows matching every present filter that applies
-    to businesses. `category` is deliberately NOT applied here — see
-    module docstring."""
+    to businesses. `category` DOES apply here (revised decision, STEP
+    2): BusinessProfile carries its own `category` FK (P-026) and no
+    later part in the master plan (checked P-065 through P-093) ever
+    adds business-side category filtering to Search, so leaving it
+    out now would mean it never gets added at all — see this part's
+    own handoff note."""
     qs = BusinessProfile.objects.all()
+    if filters.category_id is not None:
+        qs = qs.filter(category_id=filters.category_id)
     if filters.country:
         qs = qs.filter(country=filters.country)
     if filters.city:

@@ -98,4 +98,8 @@ urlpatterns = [
     # likes/saves/comments/shares above, since the feed isn't
     # business-scoped.
     path("api/v1/feed/", include("feed.urls")),
+    # Part P-064: Search — own top-level prefix, same shape as
+    # feed/ above, since search spans both BusinessProfile and
+    # Product and isn't business-scoped.
+    path("api/v1/search/", include("search.urls")),
 ]
