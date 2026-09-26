@@ -8088,3 +8088,98 @@ Phase 10 status changes from "COMPLETE (P-059 → P-062 all validated)" to: **CO
 
 ### Next starting point
 Phase 11 (Search & Filters) begins next, with nothing carried over from Phase 10. Its Search results screen may still want to cross-reference `get_discover_feed()` / `fetch_backfill_tier()` for the same general-content ordering logic, per P-062's own handoff note.
+
+PROGRESS UPDATE
+
+Add this section after: "Part P-062 — CLOSEOUT" (or after whichever
+entry is currently last)
+
+## Part P-063 — search App: Postgres Full-Text Setup (ADR-003) — COMPLETE
+
+**Status:** ✅ Fully closed. All Definition of Done items met.
+
+### What was implemented
+- New `search` Django app (top-level, no `apps/` package — matches repo
+  convention), registered in `config/settings/base.py`'s
+  `INSTALLED_APPS` after `"feed"`. The app owns no models of its own;
+  it exists as the logical home for P-064's upcoming search endpoint.
+- `Product.search_vector` (SearchVectorField, null=True, blank=True)
+  indexing `name` + `description`, with `GinIndex(name="products_search_vector_gin")`
+  in `Product.Meta.indexes`.
+- `BusinessProfile.search_vector` (SearchVectorField, null=True, blank=True)
+  indexing `business_name` + `description`, with
+  `GinIndex(name="business_search_vector_gin")` — BusinessProfile.Meta
+  had no `indexes` list before this part; one was added.
+- `search/signals.py`: `post_save` receivers (`sender=Product` /
+  `sender=BusinessProfile`, matching `categories/signals.py`'s
+  precedent) that recompute `SearchVector(...)` and write it via
+  `<Model>.objects.filter(pk=instance.pk).update(search_vector=...)`
+  — deliberately never `instance.save()`, since `.update()` does not
+  emit `post_save` and therefore cannot recurse. Wired via
+  `search/apps.py`'s `ready()`.
+
+### Files created
+- `search/__init__.py`, `search/apps.py`, `search/signals.py`
+- `search/tests/__init__.py`, `search/tests/test_signals.py`
+- `products/migrations/0003_product_search_vector_and_more.py`
+- `products/migrations/0004_alter_product_search_vector.py`
+- `businesses/migrations/0006_businessprofile_search_vector_and_more.py`
+- `businesses/migrations/0007_alter_businessprofile_search_vector.py`
+
+### Files modified
+- `products/models.py`, `businesses/models.py`, `config/settings/base.py`
+- `social/tests/test_api.py` — unrelated pre-existing bug fixed along
+  the way (see below)
+
+### Exact indexed field names (for P-064 to query against)
+- Product: `name`, `description` → `search_vector`
+- BusinessProfile: `business_name`, `description` → `search_vector`
+
+### Architecture decisions
+- Signal-based sync (not a Postgres trigger) — simpler to reason
+  about, sufficient for MVP scale, matches this part's spec.
+- `.update()`-on-queryset is the ONLY sanctioned way to write
+  `search_vector` — never `instance.save()` from within the signal,
+  never from a serializer/view. Future parts must not bypass this.
+
+### Bugs found and fixed during this part (not scope creep — required for a clean close)
+1. `search_vector = SearchVectorField(null=True)` on both models was
+   missing `blank=True`, which broke `full_clean()` on any instance
+   whose `search_vector` hadn't been refreshed after the signal ran
+   (caught by `products/tests/test_models.py`'s existing currency
+   test). Fixed on both models via a follow-up `AlterField` migration
+   on each (`0004` for products, `0007` for businesses) — no real
+   `ALTER TABLE`, `blank` is validation-only.
+2. Pre-existing flaky test bug in `social/tests/test_api.py` (dates to
+   P-052, unrelated to P-063): `_make_business()` built a "unique"
+   email via `id(object())`, which CPython can reuse across freed
+   objects, causing rare `UniqueViolation` collisions on
+   `accounts_user_username_key`. Fixed to match the `uuid4().hex[:12]`
+   convention already used in this same app's `test_models.py` /
+   `test_services.py`.
+
+### Commands
+```bash
+docker compose exec web python manage.py migrate
+docker compose exec web python manage.py check
+docker compose exec web pytest -q
+```
+
+### Tests
+`search/tests/test_signals.py` (9 tests) + full-suite regression.
+Final confirmed result: 780 passed, 1 skipped, 0 failed.
+
+### Verification results
+`sqlmigrate` confirmed `ADD COLUMN "search_vector" tsvector NULL` +
+`CREATE INDEX ... USING gin (...)` for both models; `pg_indexes`
+confirmed both index names exist in the live database.
+
+### GitHub references
+Commits on `cavallo-app` (`main`): `6758880` (main implementation),
+`e140970` (BusinessProfile blank=True follow-up fix).
+
+### Next starting point
+**P-064 — Search endpoint with filters**, consuming the now-ready
+`search_vector` infrastructure on both models. Query the exact field
+names above; no fuzzy/typo-tolerant matching is required for MVP
+(explicitly out of scope per ADR-003).
