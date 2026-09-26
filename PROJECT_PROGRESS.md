@@ -8289,3 +8289,154 @@ has no `country`/`city` fields of its own — that filter must join
 through `product.business.country` / `product.business.city`, not a
 direct `Product` field, contrary to the original part text's
 assumption.
+
+## P-065 — Flutter: Search Screen + Filter UI — COMPLETE
+
+**Status:** COMPLETE (automated + full manual verification against real backend)
+
+**Mobile repo:** `cavallo-mobile` @ `331f55b` (main)
+**flutter analyze:** 0 issues
+**flutter test:** all passing (28 in `test/features/search/`, 15 in `test/features/feed/`)
+
+**What was implemented:**
+- Domain: `SearchFilters` (8 independently-combinable fields: categoryId,
+  country, city, businessType, minRating, featuredOnly, minPrice,
+  maxPrice), `SearchResult` sealed type (Business/Product variants,
+  wrapping full existing entities — no flattened duplicate), `SearchPage`
+  (`{items, nextCursor}` shape matching P-064's real cursor-pagination
+  contract, NOT the standard `PaginatedResponse<T>`), `SearchRepository`
+  contract.
+- Data: `SearchRepositoryImpl` calling `GET /api/v1/search/` (P-064),
+  confirmed against the real `search/views.py`/`services.py` on
+  `cavallo-app` main (not assumed from the spec).
+- Presentation state: `SearchNotifier`/`searchProvider`
+  (`AsyncNotifier<SearchState>`, `autoDispose`, retry disabled — same
+  pattern as `HomeFeedNotifier`). Screen starts IDLE (zero network call
+  on open) — `SearchState.hasSearched` distinguishes "not searched yet"
+  from "searched, zero results." `search()` always does a full reset;
+  `loadMore()` appends using the currently-loaded q/filters pair.
+- UI: `SearchScreen` (400ms debounce on the text field via `Timer`,
+  filter icon in the AppBar opens `SearchFilterPanel` as a modal bottom
+  sheet, `ListView.builder` with 80%-scroll-threshold infinite scroll —
+  same convention as `HomeFeedScreen`/`DiscoverScreen`). `Retry` re-calls
+  `search()` with the screen's own remembered query/filters (NOT
+  `ref.invalidate`, since `build()` fetches nothing here).
+  `SearchFilterPanel` (category dropdown reusing `categoryTreeProvider`
+  with a private duplicated `_flattenCategories` matching
+  `product_form_screen.dart`'s pattern, country/city `AppTextField`s,
+  Trader/Factory/Either `ChoiceChip`s, minimum-rating dropdown,
+  featured-only switch; pops `SearchFilters` on Apply, a fresh
+  `const SearchFilters()` on Clear, `null` if dismissed — caller keeps
+  current filters on `null`). `SearchResultCard` (business row: name,
+  verified badge, type + city/country, follower count — no rating/logo,
+  since `BusinessProfile` doesn't carry those fields yet, flagged not
+  silently faked; product row: thumbnail, name, and price rendered
+  ONLY through the existing `ProductPriceFraming` widget from P-034,
+  zero re-implementation of that copy).
+
+**Files created:**
+- `lib/features/search/domain/search_filters.dart`
+- `lib/features/search/domain/search_result_entity.dart`
+- `lib/features/search/domain/search_page_entity.dart`
+- `lib/features/search/domain/search_repository.dart`
+- `lib/features/search/data/search_repository_impl.dart`
+- `lib/features/search/presentation/search_provider.dart`
+- `lib/features/search/presentation/search_result_card.dart`
+- `lib/features/search/presentation/search_filter_panel.dart`
+- `test/features/search/domain/search_filters_test.dart`
+- `test/features/search/domain/search_result_entity_test.dart`
+- `test/features/search/data/search_repository_test.dart`
+- `test/features/search/presentation/search_provider_test.dart`
+- `test/features/search/presentation/search_result_card_test.dart`
+- `test/features/search/presentation/search_filter_panel_test.dart`
+- `test/features/search/presentation/search_screen_test.dart`
+
+**Files modified:**
+- `lib/features/search/presentation/search_screen.dart` (full replacement
+  of the P-007 placeholder)
+- `lib/features/feed/presentation/home_feed_screen.dart` (see "Known
+  issues" below — a temporary, explicitly-flagged addition, not part of
+  P-065's own scope)
+- `lib/routing/app_router.dart` needed NO changes — its existing
+  `/search` `GoRoute` already pointed at `const SearchScreen()` with no
+  constructor args.
+
+**Implementation note — `DropdownButtonFormField` API:** this project's
+pinned Flutter SDK (`>=3.27.0`) predates the `initialValue` rename on
+`DropdownButtonFormField` — use `value:`, not `initialValue:`, on this
+SDK. Both dropdowns in `SearchFilterPanel` use `value:`.
+
+**Commands:** `flutter analyze` (0 issues), `flutter test
+test/features/search/` (28 passed), `flutter test test/features/feed/`
+(15 passed, unaffected by the debug-menu addition).
+
+**Tests:** Full automated suite (domain, data, provider, result card,
+filter panel, screen — debounce timing, combined-filter dispatch,
+price-framing text assertion) all passing. Full manual 15-step
+verification against the real running backend also completed and
+passed: idle state, debounce, zero-results state, mixed business/product
+results, price-framing display, navigation into the real business
+profile and product detail screens, filter panel open/apply/clear
+(single and combined filters, combined with a text query too),
+infinite scroll, the search field's own clear button, and the
+error/retry path.
+
+**Architecture decisions:**
+- Search state does NOT fetch on `build()` (unlike `HomeFeedNotifier`) —
+  deliberate, since Search has nothing to show until the user acts.
+- Filter panel is a modal bottom sheet — no prior filter-UI precedent
+  existed in this project to follow; this is the new one going forward.
+- `SearchFilters.businessType`/`minRating`/`minPrice`/`maxPrice` are
+  kept as raw wire strings, not typed enums/decimals — matches
+  `Product.price`'s own existing precedent (avoid a decimal round-trip
+  through a binary float; avoid a client-side enum the backend doesn't
+  itself expose as one).
+
+**Known issues / gap discovered during manual testing (real, project-wide,
+NOT specific to P-065):**
+There is currently NO Bottom Navigation Bar / Tab Bar / Shell / Drawer
+anywhere in the Flutter app connecting Home → Discover → Search →
+Chat → Notifications → Profile. Confirmed by reading `app_router.dart`
+(flat `GoRoute` list, no `ShellRoute`) and `home_feed_screen.dart`
+(its only `AppBar` action is a `_DebugMenu` overflow whose original
+entries were: Edit business profile, Business Console, Moderation
+queue, View Story, Logout — none led to Search or Discover, even
+though both screens' backends/UIs are fully built as of P-062 and
+P-065). This is NOT something P-065 (or P-062) was ever scoped to
+fix — both parts were scoped only to build their own screen, not app-
+wide navigation.
+
+As a TEMPORARY, explicitly-flagged workaround (added during P-065's
+own manual verification, so the acceptance criteria above could
+actually be tested), two debug-only entries were added to the
+already-existing `_DebugMenu` in `home_feed_screen.dart`:
+`'Search (debug — no nav entry point yet)'` →
+`context.pushNamed(RouteNames.search)`, and
+`'Discover (debug — no nav entry point yet)'` →
+`context.pushNamed(RouteNames.discover)`. These should be REMOVED
+once a real navigation shell exists.
+
+**Recommended next Part (before or alongside Phase 12):** a dedicated
+"Flutter: Main Navigation Shell (Bottom Nav Bar)" part — Home, Discover,
+Search, Chat, Notifications/Profile as persistent tabs via `ShellRoute`
+— since this gap affects the whole app, not one feature, and currently
+blocks any real user (not just a developer using the debug menu) from
+ever reaching Search or Discover at all.
+
+**GitHub reference:** `cavallo-mobile` commits `fa999dd` (STEP 1/2),
+then STEP 3/4 work, then `e06cbbb` (initial STEP 4 push — contained one
+empty file, `search_filter_panel.dart`), then `331f55b` (fixes: filled
+`search_filter_panel.dart`, `value:` vs `initialValue:` for this SDK,
+removed unused test helper/import, added the temporary debug-menu
+entries) — `331f55b` is the final, fully-validated state.
+
+**Exact next starting point:** Phase 11 is now fully closed (P-007,
+P-063, P-064, P-065 all genuinely validated — confirm P-063 and the
+P-007 dependency chain's own status in this same file before flipping
+the Phase 11 completion line, since this session did not re-verify
+those two independently). Phase 12 (Chat & Realtime Reliability) can
+begin — per P-065's own handoff note, chat is open between any two
+accounts, not restricted to Customer-Business pairs. Strongly consider
+inserting the Main Navigation Shell part described above before or
+alongside Phase 12, since Phase 12's own chat screens will hit the
+exact same "no way to navigate here" gap otherwise.
