@@ -8901,3 +8901,98 @@ patched over, by re-running the full lint + test suite after the fix.
   own channel from receiving it back).
 
 **PART P-070 is CLOSED.**
+
+### P-071 — Typing Indicator (WS-Only, Never Persisted)
+
+Status: DONE ✅ (both STEPs)
+
+STEP 1 (Broadcast + receive dispatch):
+- ChatConsumer.receive() dispatches an incoming `{"type": "typing",
+  "is_typing": true|false}` frame to a new `_handle_typing()` method,
+  added right after the existing heartbeat check and before the
+  P-069 ack dispatch table.
+- `_handle_typing()` validates `is_typing` is a real bool (a missing
+  value or a non-bool, e.g. a string, is silently ignored — same
+  "malformed frame -> no-op" contract the rest of this consumer
+  already follows) and, if valid, calls `channel_layer.group_send()`
+  with a `typing.indicator` event carrying `is_typing` and this
+  connection's own `self.channel_name` as `sender_channel_name`.
+- New `typing_indicator()` group-send handler compares
+  `event["sender_channel_name"]` to its own `self.channel_name` and
+  returns without forwarding if they match — this is what excludes
+  the sender from receiving their own typing broadcast back. Every
+  other consumer in the group forwards `{"is_typing": ...}` to its
+  own connected client.
+- Zero database access anywhere in this path — no model write, no
+  cache entry, no Celery task — matching this part's explicit,
+  permanent (not "for now") zero-persistence Architecture Rule.
+
+STEP 2 (Tests + zero-persistence verification):
+- 4 new tests added to `chat/test_consumers.py`:
+  - `test_typing_event_reaches_other_participant_not_sender` — the
+    other participant's communicator receives the broadcast; the
+    sender's own communicator receives nothing (`receive_nothing()`).
+  - `test_typing_stopped_event_also_reaches_other_participant` —
+    `is_typing: false` broadcasts just as faithfully as `true` (guards
+    against a falsy-value bug that would silently swallow the "stopped
+    typing" case).
+  - `test_malformed_typing_event_is_silently_ignored` — a non-bool
+    `is_typing` and a frame missing it entirely both produce no
+    broadcast to either side.
+  - `test_typing_events_never_persist_anything` — a direct DB-state
+    check (`_chat_row_counts()` helper) snapshotting
+    `Conversation`/`ConversationParticipant`/`Message` row counts
+    before and after several typing events from both participants;
+    asserts the counts are identical.
+
+Architecture decisions: none beyond what P-071's own spec already
+locked in — no new event names, no new model, no deviation from the
+existing dotted `"type"` group-send convention P-068/P-069 established.
+
+Files created: none.
+
+Files modified:
+- `chat/consumers.py` — `_handle_typing()` + `typing_indicator()` added,
+  one new dispatch branch in `receive()`.
+- `chat/test_consumers.py` — 4 new tests + `_chat_row_counts()` helper
+  (Part P-071 section, appended after the P-070 presence tests).
+
+Commands run (Windows, docker compose, from D:\Cavallo\scd-backend):
+```bash
+docker compose up -d db redis
+docker compose run --rm web pytest chat/test_consumers.py -k p071 -v
+docker compose run --rm web pytest chat/ -v
+docker compose run --rm web pytest -v
+docker compose down
+```
+
+Tests / Verification results (actually run and confirmed):
+- `chat/ -v` — **24/24 passed**, including all 4 new P-071 tests, no
+  regressions in P-067/P-068/P-069/P-070.
+- `pytest -v` (full suite) — **841 passed, 1 skipped**, 634.02s. One
+  pre-existing, unrelated `PytestWarning` on test-DB teardown
+  contention (`reports/tests/test_throttles.py`), not a P-071 issue.
+- Zero-persistence claim: **explicitly verified**, not assumed —
+  `test_typing_events_never_persist_anything` passed, confirming row
+  counts across all three chat tables were identical before and after
+  several typing events.
+
+Known issues: none.
+
+### GitHub references
+- Repo: https://github.com/Ahmed2132003/cavallo-app (branch: `main`)
+- Commit: `656288b` — "P-071: Typing Indicator (WS-Only, Never
+  Persisted)", pushed `9202774..656288b main -> main`.
+
+### Remaining work / exact next starting point
+- P-074 (Flutter) is the documented consumer of this part's output —
+  renders the "X is typing..." indicator off the `{"is_typing": ...}`
+  broadcast shape locked in above. Not started here.
+- P-072 (offline delivery) and P-073 (Flutter connection manager,
+  heartbeat) remain their own separate parts per prior Handoff Notes.
+- Next part in sequence should work from commit `656288b` on `main`.
+  `chat/consumers.py` at this commit has the full P-067→P-071
+  connect/disconnect/receive() structure (auth, participant check,
+  message broadcast, delivery/read acks, presence, typing) in place.
+
+**PART P-071 is CLOSED.**
