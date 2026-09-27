@@ -86,6 +86,7 @@ INSTALLED_APPS = [
     "search",  # Part P-063: Postgres full-text search infra (ADR-003).
     "ratings",  # Part P-109: Rating model + average_rating/ratings_count.
     "chat",
+    "notifications",  # Part P-072 (early stub): send_push_notification() seam.
 ]
 
 # ---------------------------------------------------------------------------

@@ -188,3 +188,189 @@ def test_send_message_persists_even_when_broadcast_fails():
         sender=user_a,
         text="still here even if broadcast dies",
     ).exists()
+
+def test_send_message_dispatches_notification_when_recipient_offline():
+    user_a = create_user("offline_test_sender", "customer")
+    user_b = create_user("offline_test_receiver", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    url = reverse(
+        "chat:conversation-messages", kwargs={"conversation_id": conversation.id}
+    )
+
+    # user_b مفيش presence key ليه في الـ cache خالص = يعتبر offline.
+    with patch("chat.views.notify_offline_recipient.delay") as mock_delay:
+        response = client.post(url, {"text": "are you there?"}, format="json")
+
+    assert response.status_code == status.HTTP_201_CREATED
+    message_id = response.data["id"]
+    mock_delay.assert_called_once_with(message_id)
+
+
+def test_send_message_does_not_dispatch_notification_when_recipient_online():
+    from django.core.cache import cache
+    from chat.consumers import presence_cache_key
+
+    user_a = create_user("online_test_sender", "customer")
+    user_b = create_user("online_test_receiver", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+
+    cache.set(presence_cache_key(user_b.id), True, 60)
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    url = reverse(
+        "chat:conversation-messages", kwargs={"conversation_id": conversation.id}
+    )
+
+    with patch("chat.views.notify_offline_recipient.delay") as mock_delay:
+        response = client.post(url, {"text": "no push needed"}, format="json")
+
+    assert response.status_code == status.HTTP_201_CREATED
+    mock_delay.assert_not_called()
+
+    cache.delete(presence_cache_key(user_b.id))
+    
+def test_fetch_since_returns_exactly_messages_after_cursor_ordered():
+    user_a = create_user("fetch_since_a", "customer")
+    user_b = create_user("fetch_since_b", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+
+    msg1 = Message.objects.create(conversation=conversation, sender=user_a, text="one")
+    msg2 = Message.objects.create(conversation=conversation, sender=user_b, text="two")
+    msg3 = Message.objects.create(conversation=conversation, sender=user_a, text="three")
+
+    client = APIClient()
+    client.force_authenticate(user=user_b)
+
+    url = reverse(
+        "chat:conversation-messages", kwargs={"conversation_id": conversation.id}
+    )
+    response = client.get(url, {"since": msg1.id})
+
+    assert response.status_code == status.HTTP_200_OK
+    returned_ids = [item["id"] for item in response.data]
+    assert returned_ids == [msg2.id, msg3.id]  # ordered chronologically, exact set
+
+
+def test_fetch_since_returns_empty_list_when_nothing_missed():
+    user_a = create_user("fetch_since_empty_a", "customer")
+    user_b = create_user("fetch_since_empty_b", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+
+    msg1 = Message.objects.create(conversation=conversation, sender=user_a, text="only")
+
+    client = APIClient()
+    client.force_authenticate(user=user_b)
+
+    url = reverse(
+        "chat:conversation-messages", kwargs={"conversation_id": conversation.id}
+    )
+    response = client.get(url, {"since": msg1.id})
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data == []
+
+
+def test_fetch_since_rejects_non_participant_with_403():
+    user_a = create_user("fetch_since_perm_a", "customer")
+    user_b = create_user("fetch_since_perm_b", "customer")
+    outsider = create_user("fetch_since_outsider", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+    msg1 = Message.objects.create(conversation=conversation, sender=user_a, text="hi")
+
+    client = APIClient()
+    client.force_authenticate(user=outsider)
+
+    url = reverse(
+        "chat:conversation-messages", kwargs={"conversation_id": conversation.id}
+    )
+    response = client.get(url, {"since": msg1.id})
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+
+
+def test_fetch_since_returns_404_for_unknown_conversation():
+    user_a = create_user("fetch_since_404", "customer")
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    url = reverse("chat:conversation-messages", kwargs={"conversation_id": 999999})
+    response = client.get(url, {"since": 0})
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_fetch_since_requires_since_param():
+    user_a = create_user("fetch_since_missing_a", "customer")
+    user_b = create_user("fetch_since_missing_b", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    url = reverse(
+        "chat:conversation-messages", kwargs={"conversation_id": conversation.id}
+    )
+    response = client.get(url)
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
+def test_fetch_since_rejects_non_integer_since():
+    user_a = create_user("fetch_since_bad_a", "customer")
+    user_b = create_user("fetch_since_bad_b", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    url = reverse(
+        "chat:conversation-messages", kwargs={"conversation_id": conversation.id}
+    )
+    response = client.get(url, {"since": "not-a-number"})
+
+    assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
+def test_send_message_still_works_after_dispatcher_change():
+    """
+    Regression check specific to P-072's dispatcher change: POST على
+    نفس الـ /messages/ URL لازم يفضل شغّال زي ما هو بعد ما بقى فيه GET
+    handler على نفس المسار.
+    """
+    user_a = create_user("dispatcher_regression_a", "customer")
+    user_b = create_user("dispatcher_regression_b", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    url = reverse(
+        "chat:conversation-messages", kwargs={"conversation_id": conversation.id}
+    )
+    response = client.post(url, {"text": "post still works"}, format="json")
+
+    assert response.status_code == status.HTTP_201_CREATED
+    assert response.data["text"] == "post still works"
