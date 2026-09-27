@@ -43,3 +43,9 @@ python-json-logger==4.1.*  # Part P-015: structured JSON request loggingو
 
 pytest==8.*
 pytest-django==4.*
+# Part P-067 STEP 2: runs chat/test_consumers.py's `async def` tests
+# (channels.testing.WebsocketCommunicator) via the explicit
+# @pytest.mark.asyncio marker — no pytest.ini change needed, since
+# pytest-asyncio's default "strict" mode only activates on tests
+# carrying that marker.
+pytest-asyncio==1.4.*
