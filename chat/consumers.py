@@ -225,7 +225,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if event_type == "heartbeat":
             await self._set_online()
             return
+        
+        if event_type == "heartbeat":
+            await self._set_online()
+            return
 
+        if event_type == "typing":
+            await self._handle_typing(event)
+            return
+
+        target_status = _ACK_EVENT_TARGET_STATUS.get(event_type)
         target_status = _ACK_EVENT_TARGET_STATUS.get(event_type)
         if target_status is None:
             return
@@ -281,6 +290,61 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 {"message_id": event["message_id"], "status": event["status"]}
             )
         )
+    async def _handle_typing(self, event):
+        """
+        Part P-071. Handles an incoming `{"type": "typing", "is_typing":
+        true|false}` frame. `is_typing` must be a real bool -- anything
+        else (missing, a string, a number) is silently ignored, the same
+        "malformed frame -> no-op" contract receive() already applies to
+        every other event type in this consumer.
+
+        Broadcasts a "typing.indicator" group-send event carrying this
+        connection's own self.channel_name alongside is_typing, so every
+        receiving consumer in the group (typing_indicator() below) can
+        tell whether IT is the connection that sent this typing event and
+        skip forwarding it back to that same client -- the sender must
+        never receive their own typing broadcast.
+
+        No database access of any kind happens here, and none ever will:
+        per this part's Architecture Rules, typing state is WS-only and
+        is never persisted in any form (no model write, no cache entry,
+        no Celery task) -- there is no legitimate reason to retain a
+        signal that only matters for its instantaneous real-time
+        delivery.
+        """
+        is_typing = event.get("is_typing")
+        if not isinstance(is_typing, bool):
+            return
+
+        await self.channel_layer.group_send(
+            self.group_name,
+            {
+                "type": "typing.indicator",
+                "is_typing": is_typing,
+                "sender_channel_name": self.channel_name,
+            },
+        )
+
+    async def typing_indicator(self, event):
+        """
+        Group-send handler (Part P-071) for "typing.indicator" events
+        dispatched by _handle_typing() above -- Channels' own dispatch
+        convention maps the dot in "type" to a method name with the dot
+        replaced by an underscore, exactly as chat_message() and
+        status_update() above do for their own event types.
+
+        Self-exclusion: if event["sender_channel_name"] matches this
+        consumer's own self.channel_name, this IS the connection that
+        sent the typing event, so it returns without calling self.send()
+        -- the sender does not receive their own typing broadcast back.
+        Every other consumer in the group forwards {"is_typing": ...} to
+        its own connected client as JSON text. No DB access, no side
+        effects beyond the send.
+        """
+        if event.get("sender_channel_name") == self.channel_name:
+            return
+
+        await self.send(text_data=json.dumps({"is_typing": event["is_typing"]}))
 
     @database_sync_to_async
     def _is_participant(self, user, conversation_id):
