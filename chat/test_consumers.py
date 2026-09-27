@@ -28,6 +28,8 @@ semantics, so the participants created in each test's setup are
 actually visible to the consumer's own connection.
 """
 
+import asyncio
+
 import pytest
 from channels.db import database_sync_to_async
 from channels.testing import WebsocketCommunicator
@@ -189,9 +191,11 @@ async def test_connected_participant_receives_broadcast_message():
 #
 # Exact WebSocket event shapes exercised below (locked contract for
 # P-073/P-074's Flutter client):
-#     Outbound (recipient -> server): {"type": "mark_delivered", "message_id": <id>}
-#                                      {"type": "mark_read", "message_id": <id>}
-#     Broadcast (server -> both connected clients): {"message_id": <id>, "status": "delivered"|"read"}
+#     Outbound (recipient -> server):
+#         {"type": "mark_delivered", "message_id": <id>}
+#         {"type": "mark_read", "message_id": <id>}
+#     Broadcast (server -> both connected clients):
+#         {"message_id": <id>, "status": "delivered"|"read"}
 
 
 @database_sync_to_async
@@ -305,3 +309,108 @@ async def test_delivered_ack_after_read_is_a_noop_not_a_regression():
 
     await sender_communicator.disconnect()
     await receiver_communicator.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Part P-070 -- Presence via Redis (connect/disconnect + heartbeat)
+# ---------------------------------------------------------------------------
+
+
+@database_sync_to_async
+def _get_presence(user_id):
+    from django.core.cache import cache
+
+    from chat.consumers import presence_cache_key
+
+    return cache.get(presence_cache_key(user_id))
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_connect_sets_online_and_disconnect_clears_it_immediately():
+    """
+    Core P-070 acceptance criteria: a connected participant shows as
+    online, and disconnecting clears that immediately -- not waiting
+    for the TTL to lapse.
+    """
+    user_a, _user_b, conversation = await _make_conversation_with_participants(
+        "presence_connect_a", "presence_connect_b"
+    )
+
+    assert await _get_presence(user_a.id) is None
+
+    communicator, connected, _ = await _connect(
+        conversation.id, _access_token_for(user_a)
+    )
+    assert connected is True
+    assert await _get_presence(user_a.id) is True
+
+    await communicator.disconnect()
+
+    assert await _get_presence(user_a.id) is None
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_rejected_connection_never_sets_presence():
+    """
+    An authenticated non-participant is rejected (close code 4003, per
+    P-067) before ever being accepted -- this must never mark them
+    online.
+    """
+    _user_a, _user_b, conversation = await _make_conversation_with_participants(
+        "presence_reject_a", "presence_reject_b"
+    )
+    outsider = await database_sync_to_async(create_user)(
+        "presence_outsider", "customer"
+    )
+
+    communicator, connected, close_code = await _connect(
+        conversation.id, _access_token_for(outsider)
+    )
+
+    assert connected is False
+    assert close_code == 4003
+    assert await _get_presence(outsider.id) is None
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_heartbeat_extends_presence_past_original_ttl(monkeypatch):
+    """
+    Proves the heartbeat genuinely extends the presence window, not
+    just that the initial TTL happens to cover the test's runtime.
+
+    PRESENCE_TTL_SECONDS is patched down to 2 seconds so this is fast
+    and doesn't actually wait a real 60+ seconds. Timeline:
+        t=0.0  connect()          -> online, TTL=2s (expires ~t=2.0)
+        t=1.2  send heartbeat     -> TTL refreshed (expires ~t=3.2)
+        t=2.4  (past the ORIGINAL 2s window) still online -> heartbeat
+               genuinely extended it, proving this isn't just the
+               original TTL by coincidence.
+    """
+    import chat.consumers as consumers_module
+
+    monkeypatch.setattr(consumers_module, "PRESENCE_TTL_SECONDS", 2)
+
+    user_a, _user_b, conversation = await _make_conversation_with_participants(
+        "presence_heartbeat_a", "presence_heartbeat_b"
+    )
+
+    communicator, connected, _ = await _connect(
+        conversation.id, _access_token_for(user_a)
+    )
+    assert connected is True
+    assert await _get_presence(user_a.id) is True
+
+    await asyncio.sleep(1.2)
+    await communicator.send_to(text_data=json.dumps({"type": "heartbeat"}))
+    # Give receive() a beat to actually process the frame before the
+    # next assertion races it.
+    await asyncio.sleep(0.1)
+
+    await asyncio.sleep(1.3)  # total elapsed ~2.6s > the original 2s TTL
+    assert await _get_presence(user_a.id) is True
+
+    await communicator.disconnect()
+    assert await _get_presence(user_a.id) is None

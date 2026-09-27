@@ -1,5 +1,5 @@
 """
-ChatConsumer (Part P-067 + P-068)
+ChatConsumer (Part P-067 + P-068 + P-069 + P-070)
 
 P-067: WebSocket connection + authorization skeleton — accept a
 connection scoped to one conversation, verify the connecting user
@@ -61,12 +61,58 @@ ALLOWED_TRANSITIONS encodes the one-way progression
 supplied ordering; an already-applied target status (current == target)
 is likewise treated as a no-op, not an error, so no incorrect
 status_update is ever broadcast claiming a change that didn't happen.
+
+P-070 (this addition): Redis-backed online/offline presence, reusing
+Django's existing cache framework (Part P-014, django_redis) rather
+than a separate raw-Redis client — per this part's own Architecture
+Rules, a raw client would be a second, inconsistent way of talking to
+the same Redis instance the cache framework already manages.
+
+    - connect() sets `online:{user.id}` in the cache (via
+      `_set_online()`) once the connection is actually accepted (i.e.
+      after the same auth + participant checks P-067 already enforces
+      -- a rejected connection never marks anyone online).
+    - The client is expected to send a periodic WebSocket event
+      `{"type": "heartbeat"}` (LOCKED CONTRACT for Part P-073's Flutter
+      connection manager -- no other fields required) at an interval
+      comfortably under PRESENCE_TTL_SECONDS (60s); every 30s is the
+      reference interval. receive() dispatches this to the same
+      `_set_online()` call, which re-sets the same key/timeout and so
+      naturally extends it -- there is no separate "refresh" API,
+      matching the spec's own suggestion.
+    - disconnect() explicitly deletes the key (`_clear_online()`)
+      rather than waiting for the TTL to lapse, so an explicit
+      disconnect reads as "offline" immediately, not up to 60s later.
+      This only runs for a user who was actually authenticated
+      (scope["user"].is_authenticated) -- a connection rejected before
+      ever being accepted never had a key to clear, and deleting a
+      cache key that was never set is a harmless no-op regardless.
+
+    Known limitation (out of this part's stated scope, flagging rather
+    than silently handling): this key format assumes at most one
+    "online-ness" signal per user, not per-connection. If the same
+    user opens a second WebSocket connection (another device/tab) and
+    then closes the FIRST one, that disconnect's _clear_online() will
+    mark the user offline even though their second connection is still
+    live. The spec doesn't call out multi-connection reference
+    counting as an MVP requirement, so this isn't handled here -- worth
+    a deliberate decision (e.g. a per-connection sub-key, or a
+    reference count) if/when multi-device simultaneous connections
+    become a real scenario.
+
+    The GET /api/v1/users/{id}/presence/ REST endpoint that reads this
+    same key is Part P-070's other half -- not implemented in this
+    file (see chat/views.py); presence_cache_key() below is exported
+    so that view can build the exact same key without duplicating the
+    "online:{id}" string literal in two places.
 """
 
 import json
 
+from asgiref.sync import sync_to_async
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncWebsocketConsumer
+from django.core.cache import cache
 
 from chat.models import ConversationParticipant, Message
 
@@ -88,6 +134,24 @@ _ACK_EVENT_TARGET_STATUS = {
     "mark_read": Message.Status.READ,
 }
 
+# Part P-070. Seconds a presence key survives without a refreshing
+# heartbeat -- matches the spec's own "short TTL (e.g. 60 seconds)".
+# A module-level constant (rather than a literal inline) so tests can
+# patch it to a much smaller value instead of sleeping 60+ real
+# seconds to prove the heartbeat genuinely extends the window.
+PRESENCE_TTL_SECONDS = 60
+
+
+def presence_cache_key(user_id):
+    """
+    Cache key for a user's online/offline presence flag (Part P-070).
+
+    Single source of truth for the "online:{id}" format so chat/views.py's
+    presence-check endpoint (this part's other half) and this consumer
+    can never drift out of sync on the key shape.
+    """
+    return f"online:{user_id}"
+
 
 class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
@@ -106,6 +170,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
 
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
+        await self._set_online()
 
     async def disconnect(self, close_code):
         # group_name is always set (assigned at the top of connect(),
@@ -117,17 +182,35 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if group_name:
             await self.channel_layer.group_discard(group_name, self.channel_name)
 
+        # Part P-070: an explicit disconnect should read as "offline"
+        # immediately, not up to PRESENCE_TTL_SECONDS later. Only clear
+        # for a user who was actually authenticated -- a connection
+        # rejected in connect() before ever being accepted never set a
+        # presence key in the first place (clearing it anyway would be
+        # a harmless no-op, but this guard makes the intent explicit).
+        user = self.scope.get("user")
+        if user is not None and user.is_authenticated:
+            await self._clear_online()
+
     async def receive(self, text_data):
         """
-        Part P-069. Parses one incoming WebSocket text frame as JSON and
-        dispatches "mark_delivered" / "mark_read" acknowledgment events.
+        Parses one incoming WebSocket text frame as JSON and dispatches
+        it to the right handler.
 
-        Any frame that is not valid JSON, not a JSON object, missing
-        "type"/"message_id", or whose "type" is not one of
-        _ACK_EVENT_TARGET_STATUS's keys is silently ignored -- this
-        consumer has no other inbound event types defined yet, and a
-        malformed or unrecognized frame is not this part's concern to
-        report on (no error is sent back to the client).
+        Part P-070: a `{"type": "heartbeat"}` frame refreshes this
+        connection's presence TTL and is handled first, before the
+        P-069 ack dispatch below, since it isn't part of that event
+        family and carries no "message_id".
+
+        Part P-069: "mark_delivered" / "mark_read" acknowledgment
+        events.
+
+        Any frame that is not valid JSON, not a JSON object, or whose
+        "type" doesn't match anything recognized above is silently
+        ignored -- this consumer has no other inbound event types
+        defined yet, and a malformed or unrecognized frame is not this
+        part's concern to report on (no error is sent back to the
+        client).
         """
         try:
             event = json.loads(text_data)
@@ -137,7 +220,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if not isinstance(event, dict):
             return
 
-        target_status = _ACK_EVENT_TARGET_STATUS.get(event.get("type"))
+        event_type = event.get("type")
+
+        if event_type == "heartbeat":
+            await self._set_online()
+            return
+
+        target_status = _ACK_EVENT_TARGET_STATUS.get(event_type)
         if target_status is None:
             return
 
@@ -204,6 +293,35 @@ class ChatConsumer(AsyncWebsocketConsumer):
         return ConversationParticipant.objects.filter(
             conversation_id=conversation_id, user=user
         ).exists()
+
+    async def _set_online(self):
+        """
+        Part P-070. Sets (or, called again from a heartbeat, re-sets --
+        which is exactly how a TTL is naturally extended) this
+        connection's user as online, timed out after
+        PRESENCE_TTL_SECONDS. Wrapped in sync_to_async since Django's
+        cache API (backed here by django_redis, per Part P-014) is a
+        blocking synchronous call; thread_sensitive=False since this
+        touches only the Redis cache client, not the ORM, so it doesn't
+        need to be serialized onto Channels' single "database" thread
+        the way database_sync_to_async calls are.
+        """
+        user = self.scope["user"]
+        await sync_to_async(cache.set, thread_sensitive=False)(
+            presence_cache_key(user.id), True, PRESENCE_TTL_SECONDS
+        )
+
+    async def _clear_online(self):
+        """
+        Part P-070. Explicitly deletes this connection's user's
+        presence key -- called from disconnect() so an explicit
+        disconnect reads as offline immediately rather than waiting up
+        to PRESENCE_TTL_SECONDS for the key to lapse on its own.
+        """
+        user = self.scope["user"]
+        await sync_to_async(cache.delete, thread_sensitive=False)(
+            presence_cache_key(user.id)
+        )
 
     @database_sync_to_async
     def _apply_status_transition(self, message_id, target_status):
