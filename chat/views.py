@@ -1,3 +1,7 @@
+import logging
+
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from rest_framework import status
@@ -10,6 +14,7 @@ from chat.models import Conversation, ConversationParticipant
 from chat.serializers import ConversationSerializer, MessageSerializer
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 def _get_conversation_or_404(conversation_id):
@@ -91,21 +96,28 @@ class MessageSendView(APIView):
     """
     POST /api/v1/conversations/<conversation_id>/messages/
 
-    Part P-068 — STEP 1 من 2 — PERSISTENCE فقط.
+    Part P-068 — الجزءان الاثنان كاملين الآن.
 
-    بيحفظ Message في Postgres (status='sent' من الـ default بتاع
-    الـ Model نفسه) عن طريق ORM call متزامن عادي جوه الـ request cycle
-    العادي بتاع Django REST — ويرجع 201 فورًا بمجرد ما الحفظ يخلص.
-    هذه هي النص الأول من القاعدة المعمارية الأهم ("احفظ قبل ما تبعت
-    broadcast") اللي STEP 1 بيثبته لوحده: الـ HTTP response مربوط
-    فقط بنجاح الحفظ.
+    STEP 1 (PERSISTENCE): بيحفظ Message في Postgres (status='sent' من
+    الـ default بتاع الـ Model نفسه) عن طريق ORM call متزامن عادي جوه
+    الـ request cycle العادي بتاع Django REST. هذا الحفظ هو الوحيد
+    اللي بيحدد نجاح أو فشل الـ HTTP response — أي exception هنا لازم
+    يفشل الـ request فعلاً (السلوك الافتراضي، لسه زي ما هو).
 
-    STEP 2 هيضيف خطوة الـ broadcast الاختيارية (best-effort) عن طريق
-    channel_layer.group_send على f"conversation_{id}"، ملفوفة بحيث
-    فشلها ميأثرش على هذا الـ response، بالإضافة لـ chat_message handler
-    في ChatConsumer. STEP 1 عن قصد مش بيستورد ولا بيلمس channels
-    نهائيًا، عشان نقدر نثبت النصين بشكل مستقل، زي ما الـ Definition
-    of Done بتاع الـ Part نفسه بيطلب.
+    STEP 2 (BROADCAST — best-effort): بعد ما الحفظ يخلص ويتجهز الـ 201
+    response، بنحاول channel_layer.group_send() على
+    f"conversation_{conversation_id}" — العملية دي ملفوفة في
+    try/except خاص بيها لوحدها، بحيث أي فشل فيها (channel layer واقع،
+    Redis مش راضي يرد، أو حتى mock بيفشّلها عمدًا في التيست) يتسجّل في
+    الـ log ويتم تجاهله تمامًا، وما يأثرش لا على الـ Message المحفوظة
+    ولا على الـ 201 response اللي الـ client استلمه بالفعل. دي بالظبط
+    القاعدة المعمارية المذكورة صراحةً: "احفظ الأول، ابعت الإشعار بعدين
+    كخطوة مستقلة، وفشل الإشعار مايهمش الحفظ خالص."
+
+    ChatConsumer (P-067) عندها الآن chat_message handler method بيستقبل
+    الحدث ده ("type": "chat.message" — Channels بتحوّل النقطة لـ
+    underscore عند مناداة الـ handler، يعني chat.message -> chat_message)
+    وبتبعت الرسالة كـ JSON للـ WebSocket client المتصل.
 
     نفس انضباط الـ IDOR المستخدم في P-067's WebSocket consumer's
     connect() check: مستخدم مسجّل دخول لكنه مش ConversationParticipant
@@ -127,7 +139,32 @@ class MessageSendView(APIView):
         serializer.is_valid(raise_exception=True)
         message = serializer.save(conversation=conversation, sender=request.user)
 
-        return Response(
-            MessageSerializer(message).data,
-            status=status.HTTP_201_CREATED,
-        )
+        # الحفظ فوق خلص بالفعل ونجح — من هنا لغاية آخر الدالة، أي حاجة
+        # تفشل ميرجعش عليها HTTP error ولا يترجع الـ Message تتمسح.
+        response_data = MessageSerializer(message).data
+
+        try:
+            channel_layer = get_channel_layer()
+            async_to_sync(channel_layer.group_send)(
+                f"conversation_{conversation_id}",
+                {
+                    "type": "chat.message",
+                    "message": response_data,
+                },
+            )
+        except Exception:
+            # عمدًا bare except: أي نوع فشل ممكن يحصل هنا (network,
+            # serialization, layer misconfiguration, mocked failure في
+            # التيست) هو "broadcast فشل" بالنسبة للـ contract بتاع الـ
+            # part ده — والاستجابة الوحيدة المطلوبة هي: سجّل ولا تعمل
+            # أي حاجة تانية. الرسالة هتوصل على أي حال في أول fetch أو
+            # reconnect للـ conversation (P-072).
+            logger.exception(
+                "Best-effort WebSocket broadcast failed for "
+                "conversation_id=%s message_id=%s; message is already "
+                "persisted and the HTTP response is unaffected.",
+                conversation_id,
+                message.id,
+            )
+
+        return Response(response_data, status=status.HTTP_201_CREATED)

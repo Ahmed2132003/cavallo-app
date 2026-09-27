@@ -37,6 +37,12 @@ from chat.models import Conversation, ConversationParticipant
 from chat.tests import create_user
 from config.asgi import application
 
+import json
+
+from asgiref.sync import sync_to_async
+from django.urls import reverse
+from rest_framework.test import APIClient
+
 
 @database_sync_to_async
 def _make_conversation_with_participants(username_a, username_b):
@@ -136,3 +142,42 @@ async def test_missing_token_is_rejected():
 
     assert connected is False
     assert close_code == 4001
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_connected_participant_receives_broadcast_message():
+    """
+    End-to-end proof of Part P-068's broadcast half: a participant
+    connected over WebSocket to /ws/conversations/<id>/ actually
+    receives, in real time, the message that MessageSendView persists
+    via the REST endpoint — exercising the full
+    persist -> group_send -> chat_message -> self.send() path through
+    the real ASGI stack (config.asgi.application), not a mock.
+    """
+    user_a, _user_b, conversation = await _make_conversation_with_participants(
+        "broadcast_sender", "broadcast_receiver"
+    )
+    receiver_token = _access_token_for(_user_b)
+
+    communicator, connected, _ = await _connect(conversation.id, receiver_token)
+    assert connected is True
+
+    @sync_to_async
+    def _send_message_via_rest():
+        client = APIClient()
+        client.force_authenticate(user=user_a)
+        url = reverse(
+            "chat:conversation-messages",
+            kwargs={"conversation_id": conversation.id},
+        )
+        return client.post(url, {"text": "hello over websocket"}, format="json")
+
+    response = await _send_message_via_rest()
+    assert response.status_code == 201
+
+    event = await communicator.receive_from()
+    payload = json.loads(event)
+    assert payload["text"] == "hello over websocket"
+
+    await communicator.disconnect()

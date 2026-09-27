@@ -3,6 +3,7 @@ from django.contrib.auth import get_user_model
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient
+from unittest.mock import patch
 
 from chat.models import Conversation, ConversationParticipant, Message
 
@@ -145,3 +146,45 @@ def test_send_message_returns_404_for_unknown_conversation():
     response = client.post(url, {"text": "hi"}, format="json")
 
     assert response.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_send_message_persists_even_when_broadcast_fails():
+    """
+    THE CRITICAL RELIABILITY TEST for Part P-068.
+
+    Mocks chat.views.async_to_sync itself — the exact call site used
+    as async_to_sync(channel_layer.group_send)(...) inside
+    MessageSendView.post() — to raise, forcing the broadcast attempt
+    to fail regardless of which channel layer backend is configured
+    for tests. Proves the persistence-first ordering is genuinely
+    independent of broadcast success: the response must still be 201
+    and the Message row must still exist.
+    """
+    user_a = create_user("reliability_sender", "customer")
+    user_b = create_user("reliability_receiver", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    url = reverse(
+        "chat:conversation-messages", kwargs={"conversation_id": conversation.id}
+    )
+
+    with patch(
+        "chat.views.async_to_sync",
+        side_effect=RuntimeError("simulated channel layer failure"),
+    ):
+        response = client.post(
+            url, {"text": "still here even if broadcast dies"}, format="json"
+        )
+
+    assert response.status_code == status.HTTP_201_CREATED
+    assert response.data["text"] == "still here even if broadcast dies"
+    assert Message.objects.filter(
+        conversation=conversation,
+        sender=user_a,
+        text="still here even if broadcast dies",
+    ).exists()
