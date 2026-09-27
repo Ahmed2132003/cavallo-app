@@ -8996,3 +8996,118 @@ Known issues: none.
   message broadcast, delivery/read acks, presence, typing) in place.
 
 **PART P-071 is CLOSED.**
+
+### PART P-072 — Offline Delivery: FCM Push Fallback + Fetch-Unread-on-Reconnect
+Status: DONE (mechanically complete, genuinely tested; real end-to-end push delivery unverified — see Known Issues)
+
+What was implemented:
+- Offline-recipient push notification dispatch: extended MessageSendView.post()
+  (chat/views.py) — after the existing best-effort WebSocket broadcast attempt
+  (P-068), it now determines the OTHER ConversationParticipant (not the sender),
+  checks presence via cache.get(presence_cache_key(recipient_id)) (reusing
+  P-070's exact cache-key helper from chat/consumers.py), and — only if NOT
+  online — dispatches chat.tasks.notify_offline_recipient.delay(message.id).
+  If the recipient IS online, nothing further happens (they're already
+  receiving the message live via the broadcast). This whole block is wrapped
+  in its own try/except, same best-effort philosophy as the broadcast itself:
+  a failure here is logged and never turns the already-successful 201 into an
+  error.
+- New Celery task chat.tasks.notify_offline_recipient(message_id): resolves
+  the Message, resolves the recipient (the other ConversationParticipant),
+  and calls notifications.services.send_push_notification() with
+  title/body/data (data includes {"type": "chat_message", "conversation_id",
+  "message_id"} — the deep-link-ready shape Phase 13 will formalize).
+  Handles a missing/already-deleted Message gracefully (logs a warning,
+  returns — no exception).
+- New fetch-unread-on-reconnect endpoint: GET
+  /api/v1/conversations/<conversation_id>/messages/?since=<message_id> —
+  returns every Message in the conversation with id > since, ordered
+  chronologically (Message.Meta.ordering = ["created_at"]). `since` is a
+  required integer query param (message id, not a timestamp — see
+  Architecture Decisions). IDOR-protected via the same
+  ConversationParticipant check as MessageSendView (extracted into a shared
+  _require_participant() helper). 404 for an unknown conversation_id, 403
+  for an authenticated non-participant, 400 for a missing/non-integer
+  `since`.
+- New minimal `notifications` app (Phase 13 will build this out fully):
+  notifications/services.py's send_push_notification(user_id, title, body,
+  data) -> None is currently a log-only stub with an explicit
+  # TODO(Phase 13) comment. Signature is the documented, frozen seam —
+  Phase 13 must not need to change it or touch any of P-072's calling code.
+
+Files created:
+- notifications/__init__.py
+- notifications/apps.py
+- notifications/services.py
+- chat/tasks.py
+- chat/test_tasks.py
+
+Files modified:
+- chat/views.py (added MessageFetchSinceView, _require_participant() shared
+  helper, message_collection_view dispatcher; extended MessageSendView.post()
+  with the offline-push dispatch block)
+- chat/urls.py (the "<int:conversation_id>/messages/" route now points at
+  message_collection_view instead of MessageSendView.as_view() directly)
+- chat/tests.py (+13 tests total across both steps)
+- config/settings/base.py (added "notifications" to INSTALLED_APPS, right
+  after "chat")
+
+Architecture decisions (flagged explicitly, per project convention):
+1. Top-level app, not apps/ prefix: the Part spec/master plan write
+   `apps/notifications/...`, but this project has never used an `apps/`
+   package (see stories/apps.py's own docstring, P-046 onward). Built
+   `notifications/` as a top-level app, matching every prior app.
+2. Same-URL GET/POST dispatch, not a new sub-path: the spec's fetch-since
+   endpoint is GET on the exact same URL MessageSendView already uses for
+   POST (/api/v1/conversations/{id}/messages/), not a new
+   "/messages/since/" path. Implemented via a method-based dispatcher
+   function (message_collection_view), the same established pattern as
+   social/views.py's comment_collection_view (Part P-055) — one URL,
+   GET routes to MessageFetchSinceView, everything else routes to
+   MessageSendView.
+3. `since` is a message id (id__gt), not a timestamp: Message.id is
+   auto-increment and already aligned with created_at ordering
+   (Message.Meta.ordering), which is simpler and avoids timestamp
+   precision/timezone edge cases. The spec explicitly allowed either
+   ("whichever proves cleaner given Message's actual field set").
+
+Commands run (all against the real project, via docker compose):
+- docker compose exec web python manage.py check
+- docker compose exec web python manage.py makemigrations --check --dry-run
+- docker compose exec web pytest chat/ -v
+
+Tests / Verification results:
+- pytest chat/ -v: 35 passed, 0 failed (28 pre-existing + 7 new for P-072:
+  2 in chat/test_tasks.py for notify_offline_recipient, 5 new
+  fetch-since/dispatcher tests in chat/tests.py — offline dispatch,
+  online no-dispatch, exact-set + ordering, empty result, 403, 404, 400
+  missing `since`, 400 non-integer `since`, and a POST-still-works
+  dispatcher-regression test).
+- manage.py check: "System check identified no issues (0 silenced)."
+- makemigrations --check --dry-run: "No changes detected" (no new models
+  in this part).
+
+Known issues / remaining work:
+- Genuine end-to-end push delivery is UNVERIFIED — send_push_notification()
+  is a log-only stub; Firebase project credentials still do not exist
+  (Section 7 item 4, BLOCKED). Only the dispatch-vs-no-dispatch logic and
+  the stub call itself are proven.
+- Phase 13 must implement send_push_notification()'s real body (FCM SDK
+  call) and add device-token registration/model — without changing its
+  signature or any of chat/tasks.py's calling code.
+
+GitHub reference:
+- Repo: https://github.com/Ahmed2132003/cavallo-app (branch: main)
+- Commit: 84ae3ee — "P-072: offline FCM push fallback (stub) + fetch-unread-on-reconnect endpoint"
+  (9 files changed: chat/tasks.py, chat/test_tasks.py, chat/tests.py,
+  chat/urls.py, chat/views.py, config/settings/base.py,
+  notifications/__init__.py, notifications/apps.py, notifications/services.py)
+
+Exact next starting point:
+- Part P-072 is fully DONE per its own Definition of Done. The next part
+  to pick up is whatever Phase 13 (Notifications — real FCM SDK
+  integration + device-token model/registration) is numbered as in the
+  master plan; it should implement notifications/services.py's
+  send_push_notification() for real and add the device-token model,
+  without touching chat/tasks.py's notify_offline_recipient() or
+  chat/views.py's dispatch logic.
