@@ -189,6 +189,7 @@ def test_send_message_persists_even_when_broadcast_fails():
         text="still here even if broadcast dies",
     ).exists()
 
+
 def test_send_message_dispatches_notification_when_recipient_offline():
     user_a = create_user("offline_test_sender", "customer")
     user_b = create_user("offline_test_receiver", "customer")
@@ -238,7 +239,8 @@ def test_send_message_does_not_dispatch_notification_when_recipient_online():
     mock_delay.assert_not_called()
 
     cache.delete(presence_cache_key(user_b.id))
-    
+
+
 def test_fetch_since_returns_exactly_messages_after_cursor_ordered():
     user_a = create_user("fetch_since_a", "customer")
     user_b = create_user("fetch_since_b", "customer")
@@ -248,7 +250,9 @@ def test_fetch_since_returns_exactly_messages_after_cursor_ordered():
 
     msg1 = Message.objects.create(conversation=conversation, sender=user_a, text="one")
     msg2 = Message.objects.create(conversation=conversation, sender=user_b, text="two")
-    msg3 = Message.objects.create(conversation=conversation, sender=user_a, text="three")
+    msg3 = Message.objects.create(
+        conversation=conversation, sender=user_a, text="three"
+    )
 
     client = APIClient()
     client.force_authenticate(user=user_b)
@@ -316,22 +320,13 @@ def test_fetch_since_returns_404_for_unknown_conversation():
     assert response.status_code == status.HTTP_404_NOT_FOUND
 
 
-def test_fetch_since_requires_since_param():
-    user_a = create_user("fetch_since_missing_a", "customer")
-    user_b = create_user("fetch_since_missing_b", "customer")
-    conversation = Conversation.objects.create()
-    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
-    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
-
-    client = APIClient()
-    client.force_authenticate(user=user_a)
-
-    url = reverse(
-        "chat:conversation-messages", kwargs={"conversation_id": conversation.id}
-    )
-    response = client.get(url)
-
-    assert response.status_code == status.HTTP_400_BAD_REQUEST
+# ملحوظة (P-074): test_fetch_since_requires_since_param القديم اتشال من
+# هنا عمدًا. قبل P-074، GET /messages/ من غير `since` كان بيترفض بـ 400.
+# دلوقتي بقى طلب صالح وله معنى: جلب أولي مُرقّم لتاريخ المحادثة
+# (MessageHistoryView) بدل ما يتترفض كخطأ. السلوك الجديد ده مغطّى في
+# test_message_history_without_since_is_paginated_newest_first.
+# `since` نفسه لسه إجباري ولازم يكون integer *لما بيتبعت فعلاً* —
+# ده لسه مغطّى بـ test_fetch_since_rejects_non_integer_since.
 
 
 def test_fetch_since_rejects_non_integer_since():
@@ -374,3 +369,219 @@ def test_send_message_still_works_after_dispatcher_change():
 
     assert response.status_code == status.HTTP_201_CREATED
     assert response.data["text"] == "post still works"
+
+
+# ---------------------------------------------------------------------------
+# P-074 backfill: ConversationListView (gap left over from P-066) and
+# MessageHistoryView (paginated initial fetch, added alongside P-072's
+# existing ?since= fetch). Written as plain pytest functions using
+# create_user()/APIClient(), matching this file's existing convention —
+# not unittest-style TestCase classes.
+# ---------------------------------------------------------------------------
+
+
+def test_conversation_list_resolves_business_display_name():
+    from businesses.models import BusinessProfile
+
+    user_a = create_user("conv_list_a", "customer")
+    user_b = create_user("conv_list_b", "business")
+    BusinessProfile.objects.create(
+        user=user_b,
+        business_name="Acme Trading",
+        business_type="trader",
+        country="EG",
+        city="Ismailia",
+    )
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    url = reverse("chat:conversation-list")
+    response = client.get(url)
+
+    assert response.status_code == status.HTTP_200_OK
+    assert len(response.data) == 1
+    assert response.data[0]["other_participant"]["display_name"] == "Acme Trading"
+    assert response.data[0]["other_participant"]["account_type"] == "business"
+
+
+def test_conversation_list_falls_back_to_email_for_customer_without_profile():
+    user_a = create_user("conv_list_fallback_a", "customer")
+    user_b = create_user("conv_list_fallback_b", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    response = client.get(reverse("chat:conversation-list"))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data[0]["other_participant"]["display_name"] == user_b.email
+
+
+def test_conversation_list_unread_count_excludes_own_and_read_messages():
+    user_a = create_user("conv_list_unread_a", "customer")
+    user_b = create_user("conv_list_unread_b", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+
+    Message.objects.create(
+        conversation=conversation, sender=user_b, text="hi", status="sent"
+    )
+    Message.objects.create(
+        conversation=conversation, sender=user_b, text="there", status="delivered"
+    )
+    Message.objects.create(
+        conversation=conversation, sender=user_b, text="seen", status="read"
+    )
+    Message.objects.create(
+        conversation=conversation, sender=user_a, text="reply", status="sent"
+    )
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    response = client.get(reverse("chat:conversation-list"))
+
+    assert response.data[0]["unread_count"] == 2
+
+
+def test_conversation_list_last_message_is_most_recent():
+    user_a = create_user("conv_list_last_a", "customer")
+    user_b = create_user("conv_list_last_b", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+
+    Message.objects.create(
+        conversation=conversation, sender=user_a, text="first", status="sent"
+    )
+    newest = Message.objects.create(
+        conversation=conversation, sender=user_b, text="second", status="sent"
+    )
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    response = client.get(reverse("chat:conversation-list"))
+
+    assert response.data[0]["last_message"]["id"] == newest.id
+
+
+def test_conversation_list_orders_most_recent_activity_first():
+    user_a = create_user("conv_list_order_a", "customer")
+    user_b = create_user("conv_list_order_b", "customer")
+    user_c = create_user("conv_list_order_c", "customer")
+
+    older_conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=older_conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=older_conversation, user=user_b)
+    Message.objects.create(
+        conversation=older_conversation, sender=user_a, text="old", status="sent"
+    )
+
+    newer_conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=newer_conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=newer_conversation, user=user_c)
+    Message.objects.create(
+        conversation=newer_conversation, sender=user_a, text="new", status="sent"
+    )
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    response = client.get(reverse("chat:conversation-list"))
+
+    assert response.data[0]["id"] == newer_conversation.id
+    assert response.data[1]["id"] == older_conversation.id
+
+
+def test_conversation_list_empty_for_user_with_no_conversations():
+    user_a = create_user("conv_list_empty_a", "customer")
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    response = client.get(reverse("chat:conversation-list"))
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.data == []
+
+
+def test_conversation_list_requires_authentication():
+    client = APIClient()
+    response = client.get(reverse("chat:conversation-list"))
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+
+def test_message_history_without_since_is_paginated_newest_first():
+    user_a = create_user("history_a", "customer")
+    user_b = create_user("history_b", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+    for i in range(25):
+        Message.objects.create(
+            conversation=conversation, sender=user_a, text=f"msg {i}", status="sent"
+        )
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    url = reverse(
+        "chat:conversation-messages", kwargs={"conversation_id": conversation.id}
+    )
+    response = client.get(url)
+
+    assert response.status_code == status.HTTP_200_OK
+    assert len(response.data["results"]) == 20
+    assert response.data["results"][0]["text"] == "msg 24"
+    assert response.data.get("next") is not None
+
+
+def test_message_history_second_page_via_cursor():
+    user_a = create_user("history_page2_a", "customer")
+    user_b = create_user("history_page2_b", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+    for i in range(25):
+        Message.objects.create(
+            conversation=conversation, sender=user_a, text=f"msg {i}", status="sent"
+        )
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    url = reverse(
+        "chat:conversation-messages", kwargs={"conversation_id": conversation.id}
+    )
+    first_page = client.get(url)
+    second_page = client.get(first_page.data["next"])
+
+    assert second_page.status_code == status.HTTP_200_OK
+    assert len(second_page.data["results"]) == 5
+
+
+def test_message_history_rejects_non_participant():
+    user_a = create_user("history_perm_a", "customer")
+    user_b = create_user("history_perm_b", "customer")
+    outsider = create_user("history_perm_outsider", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+
+    client = APIClient()
+    client.force_authenticate(user=outsider)
+
+    url = reverse(
+        "chat:conversation-messages", kwargs={"conversation_id": conversation.id}
+    )
+    response = client.get(url)
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN

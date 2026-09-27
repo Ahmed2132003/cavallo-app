@@ -4,6 +4,7 @@ from chat.views import (
     ConversationStartView,
     UserPresenceView,
     message_collection_view,
+    ConversationListView,
 )
 
 app_name = "chat"
@@ -29,4 +30,5 @@ urlpatterns = [
         UserPresenceView.as_view(),
         name="user-presence",
     ),
+    path("", ConversationListView.as_view(), name="conversation-list"),
 ]

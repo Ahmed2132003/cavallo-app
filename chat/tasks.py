@@ -45,9 +45,7 @@ def notify_offline_recipient(message_id):
         return
 
     recipient_participant = (
-        ConversationParticipant.objects.filter(
-            conversation_id=message.conversation_id
-        )
+        ConversationParticipant.objects.filter(conversation_id=message.conversation_id)
         .exclude(user_id=message.sender_id)
         .select_related("user")
         .first()

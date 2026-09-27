@@ -225,7 +225,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         if event_type == "heartbeat":
             await self._set_online()
             return
-        
+
         if event_type == "heartbeat":
             await self._set_online()
             return
@@ -290,6 +290,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
                 {"message_id": event["message_id"], "status": event["status"]}
             )
         )
+
     async def _handle_typing(self, event):
         """
         Part P-071. Handles an incoming `{"type": "typing", "is_typing":

@@ -12,10 +12,18 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from django.db.models import F, Max, OuterRef, Subquery
+from rest_framework import generics
+
 from chat.consumers import presence_cache_key
 from chat.models import Conversation, ConversationParticipant, Message
-from chat.serializers import ConversationSerializer, MessageSerializer
+from chat.serializers import (
+    ConversationListSerializer,
+    ConversationSerializer,
+    MessageSerializer,
+)
 from chat.tasks import notify_offline_recipient
+from core.pagination import StandardCursorPagination
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -194,9 +202,7 @@ class MessageSendView(APIView):
         # error.
         try:
             recipient_participant = (
-                ConversationParticipant.objects.filter(
-                    conversation_id=conversation_id
-                )
+                ConversationParticipant.objects.filter(conversation_id=conversation_id)
                 .exclude(user_id=request.user.id)
                 .first()
             )
@@ -270,28 +276,73 @@ _message_send_view = MessageSendView.as_view()
 _message_fetch_since_view = MessageFetchSinceView.as_view()
 
 
-@csrf_exempt
-def message_collection_view(request, *args, **kwargs):
+class ConversationListView(generics.ListAPIView):
     """
-    Single-URL dispatcher for /api/v1/conversations/<conversation_id>/
-    messages/ (Part P-072): GET goes to MessageFetchSinceView
-    (fetch-since-reconnect), everything else goes to MessageSendView
-    (POST send; other methods get its 405). Exact same pattern as
-    social/views.py's comment_collection_view (Part P-055) — one URL,
-    method-based dispatch to two separate APIView classes, rather than
-    cramming both get()/post() into a single class.
+    GET /api/v1/conversations/
 
-    @csrf_exempt is REQUIRED for the same reason documented on
-    comment_collection_view: APIView.as_view() marks its own callable
-    csrf_exempt, but this plain function wrapper is what the URLconf
-    actually resolves to, so Django's CsrfViewMiddleware would
-    otherwise apply to POSTs. JWT auth here is not cookie-based, so
-    this is safe (DRF only enforces CSRF itself for
-    SessionAuthentication).
+    Fills a gap left over from P-066 (the master plan assumed this endpoint
+    already existed there; it was never actually built). Documented here as
+    a P-066 backfill, not new P-074 scope creep.
     """
-    if request.method in ("GET", "HEAD", "OPTIONS"):
-        return _message_fetch_since_view(request, *args, **kwargs)
-    return _message_send_view(request, *args, **kwargs)
+
+    serializer_class = ConversationListSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        last_message_created_at = Subquery(
+            Message.objects.filter(conversation=OuterRef("pk"))
+            .order_by("-created_at")
+            .values("created_at")[:1]
+        )
+        return (
+            Conversation.objects.filter(participants__user=user)
+            .distinct()
+            .annotate(last_activity_at=Max(last_message_created_at))
+            .order_by(F("last_activity_at").desc(nulls_last=True), "-created_at")
+        )
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["request"] = self.request
+        return context
+
+
+class MessageHistoryView(generics.ListAPIView):
+    """
+    GET /api/v1/conversations/<conversation_id>/messages/  (no `since` param)
+
+    Paginated initial message-history fetch for opening a thread, newest
+    page first (StandardCursorPagination's own convention). The Flutter
+    client reverses each page's items before appending to the top of the
+    thread — oldest-to-newest is the on-screen order, not the wire order.
+    `since`-based fetch (resume-after-away) is untouched — see
+    message_collection_view below.
+    """
+
+    serializer_class = MessageSerializer
+    pagination_class = StandardCursorPagination
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        conversation_id = self.kwargs["conversation_id"]
+        conversation = _get_conversation_or_404(conversation_id)
+        # NOTE: _require_participant() takes conversation_id (int), not the
+        # Conversation instance — matching MessageSendView/MessageFetchSinceView's
+        # existing calls above. Passing the object here originally was a bug.
+        _require_participant(conversation_id, self.request.user)
+        return Message.objects.filter(conversation=conversation).order_by("-created_at")
+
+
+@csrf_exempt
+def message_collection_view(request, conversation_id):
+    if request.method == "GET":
+        if "since" in request.GET:
+            return MessageFetchSinceView.as_view()(
+                request, conversation_id=conversation_id
+            )
+        return MessageHistoryView.as_view()(request, conversation_id=conversation_id)
+    return MessageSendView.as_view()(request, conversation_id=conversation_id)
 
 
 class UserPresenceView(APIView):
