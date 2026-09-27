@@ -181,3 +181,127 @@ async def test_connected_participant_receives_broadcast_message():
     assert payload["text"] == "hello over websocket"
 
     await communicator.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# Part P-069 -- Delivery-State Machine (sent -> delivered -> read)
+# ---------------------------------------------------------------------------
+#
+# Exact WebSocket event shapes exercised below (locked contract for
+# P-073/P-074's Flutter client):
+#     Outbound (recipient -> server): {"type": "mark_delivered", "message_id": <id>}
+#                                      {"type": "mark_read", "message_id": <id>}
+#     Broadcast (server -> both connected clients): {"message_id": <id>, "status": "delivered"|"read"}
+
+
+@database_sync_to_async
+def _create_message(conversation, sender, text="hello", status=None):
+    """
+    Directly persists a Message via the ORM (bypassing the REST send
+    endpoint, which Part P-068 already covers end to end above) so
+    these P-069 tests can start from any status they need, including
+    'read', without replaying the full sent->delivered->read
+    progression first. status=None keeps the Model's own default
+    ('sent').
+    """
+    from chat.models import Message
+
+    kwargs = {"conversation": conversation, "sender": sender, "text": text}
+    if status is not None:
+        kwargs["status"] = status
+    return Message.objects.create(**kwargs)
+
+
+@database_sync_to_async
+def _get_message_status(message_id):
+    from chat.models import Message
+
+    return Message.objects.get(id=message_id).status
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_full_status_progression_sent_to_delivered_to_read():
+    """
+    The recipient's WebsocketCommunicator sends mark_delivered then
+    mark_read for the same message; the sender's WebsocketCommunicator
+    must receive a status_update broadcast for each step, and the
+    Message's status in the database must actually progress
+    sent -> delivered -> read.
+    """
+    user_a, user_b, conversation = await _make_conversation_with_participants(
+        "p069_progress_sender", "p069_progress_receiver"
+    )
+    message = await _create_message(conversation, user_a)
+
+    sender_communicator, sender_connected, _ = await _connect(
+        conversation.id, _access_token_for(user_a)
+    )
+    assert sender_connected is True
+
+    receiver_communicator, receiver_connected, _ = await _connect(
+        conversation.id, _access_token_for(user_b)
+    )
+    assert receiver_connected is True
+
+    # --- delivered ---
+    await receiver_communicator.send_to(
+        text_data=json.dumps({"type": "mark_delivered", "message_id": message.id})
+    )
+
+    raw = await sender_communicator.receive_from()
+    payload = json.loads(raw)
+    assert payload == {"message_id": message.id, "status": "delivered"}
+    assert await _get_message_status(message.id) == "delivered"
+
+    # --- read ---
+    await receiver_communicator.send_to(
+        text_data=json.dumps({"type": "mark_read", "message_id": message.id})
+    )
+
+    raw = await sender_communicator.receive_from()
+    payload = json.loads(raw)
+    assert payload == {"message_id": message.id, "status": "read"}
+    assert await _get_message_status(message.id) == "read"
+
+    await sender_communicator.disconnect()
+    await receiver_communicator.disconnect()
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.asyncio
+async def test_delivered_ack_after_read_is_a_noop_not_a_regression():
+    """
+    The regression-guard case required by P-069's Definition of Done:
+    a message that is already 'read' must not be pushed back to
+    'delivered' by a late-arriving mark_delivered ack, and no
+    status_update broadcast claiming a change must be sent since no
+    change actually happened.
+    """
+    user_a, user_b, conversation = await _make_conversation_with_participants(
+        "p069_regress_sender", "p069_regress_receiver"
+    )
+    message = await _create_message(conversation, user_a, status="read")
+
+    sender_communicator, sender_connected, _ = await _connect(
+        conversation.id, _access_token_for(user_a)
+    )
+    assert sender_connected is True
+
+    receiver_communicator, receiver_connected, _ = await _connect(
+        conversation.id, _access_token_for(user_b)
+    )
+    assert receiver_connected is True
+
+    await receiver_communicator.send_to(
+        text_data=json.dumps({"type": "mark_delivered", "message_id": message.id})
+    )
+
+    # No broadcast at all -- receive_nothing() waits its default
+    # timeout and asserts nothing arrived, which is exactly the
+    # "silent no-op, not a regression" contract this part requires.
+    assert await sender_communicator.receive_nothing() is True
+    assert await _get_message_status(message.id) == "read"
+
+    await sender_communicator.disconnect()
+    await receiver_communicator.disconnect()
