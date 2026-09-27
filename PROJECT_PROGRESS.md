@@ -9111,3 +9111,77 @@ Exact next starting point:
   send_push_notification() for real and add the device-token model,
   without touching chat/tasks.py's notify_offline_recipient() or
   chat/views.py's dispatch logic.
+
+
+  ## Part P-073 — Flutter: WebSocket Connection Manager (Global Singleton) — COMPLETE ✅
+
+Status: COMPLETE — unit tests (21/21) AND real manual backend
+verification (connect, real-time message receipt, network-loss +
+reconnection, deliberate-disconnect-mid-backoff) both passed.
+
+Files created:
+- lib/core/chat/chat_event.dart
+- lib/core/chat/chat_connection_manager.dart
+- test/core/chat/chat_event_test.dart
+- test/core/chat/chat_connection_manager_test.dart
+
+Files touched in final cleanup pass:
+- lib/core/chat/_debug_chat_harness.dart — removed one unused import
+  (chat_event.dart) flagged by `flutter analyze`.
+
+Connection-scope decision: per-conversation, on-demand. connect(id) is
+called when a chat thread screen opens; disconnect() when it closes.
+"Singleton" = one ChatConnectionManager instance (chatConnectionManagerProvider)
+governing whichever single conversation is currently active — not one
+permanent app-wide socket. Safe because P-068's persistence-first backend
+means no message is lost regardless of live socket state.
+
+Locked contract, verified directly against chat/consumers.py,
+chat/middleware.py, chat/routing.py, chat/serializers.py (cavallo-app):
+- URL: ws://<host>/ws/conversations/<id>/?token=<access_token>
+  (the /ws/ prefix matters — an earlier draft omitted it; fixed here).
+- Outbound (client→server) frames always carry an explicit "type":
+  {"type":"heartbeat"}, {"type":"typing","is_typing":bool},
+  {"type":"mark_delivered","message_id":int}, {"type":"mark_read","message_id":int}.
+- Inbound (server→client) frames never carry a "type" key — discriminated
+  structurally: a raw Message (chat_message), {"message_id","status"}
+  (status_update), or {"is_typing"} only (typing_indicator — no userId;
+  1:1 conversations only, server excludes the sender's own channel).
+
+Reconnection: exponential backoff 1s/2s/4s/8s/16s, capped at 30s
+(ChatConnectionManager.backoffDelayForAttempt), resets to 0 on a
+successful (re)connect. A deliberate disconnect() never triggers it,
+including mid-backoff-wait (cancels the pending Timer; also
+double-guarded via _deliberateDisconnect inside the retry callback
+itself in case the Timer cancellation races it).
+
+Heartbeat: periodic Timer every 30s while connected (comfortably under
+chat/consumers.py's PRESENCE_TTL_SECONDS=60), started after every
+successful (re)connect, stopped on any close.
+
+Tests: 21 unit tests, all passing (URL construction incl. /ws/ prefix,
+connect/disconnect state tracking, backoff schedule as a pure function,
+reconnect-vs-deliberate-disconnect incl. mid-backoff cancellation,
+heartbeat timing + exact payload, all 4 outbound send-method payloads,
+inbound event parsing + malformed-frame resilience) — via
+FakeChatSocket + fake Timer factories, no real network. flutter analyze
+clean (0 issues).
+
+Manual real-backend verification: PASSED. Connected via
+lib/core/chat/_debug_chat_harness.dart against the live Django/Channels
+backend (docker compose), received a real-time message sent from a
+second user session, and confirmed automatic reconnection (increasing
+backoff intervals visible in the log) after `docker compose stop web`
+followed by successful reconnect after `docker compose start web`.
+
+Known housekeeping item (not part of P-073's own scope): a stray
+lib/core.zip got committed into the repo during this part's file
+exchange — should be `git rm`'d before P-074 starts, to avoid it
+being mistaken for a real source file.
+
+Next starting point: Part P-074 (Flutter chat UI, lib/features/chat/) —
+the primary consumer of chatConnectionManagerProvider's
+connectionState/eventStream, and of connect()/disconnect()/
+sendTyping()/sendMarkDelivered()/sendMarkRead(). P-074 should call
+connect() in the thread screen's initState (or equivalent) and
+disconnect() on dispose, per the per-conversation scope decision above.
