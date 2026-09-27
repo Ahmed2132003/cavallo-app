@@ -8802,3 +8802,102 @@ GitHub reference:
 Next starting point: P-070 / next part in sequence, working from
 commit b0d9c86 on main. chat/consumers.py and chat/test_consumers.py
 are both up to date on origin/main as of this commit.
+
+### P-070 — Presence via Redis
+
+Status: DONE ✅ (both STEPs)
+
+STEP 1 (Consumer-level presence — connect/disconnect/heartbeat):
+- ChatConsumer.connect() sets `online:{user.id}` in the Django cache
+  (django_redis) with a 60s TTL, once accepted (never for a rejected
+  connection).
+- receive() handles `{"type": "heartbeat"}` by re-setting the same
+  key/TTL (no separate refresh API).
+- disconnect() explicitly clears the key for an authenticated user,
+  so a disconnect reads as offline immediately, not after TTL lapse.
+- Key format centralized in `presence_cache_key(user_id)` so both
+  halves of this part (consumer + REST view) can never drift.
+- Known limitation flagged, not silently handled: single key per user
+  id, not per-connection — a second simultaneous connection's later
+  disconnect will incorrectly mark the user offline if the first
+  connection closes. Not an MVP requirement per spec; revisit if
+  multi-device concurrent connections become real.
+
+STEP 2 (REST presence check):
+- `GET /api/v1/conversations/users/<int:user_id>/presence/`
+  (`UserPresenceView`, chat/views.py) — reads the same cache key via
+  `presence_cache_key()`. Response: `{"user_id": <id>, "is_online": <bool>}`.
+- 404 for a `user_id` that doesn't exist at all (explicit DRF
+  NotFound, same convention as `_get_conversation_or_404`). 401 for
+  an unauthenticated request.
+
+Architecture decisions (flagged explicitly, not silently made):
+- The spec named `GET /api/v1/users/{id}/presence/`, but no `users`
+  app/prefix exists in `config/urls.py` — every User-model route
+  lives under `/api/v1/auth/` (accounts), and this is chat-specific
+  data anyway. Routed instead under the existing chat prefix:
+  `/api/v1/conversations/users/<id>/presence/`.
+- `IsAuthenticated` only on the presence-check endpoint — no
+  shared-conversation-participant restriction. The spec doesn't
+  require one, and a bare online/offline boolean for an id that's
+  already discoverable elsewhere (e.g. a conversation's own
+  `participant_ids`) is lower-sensitivity than message content.
+  Revisit if a future part wants presence hidden from non-contacts.
+
+Files created: none.
+
+Files modified:
+- `chat/consumers.py` — presence key management in
+  connect()/disconnect()/receive() (STEP 1).
+- `chat/views.py` — added `UserPresenceView` (STEP 2).
+- `chat/urls.py` — added `users/<int:user_id>/presence/` route,
+  `name="user-presence"` (STEP 2).
+- `chat/test_consumers.py` — 3 new Channels async tests for STEP 1
+  (connect/disconnect, rejected-connection-never-sets-presence,
+  heartbeat-extends-TTL).
+- `chat/tests.py` — 5 new REST tests for STEP 2 (never-connected,
+  cache-key-set, deletion-reflected-immediately, 404-unknown-user,
+  401-unauthenticated).
+
+Commands run (Windows, docker compose, from D:\Cavallo\scd-backend):
+```bash
+docker compose up -d db redis
+docker compose exec web pytest chat/tests.py -v
+docker compose exec web pytest chat/ -v
+docker compose exec web pytest -q
+docker compose exec web black --check chat/
+docker compose exec web flake8 chat/
+```
+
+Tests / Verification results (actually run and confirmed):
+- `chat/tests.py -v` — **10/10 passed** (STEP 2 batch, before presence
+  tests were re-confirmed together with STEP 1 below).
+- `chat/ -v` — **20/20 passed** (10 REST + 10 Channels, STEP 1 + STEP 2
+  combined, no regressions in P-067/P-068/P-069).
+- `pytest -q` (full suite) — **837 passed, 1 skipped**, 1 pre-existing
+  unrelated DB-teardown-contention warning. No regressions.
+- `black --check chat/` / `flake8 chat/` — clean (exit 0) after fixing
+  a missing-trailing-newline issue (W292) that had crept into all 4
+  touched files during copy/paste from chat into the editor — fixed
+  with a small Python one-liner that appends a newline only where one
+  was actually missing, re-verified clean afterward.
+
+Known issues: none. The missing-trailing-newline lint failure was a
+copy/paste artifact, not a logic bug — confirmed fixed, not just
+patched over, by re-running the full lint + test suite after the fix.
+
+### GitHub references
+- Repo: https://github.com/Ahmed2132003/cavallo-app (branch: `main`)
+- STEP 1 + earlier fixes commit: `ee9b58a`
+- STEP 2 + newline-fix commit: `8308afd` — pushed, `ee9b58a..8308afd main -> main`
+
+### Remaining work / exact next starting point
+- **P-071** (Typing Indicator, WS-only, zero persistence) is next in
+  sequence — depends only on P-067, working from commit `8308afd` on
+  `main`. `chat/consumers.py` at this commit already has the
+  connect/disconnect/receive() structure P-071 extends (adding one
+  more branch in `receive()` for `{"type": "typing", "is_typing": ...}`,
+  broadcasting a `typing_indicator` event while excluding the sender's
+  own channel from receiving it back).
+
+**PART P-070 is CLOSED.**
