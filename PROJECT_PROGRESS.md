@@ -8505,3 +8505,113 @@ All 6 tests green, flake8/black clean, migration applied (`chat.0001_initial` �
 
 ### Exact next starting point
 Part P-067 (Django Channels / WebSocket infrastructure) and Part P-068 (persistence-first message send flow) both build directly on `Conversation`/`ConversationParticipant`/`Message` as they now exist — Conversation identity is stable and deduplication is proven from both directions, so P-068 can rely on it without re-verifying.
+
+## PART P-067 — Django Channels Setup + WebSocket Consumer Skeleton
+Status: COMPLETE ✅ (both STEP 1 and STEP 2 validated on the real machine, pushed to main)
+
+### What was implemented
+- Django Channels wired into the project via config/asgi.py's ProtocolTypeRouter:
+  "http" branch unchanged (plain Django ASGI app), "websocket" branch routes
+  through chat.middleware.JWTAuthMiddlewareStack -> URLRouter(chat.routing.websocket_urlpatterns).
+- A dedicated Redis DB index (DB 2) for the Channels layer, distinct from
+  Celery's broker (DB 0) and Django's cache (DB 1). Index is read from
+  REDIS_CHANNELS_DB (default 2), URL built via _redis_url_with_db() in
+  config/settings/base.py — never hardcoded.
+- chat/middleware.py — JWTAuthMiddleware (Channels ASGI middleware, distinct
+  from Django's HTTP middleware). Reads a `token` query-string parameter,
+  validates it via simplejwt's AccessToken(token) directly (no HttpRequest
+  available), resolves scope["user"] to a real User or AnonymousUser on any
+  failure (bad signature, expired, wrong token_type, unknown user_id). Never
+  raises and never rejects the connection itself — that's ChatConsumer's job.
+- chat/routing.py — websocket_urlpatterns: `ws/conversations/<int:conversation_id>/`
+  -> ChatConsumer.as_asgi().
+- chat/consumers.py — ChatConsumer(AsyncWebsocketConsumer), connection/auth
+  skeleton ONLY (no send/receive/broadcast logic — that's P-068):
+  - connect(): rejects unauthenticated users (close code 4001); runs an
+    object-level IDOR check — ConversationParticipant.objects.filter(
+    conversation_id=..., user=...).exists() via database_sync_to_async —
+    and rejects non-participants (close code 4003); otherwise joins Channels
+    group `conversation_{id}` and accepts.
+  - disconnect(): leaves the group cleanly (group_discard is a safe no-op if
+    the connection never got past the auth checks).
+  - receive() intentionally left un-overridden (no-op) — inbound frames are
+    silently ignored until P-068.
+- daphne added as the FIRST app in INSTALLED_APPS (before django.contrib.staticfiles)
+  so daphne's own `runserver` override activates and `python manage.py runserver`
+  (used unchanged in docker-compose.yml's web service) serves both HTTP and
+  WebSocket upgrade requests. Confirmed via `application_mapping.keys()` ==
+  dict_keys(['http', 'websocket']) and via docker logs showing daphne's ASGI
+  server banner instead of the plain WSGI runserver banner. No docker-compose.yml
+  change was needed as a result.
+- chat/test_consumers.py (STEP 2) — 4 real WebSocket tests using
+  channels.testing.WebsocketCommunicator against the actual config.asgi.application
+  (so the real JWTAuthMiddlewareStack + ChatConsumer chain is exercised, not a
+  mock):
+  - test_participant_with_valid_token_connects — connected is True.
+  - test_authenticated_non_participant_is_rejected — close code 4003 (the
+    critical IDOR test for this part).
+  - test_invalid_token_is_rejected — close code 4001.
+  - test_missing_token_is_rejected — close code 4001.
+  All four use @pytest.mark.django_db(transaction=True) — required because
+  WebsocketCommunicator drives the consumer on a separate thread/event loop,
+  and its database_sync_to_async ORM calls need setup data actually committed
+  (not left in an uncommitted outer transaction) to be visible.
+- pytest-asyncio==1.4.* added to requirements.txt to run these `async def`
+  tests via the explicit @pytest.mark.asyncio marker (pytest.ini's addopts
+  left untouched — strict mode only activates on marked tests).
+
+### Files created
+- chat/middleware.py
+- chat/routing.py
+- chat/consumers.py
+- chat/test_consumers.py
+
+### Files modified
+- config/settings/base.py (daphne in INSTALLED_APPS; REDIS_CHANNELS_DB/REDIS_CHANNELS_URL; CHANNEL_LAYERS)
+- config/asgi.py (ProtocolTypeRouter wiring)
+- requirements.txt (daphne==4.2.*, pytest-asyncio==1.4.*)
+
+### Files NOT changed (confirmed unnecessary)
+- docker-compose.yml — daphne's runserver override makes the existing
+  `python manage.py runserver 0.0.0.0:8000` command serve WebSocket too.
+
+### Architecture decisions locked for future parts
+- WebSocket URL + auth convention (LOCKED CONTRACT for P-073's Flutter
+  WebSocket client): `ws://<host>/ws/conversations/<conversation_id>/?token=<access_token>`
+  — query param name is exactly `token`, raw access-token string, no
+  "Bearer " prefix.
+- Close codes: 4001 = unauthenticated (missing/invalid/expired token),
+  4003 = authenticated but not a participant of the conversation.
+- Redis DB index convention (also in .env.example / CONFIG.md): DB0 = Celery
+  broker, DB1 = Django cache, DB2 = Channels layer, DB3+ reserved.
+
+### Commands used
+docker compose down
+docker compose build web celery_worker celery_beat
+docker compose up -d
+docker compose exec web python manage.py check
+docker compose exec web pytest chat/ -v
+docker compose exec web pytest -q
+
+### Tests / Verification results (real machine, Docker Compose, real Postgres+Redis)
+- docker compose logs web --tail=30 → daphne ASGI banner confirmed (not plain WSGI runserver).
+- python -c "from config.asgi import application; print(application.application_mapping.keys())" → dict_keys(['http', 'websocket']).
+- redis-cli -n 0/-n 1/-n 2 keys "*" → no cross-contamination between Celery/cache/Channels DBs.
+- chat/test_consumers.py -v → 4 passed.
+- chat/ -v (old P-066 tests + new P-067 tests together) → 10 passed.
+- Full suite: pytest -q → 827 passed, 1 skipped (was 823 passed, 1 skipped before P-067 — the +4 are exactly the new WebSocket tests; zero regressions).
+- flake8 / black --check clean on all new/modified files.
+
+### Known issues
+- None open for this part.
+
+### GitHub references
+- Commit ef00fd7 — P-067 STEP 1 (Channels infra: middleware, routing, consumer skeleton, ASGI/settings wiring, daphne).
+- Commit 45b103b — P-067 STEP 2 (WebSocket tests via WebsocketCommunicator).
+- Both on github.com/Ahmed2132003/cavallo-app, branch main.
+
+### Exact next starting point
+Part P-067 is fully complete and merged into main. Next part is P-068
+(persistence-first send) — extends ChatConsumer's receive()/group-send logic
+on top of the connect/disconnect/group-membership skeleton built here. No
+other file needs revisiting before starting P-068.
