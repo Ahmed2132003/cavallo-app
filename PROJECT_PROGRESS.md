@@ -8440,3 +8440,68 @@ accounts, not restricted to Customer-Business pairs. Strongly consider
 inserting the Main Navigation Shell part described above before or
 alongside Phase 12, since Phase 12's own chat screens will hit the
 exact same "no way to navigate here" gap otherwise.
+
+## PART P-066 — chat App: Conversation/Message/ConversationParticipant Models (Any-to-Any)
+
+Status: ✅ COMPLETE — merged to origin/main
+
+### What was implemented
+- New Django app `chat` (NOT `apps.chat` — this repo has no `apps.` package prefix; models/views/etc. live directly under `chat/`).
+- Models: `Conversation` (no direct participant FKs), `ConversationParticipant` (FK to Conversation + FK to AUTH_USER_MODEL, unique_together=('conversation','user')), `Message` (FK to Conversation, FK sender, `text` blank=True, `status` choices sent/delivered/read default='sent'). All three extend `core`'s `TimestampedModel`.
+- `POST /api/v1/conversations/start/` (`ConversationStartView`, IsAuthenticated) — accepts `{"recipient_id": <id>}`, resolves to an existing Conversation between the two users if one exists (double-filter on `participants__user`, `.distinct().first()`), else creates a new Conversation + two ConversationParticipant rows inside `transaction.atomic()`. No account_type check anywhere in this flow, per confirmed any-to-any decision. Returns 200 if existing, 201 if newly created, 400 for missing/self recipient_id, 404 for unknown recipient.
+- Registered in Django Admin (`Conversation` with inline participants, `ConversationParticipant`, `Message`).
+- `chat` added to `INSTALLED_APPS` in `config/settings/base.py`.
+
+### Files created
+- `chat/__init__.py`
+- `chat/apps.py`
+- `chat/models.py`
+- `chat/admin.py`
+- `chat/migrations/__init__.py`
+- `chat/migrations/0001_initial.py`
+- `chat/serializers.py`
+- `chat/views.py`
+- `chat/urls.py`
+- `chat/tests.py`
+
+### Files modified
+- `config/settings/base.py` — added `"chat",` to `INSTALLED_APPS`
+- `config/urls.py` — added `path("api/v1/conversations/", include("chat.urls"))`
+
+### Architecture decisions
+- Deduplication query: `Conversation.objects.filter(participants__user=X).filter(participants__user=Y).distinct().first()` — plain ORM double-join, no canonical-pair precomputation; adequate at MVP scale, documented as the deliberate simple choice.
+- Schema keeps participants in a separate join table (not direct FKs on Conversation) to leave room for future group chat without being schema-breaking — no group-chat logic actually built.
+
+### Commands
+```bash
+docker-compose exec web python manage.py makemigrations chat
+docker-compose exec web python manage.py migrate chat
+docker-compose exec web black chat/
+docker-compose exec web flake8 chat/
+docker-compose exec web pytest chat/ -v
+```
+
+### Tests
+- `pytest chat/ -v` → 6 passed:
+  - new-conversation creation (1 Conversation + 2 ConversationParticipant rows)
+  - deduplication proven from BOTH directions (A→B, then A→B again, then B→A — all resolve to same Conversation id)
+  - any-to-any proven across all 3 account_type combinations (customer-customer, business-business, customer-business) — all return 201
+  - new Message defaults to status='sent'
+- `black chat/` and `flake8 chat/` clean.
+
+### Verification results
+All 6 tests green, flake8/black clean, migration applied (`chat.0001_initial` — [X]), models importable via `from chat.models import ...` inside the container, Admin shows Conversation/ConversationParticipant/Message under "Chat".
+
+### Known issues
+- One line in `config/settings/base.py` (`"chat",`) carried a stray `^M` (CRLF) line ending inconsistent with the rest of the file (visible in the git diff as `+    "chat",^M`) — cosmetic only, did not block migrate/tests, but worth normalizing line endings in that file next time it's touched.
+- `celerybeat-schedule` showed as modified in `git status` during this Part but was deliberately NOT committed (it's Celery runtime state, not source) — still not in `.gitignore`; recommend adding it there in a future housekeeping part.
+
+### Remaining work
+- None for P-066 itself — models + conversation-start endpoint are fully done and deduplication-proven.
+
+### GitHub references
+- Commits (in order): `d010112` (serializers/views/urls/tests + urls.py wiring), `2492528` (models/admin/apps/migrations), `5b5ecfa` (INSTALLED_APPS registration)
+- Repo: https://github.com/Ahmed2132003/cavallo-app
+
+### Exact next starting point
+Part P-067 (Django Channels / WebSocket infrastructure) and Part P-068 (persistence-first message send flow) both build directly on `Conversation`/`ConversationParticipant`/`Message` as they now exist — Conversation identity is stable and deduplication is proven from both directions, so P-068 can rely on it without re-verifying.
