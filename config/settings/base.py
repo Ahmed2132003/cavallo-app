@@ -45,6 +45,18 @@ SECRET_KEY = env("SECRET_KEY")
 # Application definition
 # ---------------------------------------------------------------------------
 INSTALLED_APPS = [
+    # Part P-067: must be the very first app, and before
+    # django.contrib.staticfiles specifically — this is what makes
+    # daphne's own `runserver` management command replace Django's
+    # built-in one, so `manage.py runserver` (used unchanged by
+    # docker-compose.yml's web service) serves BOTH HTTP and WebSocket
+    # upgrade requests via config.asgi.application, instead of only
+    # HTTP. A plain Gunicorn/WSGI runserver setup cannot do this at
+    # all — see daphne's own runserver command
+    # (daphne/management/commands/runserver.py) for how the override
+    # works. Keeps Django's autoreload behavior in dev, unlike running
+    # `daphne` as a separate standalone process would.
+    "daphne",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -74,8 +86,6 @@ INSTALLED_APPS = [
     "search",  # Part P-063: Postgres full-text search infra (ADR-003).
     "ratings",  # Part P-109: Rating model + average_rating/ratings_count.
     "chat",
-
-
 ]
 
 # ---------------------------------------------------------------------------
@@ -163,19 +173,23 @@ def _redis_url_with_db(base_url, db_index):
 #
 # Redis logical DB index convention for this project (also documented in
 # .env.example and CONFIG.md):
-#   DB 0  — Celery broker/result backend, and (for now) the Channels layer
-#           too — both still point at plain REDIS_URL, unchanged by this
-#           part.
-#   DB 1  — Django cache framework (this part). Index is read from
-#           REDIS_CACHE_DB rather than hardcoded, per this part's scope.
-#   DB 2+ — reserved. In particular, Phase 12's Channels layer work
-#           should give CHANNEL_LAYERS its own dedicated index (e.g. DB 2)
-#           instead of continuing to share DB 0 with Celery — this part's
-#           scope was the cache framework only, so CHANNEL_LAYERS below is
-#           intentionally left untouched.
+#   DB 0  — Celery broker/result backend. Still points at plain REDIS_URL,
+#           unchanged.
+#   DB 1  — Django cache framework (Part P-014). Index is read from
+#           REDIS_CACHE_DB rather than hardcoded.
+#   DB 2  — Channels layer (Part P-067). Index is read from
+#           REDIS_CHANNELS_DB rather than hardcoded. This used to share
+#           DB 0 with Celery (a TODO left open by P-014, see the old
+#           comment this replaces) — moved onto its own index by this
+#           part so a WebSocket group-send/group-membership key can never
+#           collide with a Celery broker key in the same Redis keyspace.
+#   DB 3+ — reserved for future parts.
 # ---------------------------------------------------------------------------
 REDIS_CACHE_DB = env.int("REDIS_CACHE_DB", default=1)
 REDIS_CACHE_URL = _redis_url_with_db(REDIS_URL, REDIS_CACHE_DB)
+
+REDIS_CHANNELS_DB = env.int("REDIS_CHANNELS_DB", default=2)
+REDIS_CHANNELS_URL = _redis_url_with_db(REDIS_URL, REDIS_CHANNELS_DB)
 
 CACHES = {
     "default": {
@@ -191,7 +205,7 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [REDIS_URL],
+            "hosts": [REDIS_CHANNELS_URL],
         },
     }
 }

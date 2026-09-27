@@ -8,6 +8,12 @@ django-cors-headers==4.9.*
 # Realtime / websockets
 channels==4.3.*
 channels-redis==4.3.*
+# Part P-067: provides a `runserver` override (registered because
+# "daphne" is listed first in INSTALLED_APPS, see config/settings/base.py)
+# so the existing `python manage.py runserver` command in
+# docker-compose.yml's web service serves WebSocket upgrade requests
+# too, not just HTTP — a plain Gunicorn/WSGI setup cannot do this.
+daphne==4.2.*
 
 # Async tasks
 celery==5.6.*
