@@ -8713,3 +8713,92 @@ from `requirements.txt`) was already fixed and committed before STEP 2.
   by, P-068's concern (what happens after the REST call succeeds).
 
 **PART P-068 is CLOSED.**
+
+### P-069 — Delivery-State Machine (sent → delivered → read)
+
+Status: DONE ✅
+
+What was implemented:
+- ChatConsumer.receive() now parses incoming WebSocket text frames as
+  JSON and dispatches two recipient-side acknowledgment event types:
+  "mark_delivered" and "mark_read", each carrying {"message_id": <id>}.
+- A forward-only transition guard (ALLOWED_TRANSITIONS =
+  {sent: {delivered, read}, delivered: {read}, read: set()}) is
+  enforced in a new _apply_status_transition() DB helper — a target
+  status not present in the current status's allowed set, or already
+  equal to the current status, is a silent no-op (returns None,
+  nothing is broadcast). Never trusts client-claimed status directly.
+- Message lookup in _apply_status_transition() is scoped to
+  self.conversation_id (not just message_id), so an ack can never
+  touch a message belonging to a conversation the connected user
+  isn't a participant of, even if they know/guess its id.
+- On a genuinely applied transition, a "status.update" event
+  ({"message_id", "status"}) is group_send'd to the conversation's
+  group; a new status_update() handler method forwards it to both
+  connected participants as JSON (Channels maps "status.update" ->
+  status_update() the same way "chat.message" -> chat_message()).
+
+Exact WebSocket event shapes (LOCKED CONTRACT — P-073/P-074's Flutter
+client must send/handle these exact names, matching P-069's Handoff
+Notes):
+- Outbound (recipient → server):
+    {"type": "mark_delivered", "message_id": <id>}
+    {"type": "mark_read", "message_id": <id>}
+- Broadcast (server → both connected clients):
+    {"message_id": <id>, "status": "delivered" | "read"}
+
+Files modified:
+- chat/consumers.py — added receive(), status_update(),
+  _apply_status_transition(), ALLOWED_TRANSITIONS,
+  _ACK_EVENT_TARGET_STATUS. No new files created. No REST endpoint
+  added (WebSocket-only by design, per spec).
+- chat/test_consumers.py — added two Channels async tests:
+  test_full_status_progression_sent_to_delivered_to_read (full
+  sent→delivered→read progression, sender receives both broadcasts,
+  DB status verified at each step) and
+  test_delivered_ack_after_read_is_a_noop_not_a_regression (regression
+  guard: mark_delivered on an already-'read' message leaves status
+  'read' and produces no broadcast at all, verified via
+  communicator.receive_nothing()).
+
+Architecture decisions:
+- Regression guard implemented as an explicit transition table rather
+  than an ordinal/"greater than" comparison, so the set of valid next
+  states is data, not inferred logic — easier to extend safely if a
+  new status is ever added between delivered and read.
+- current_status == target_status (idempotent re-ack) and an
+  actually-invalid/regressive transition are both treated as the same
+  "no-op, no broadcast" outcome — receive() never distinguishes them
+  and never sends an error frame back to the client.
+
+Commands run (Windows, docker compose, from D:\Cavallo\scd-backend):
+    docker compose up -d db redis
+    docker compose exec web pytest chat/test_consumers.py -v
+    docker compose exec web pytest chat/ -v
+
+Test results: 7/7 passed in chat/test_consumers.py; 17/17 passed across
+the full chat/ suite (chat/tests.py + chat/test_consumers.py) — no
+regressions in P-067/P-068's existing tests.
+
+Verification: confirmed manually from the pytest -v output — both new
+P-069 tests (test_full_status_progression_sent_to_delivered_to_read,
+test_delivered_ack_after_read_is_a_noop_not_a_regression) PASSED,
+alongside all 5 pre-existing chat/test_consumers.py tests and all 10
+pre-existing chat/tests.py tests.
+
+Known issues: none.
+
+Remaining work: none for P-069 itself. P-072 (offline delivery — what
+happens when a recipient wasn't connected to ack in real time at all)
+and P-073/P-074 (Flutter chat UI consuming these exact event shapes)
+remain as their own separate parts, per P-069's original Handoff
+Notes — not started here.
+
+GitHub reference:
+- Repo: https://github.com/Ahmed2132003/cavallo-app
+- Commit: b0d9c86 ("update") on branch main
+- Pushed: 09a487e..b0d9c86 -> main
+
+Next starting point: P-070 / next part in sequence, working from
+commit b0d9c86 on main. chat/consumers.py and chat/test_consumers.py
+are both up to date on origin/main as of this commit.
