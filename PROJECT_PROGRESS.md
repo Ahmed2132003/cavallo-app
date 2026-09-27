@@ -8615,3 +8615,101 @@ Part P-067 is fully complete and merged into main. Next part is P-068
 (persistence-first send) — extends ChatConsumer's receive()/group-send logic
 on top of the connect/disconnect/group-membership skeleton built here. No
 other file needs revisiting before starting P-068.
+
+## PART P-068 — Persistence-First Send Flow — STATUS: DONE ✅ (2/2 steps complete, verified)
+
+### What was implemented
+
+**STEP 1 (Persistence):**
+- `MessageSendView` (`chat/views.py`) — `POST /api/v1/conversations/<conversation_id>/messages/`,
+  authenticated, object-level participant check (403 for a non-participant,
+  same IDOR discipline as P-067's WebSocket `connect()`), creates the
+  `Message` row (`status='sent'`) via a plain synchronous ORM call, returns
+  201 once persisted.
+- `MessageSerializer` (`chat/serializers.py`) — `text` is the only
+  client-writable field; `conversation`/`sender`/`status`/`id`/`created_at`
+  are read-only / view-assigned.
+- URL wired in `chat/urls.py`.
+
+**STEP 2 (Broadcast — best-effort, completing the part):**
+- `MessageSendView.post()` now, AFTER the message is already persisted and
+  the 201 response body is already built, attempts:
+  `async_to_sync(channel_layer.group_send)(f"conversation_{conversation_id}",
+  {"type": "chat.message", "message": <serialized message>})`
+- This call is wrapped in its own `try/except Exception` that only
+  `logger.exception(...)`s and swallows the failure — it cannot affect the
+  HTTP response or roll back the persisted `Message`. This is the concrete
+  implementation of the architecture's core chat reliability rule, and it
+  is genuinely proven under a forced failure, not just implemented.
+- `ChatConsumer` (`chat/consumers.py`, P-067) gained a
+  `chat_message(self, event)` handler — Channels maps `"type": "chat.message"`
+  to this method name (dot → underscore) on every consumer joined to the
+  target group. It does `await self.send(text_data=json.dumps(event["message"]))`
+  — no DB access, pure forward to the connected WebSocket client.
+
+### Files modified
+- `chat/views.py`
+- `chat/consumers.py`
+- `chat/serializers.py`
+- `chat/urls.py`
+- `chat/tests.py`
+- `chat/test_consumers.py`
+
+### Architecture decisions
+- No new architecture introduced. Followed the locked group-naming
+  convention from P-067 exactly (`f"conversation_{conversation_id}"`).
+- Broadcast failure handling uses a bare `except Exception` intentionally
+  — any failure mode (layer down, serialization, mocked in tests) is
+  swallowed the same way, per this part's Definition of Done.
+
+### Commands
+```bash
+docker compose exec web black chat/
+docker compose exec web flake8 chat/
+docker compose exec web pytest chat/ -v
+docker compose exec web pytest -q
+```
+
+### Tests / Verification results (actually run and confirmed)
+- `black chat/` — 4 files reformatted (`consumers.py`, `test_consumers.py`,
+  `views.py`, `tests.py`), 10 unchanged. Clean.
+- `flake8 chat/` — no output, clean.
+- `pytest chat/ -v` — **15 passed** in 28.41s, including:
+  - `test_send_message_persists_and_returns_201` — PASSED
+  - `test_send_message_rejects_non_participant` — PASSED
+  - `test_send_message_returns_404_for_unknown_conversation` — PASSED
+  - **`test_send_message_persists_even_when_broadcast_fails` — PASSED**
+    (THE CRITICAL RELIABILITY TEST: `chat.views.async_to_sync` mocked to
+    raise `RuntimeError`; response still 201, `Message` row still exists)
+  - **`test_connected_participant_receives_broadcast_message` — PASSED**
+    (real end-to-end: `WebsocketCommunicator` connected as the receiver,
+    `MessageSendView` hit via `APIClient` wrapped in `sync_to_async`,
+    receiver actually received the broadcasted JSON payload over the
+    WebSocket through the real `config.asgi.application` stack)
+  - All 4 pre-existing P-067 consumer tests still PASSED (no regression)
+- `pytest -q` (full suite) — **832 passed, 1 skipped**, 1 pre-existing
+  unrelated warning (test-DB teardown contention, not introduced by this
+  part). No regressions versus the pre-P-068 baseline of 830 passed.
+
+### Known issues
+None identified. `black`/`flake8` gap discovered during STEP 1 (missing
+from `requirements.txt`) was already fixed and committed before STEP 2.
+
+### GitHub references
+- Repo: https://github.com/Ahmed2132003/cavallo-app (branch: `main`)
+- STEP 1 commit: `5b9c763`
+- STEP 2 (final) commit: `4448cf7` — pushed, `5b9c763..4448cf7 main -> main`
+
+### Remaining work / exact next starting point
+- **P-069** (delivery-state transitions: `sent` → `delivered` → `read`)
+  extends this flow's broadcast payload to include delivery-ack handling —
+  starts from `MessageSendView.post()` and `ChatConsumer.chat_message()`
+  exactly as they stand at the end of P-068 (commit `4448cf7`).
+- **P-070** (presence-aware broadcasting) is informational only for
+  P-068's broadcast attempt (no presence check needed there) but becomes
+  relevant once P-069 builds on top of it.
+- **P-075** (Flutter local outbound queue) is the client-side counterpart
+  for retrying a failed REST call itself — distinct from, and unaffected
+  by, P-068's concern (what happens after the REST call succeeds).
+
+**PART P-068 is CLOSED.**
