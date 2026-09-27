@@ -90,3 +90,58 @@ def test_message_default_status_is_sent():
     )
 
     assert message.status == Message.Status.SENT
+
+
+def test_send_message_persists_and_returns_201():
+    user_a = create_user("msg_sender", "customer")
+    user_b = create_user("msg_receiver", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    url = reverse(
+        "chat:conversation-messages", kwargs={"conversation_id": conversation.id}
+    )
+    response = client.post(url, {"text": "hello there"}, format="json")
+
+    assert response.status_code == status.HTTP_201_CREATED
+    assert response.data["text"] == "hello there"
+    assert response.data["status"] == Message.Status.SENT
+    assert Message.objects.filter(
+        conversation=conversation, sender=user_a, text="hello there"
+    ).exists()
+
+
+def test_send_message_rejects_non_participant():
+    user_a = create_user("msg_part_a", "customer")
+    user_b = create_user("msg_part_b", "customer")
+    outsider = create_user("msg_outsider", "customer")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=user_a)
+    ConversationParticipant.objects.create(conversation=conversation, user=user_b)
+
+    client = APIClient()
+    client.force_authenticate(user=outsider)
+
+    url = reverse(
+        "chat:conversation-messages", kwargs={"conversation_id": conversation.id}
+    )
+    response = client.post(url, {"text": "sneaky"}, format="json")
+
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+    assert not Message.objects.filter(text="sneaky").exists()
+
+
+def test_send_message_returns_404_for_unknown_conversation():
+    user_a = create_user("msg_404_a", "customer")
+
+    client = APIClient()
+    client.force_authenticate(user=user_a)
+
+    url = reverse("chat:conversation-messages", kwargs={"conversation_id": 999999})
+    response = client.post(url, {"text": "hi"}, format="json")
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND

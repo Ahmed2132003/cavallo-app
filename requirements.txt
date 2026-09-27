@@ -49,3 +49,9 @@ pytest-django==4.*
 # pytest-asyncio's default "strict" mode only activates on tests
 # carrying that marker.
 pytest-asyncio==1.4.*
+
+# Dev / linting (STEP 1 of P-068 discovered these were never actually
+# added to requirements.txt, despite prior parts' commands referencing
+# them — added here so `black`/`flake8` exist inside the container).
+black==25.*
+flake8==7.*
