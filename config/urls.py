@@ -102,4 +102,5 @@ urlpatterns = [
     # feed/ above, since search spans both BusinessProfile and
     # Product and isn't business-scoped.
     path("api/v1/search/", include("search.urls")),
+    path("api/v1/conversations/", include("chat.urls")),
 ]
