@@ -9185,3 +9185,115 @@ connectionState/eventStream, and of connect()/disconnect()/
 sendTyping()/sendMarkDelivered()/sendMarkRead(). P-074 should call
 connect() in the thread screen's initState (or equivalent) and
 disconnect() on dispose, per the per-conversation scope decision above.
+
+## P-074 — POST-STEPS: Real-Device Manual Test Blockers Found & Fixed — FINAL CLOSURE
+
+Status: CONFIRMED COMPLETE. All 4 original steps (backend verification,
+Flutter data layer, presentation layer, widget tests) were already done
+and tested. During the actual manual two-account test, THREE additional
+real, live blockers were found and fixed (none required in the original
+4-step plan — none were bugs in that work, all three were either
+infra/deployment gaps or a genuine, previously-flagged-but-unconfirmed
+edge case). All three are now fixed, tested, committed, and pushed.
+
+### Blocker 1 — no navigation entry point existed to ChatListScreen
+This codebase has no bottom navigation bar, tab bar, or drawer anywhere
+yet (confirmed by full-project grep — no BottomNavigationBar/
+NavigationBar/TabBar/Drawer exists in lib/). `RouteNames.chatList` /
+`/chat` was wired correctly in app_router.dart, but nothing in the
+running app ever navigated to it.
+Fix: added an "Open Chat (debug — no nav entry point yet)" entry to
+HomeFeedScreen's existing `_DebugMenu` overflow menu (the same
+temporary-bridge convention already used there for 'search'/
+'discover'), calling `context.pushNamed(RouteNames.chatList)`.
+File modified: lib/features/feed/presentation/home_feed_screen.dart
+Should be removed once a real, permanent messaging entry point exists
+(a bottom-nav tab, or a "Message" button on a business profile).
+
+### Blocker 2 — WebSocket handshake failing entirely (infra, not code)
+Symptom: `WebSocketChannelException: HttpException: Connection closed
+before full header was received` on every connection attempt.
+Root cause: `daphne`/`channels`/`channels-redis` were correctly added
+to requirements.txt and `daphne` was correctly first in INSTALLED_APPS
+(config/settings/base.py) — the SETUP was 100% correct on paper — but
+the running `scd-backend-web` Docker image had never been rebuilt since
+those packages were added to requirements.txt, so the container was
+silently still running plain WSGI (`daphne` package not actually
+installed inside the running container despite being in the file).
+Fix (infra only, zero code change):
+  docker compose build web
+  docker compose up -d --force-recreate web
+Confirmed fixed: docker compose logs web afterward showed real
+"django.channels.server" WebSocket HANDSHAKING/DISCONNECT log lines
+(Daphne actually serving WebSocket upgrades), not the old plain-WSGI
+banner.
+
+### Blocker 3 — REAL BUG, confirmed live: ConversationRepository.listConversations() response-shape mismatch
+This was the actual cause of the infinite loading spinner on the
+Messages/ChatListScreen. `listConversations()` assumed a paginated
+`{results, next, previous}` envelope (per its own STEP 2 doc comment,
+which had already explicitly flagged this exact risk as unconfirmed).
+Confirmed via a real device log:
+  [HTTP] <-- 200 http://10.0.2.2:8095/api/v1/conversations/
+  [reportError] type '_TypeError' is not a subtype of type 'ApiFailure' in type cast
+    at conversation_repository.dart:68:21
+Root cause: `ConversationListView` sets no `pagination_class`, and
+`REST_FRAMEWORK` in config/settings/base.py has no project-wide
+`DEFAULT_PAGINATION_CLASS` set at all — so the endpoint returns a
+plain JSON array, not an envelope. Requesting the response as
+`Map<String, dynamic>` made Dio itself throw trying to cast the
+decoded `List`; that got wrapped as a `DioException` whose `.error`
+was the raw `TypeError` (not an `ApiFailure`), so the repository's own
+`on DioException catch (e) { throw e.error as ApiFailure; }` line
+threw a SECOND, more confusing cast failure trying to cast a
+`_TypeError` to `ApiFailure`. That escaped as an uncaught exception,
+which `ChatListScreen._loadFirstPage()`'s `on ApiFailure catch` never
+matched — so `setState(() => _isLoadingFirstPage = false)` never ran,
+leaving the spinner stuck forever.
+Fix: `listConversations()` now requests the response as `dynamic` and
+branches on the actual runtime shape — a bare `List` is wrapped into a
+single non-paginated page (`next`/`previous` both null); the
+`{results, next, previous}` envelope is still parsed the original way,
+so this keeps working unmodified if the backend is ever given a real
+`pagination_class` for this view later.
+File modified: lib/features/chat/data/conversation_repository.dart
+FLAGGED, NOT YET FIXED THE SAME WAY: `fetchMessageHistory()` — its own
+STEP 2 doc comment names a specific `StandardCursorPagination` backend
+class (unlike `ConversationListView`, which named none), so it was
+NOT changed defensively. If opening a real message thread ever throws
+the identical `_TypeError`/`ApiFailure` cast failure at this method's
+own `PaginatedResponse.fromJson` line, apply the identical fix there.
+
+### Manual two-account test — CONFIRMED PASSED
+All commands and the full manual two-account real-time test (delivery
+status progression, typing indicator, presence label, offline-recipient
+message persistence) passed after the three fixes above.
+
+### Commits pushed
+- cavallo-app (Django backend): commit 47a1ee0 → origin/main
+- cavallo-mobile (Flutter): commit 83d7c0c → origin/main
+
+### Known issues carried forward (unchanged from STEP 4, still real)
+- Presence label on the thread screen is this device's own socket
+  state, not the other participant's real online/offline status (no
+  backend event carries that field yet).
+- "mark read" uses a screen-foreground approximation, not real
+  per-bubble scroll-visibility detection.
+- Two temporary bridges still exist and should be removed once real
+  product surfaces exist: ChatListScreen's "New chat (test)" FAB (no
+  real "start a conversation" entry point, e.g. a business profile
+  "Message" button, exists yet), and HomeFeedScreen's "Open Chat
+  (debug)" menu entry (no real app-wide bottom nav/drawer exists yet).
+- fetchMessageHistory() not yet defensively fixed against a
+  non-enveloped array response — see Blocker 3's flag above.
+
+### P-074 — FINAL STATUS: ✅ COMPLETE
+All 4 original steps + all 3 real-device blockers found during manual
+testing are resolved, tested, committed, and pushed to both repos.
+
+### Next starting point
+P-075 (outbound retry queue) — builds directly on ChatThreadScreen's
+send flow. Worth doing before or alongside P-075: build the app's
+actual bottom navigation shell (currently nonexistent anywhere in the
+codebase) so the two temporary debug-menu/FAB bridges above can be
+retired for good.
