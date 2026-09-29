@@ -1,5 +1,8 @@
 from django.conf import settings
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 from django.db import models
+from django.db.models import Q
 
 from core.models import TimestampedModel
 
@@ -81,8 +84,38 @@ class Message(TimestampedModel):
         default="",
     )
 
+    # Part P-077 — optional reference to a piece of platform content
+    # (Post / Reel / Product) shared into the conversation. Same generic-FK
+    # pattern as Like/Save/Share (social/models.py). Both columns are
+    # nullable and are ALWAYS set together or left null together (enforced
+    # by the CheckConstraint below). Allowed target types are whitelisted
+    # in chat/serializers.py (SHARE_TO_CHAT_CONTENT_TYPES), never derived
+    # from the ContentType table. PROTECT (not SET_NULL) so deleting a
+    # ContentType row can never leave a half-null reference behind.
+    shared_content_type = models.ForeignKey(
+        ContentType,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    shared_object_id = models.PositiveIntegerField(null=True, blank=True)
+    shared_content = GenericForeignKey("shared_content_type", "shared_object_id")
+
     class Meta:
         ordering = ["created_at"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(shared_content_type__isnull=True, shared_object_id__isnull=True)
+                    | Q(
+                        shared_content_type__isnull=False,
+                        shared_object_id__isnull=False,
+                    )
+                ),
+                name="message_shared_ref_both_or_neither",
+            ),
+        ]
 
     def __str__(self):
         return f"Message #{self.pk} in Conversation #{self.conversation_id}"

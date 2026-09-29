@@ -25,6 +25,7 @@ import logging
 from celery import shared_task
 
 from chat.models import ConversationParticipant, Message
+from chat.serializers import shared_content_type_label
 from notifications.services import send_push_notification
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,21 @@ _MEDIA_PUSH_BODIES = {
     Message.MediaType.IMAGE: "Sent a photo",
     Message.MediaType.VIDEO: "Sent a video",
 }
+
+# Part P-077: a message that only shares content has blank text too.
+_SHARED_PUSH_BODIES = {
+    "post": "Shared a post",
+    "reel": "Shared a reel",
+    "product": "Shared a product",
+}
+
+
+def _push_body(message):
+    if message.text:
+        return message.text[:120]
+    if message.media_type:
+        return _MEDIA_PUSH_BODIES.get(message.media_type, "")
+    return _SHARED_PUSH_BODIES.get(shared_content_type_label(message), "")
 
 
 @shared_task(name="chat.notify_offline_recipient", ignore_result=True)
@@ -72,7 +88,7 @@ def notify_offline_recipient(message_id):
     send_push_notification(
         user_id=recipient.id,
         title="New message",
-        body=message.text[:120] or _MEDIA_PUSH_BODIES.get(message.media_type, ""),
+        body=_push_body(message),
         data={
             "type": "chat_message",
             "conversation_id": message.conversation_id,

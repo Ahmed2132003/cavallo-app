@@ -1,7 +1,11 @@
+from django.apps import apps
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
+from rest_framework.exceptions import NotFound
 
 from core.media import validate_upload
+from social.serializers import _preview_for
 
 from .models import Conversation, ConversationParticipant, Message
 
@@ -18,6 +22,114 @@ CHAT_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"]
 CHAT_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 CHAT_VIDEO_MIME_TYPES = ["video/mp4"]
 CHAT_VIDEO_MAX_BYTES = 25 * 1024 * 1024
+
+# ---------------------------------------------------------------------------
+# Part P-077 — shared content (Post / Reel / Product) inside a message.
+#
+# Closed whitelist, same philosophy as social/views.py's
+# ALLOWED_CONTENT_TYPES / SHARE_ALLOWED_CONTENT_TYPES: never derived from
+# ContentType.objects.all(), so a model like "user" can never be shared just
+# because it exists. Unlike P-056's Share-tracking endpoint (post/reel only),
+# chat sharing also accepts "product" — the Product detail screen's
+# "Share to conversation" needs it.
+# ---------------------------------------------------------------------------
+SHARE_TO_CHAT_CONTENT_TYPES = {
+    "post": ("content", "Post"),
+    "reel": ("content", "Reel"),
+    "product": ("products", "Product"),
+}
+
+
+def _shareable_queryset(model):
+    """
+    Only content that is publicly visible right now may be shared or
+    rendered: Post/Reel via their published_objects manager (P-043),
+    Product via is_active=True (Product.objects already hides
+    soft-deleted rows). Same visibility rules as the public endpoints.
+    """
+    published = getattr(model, "published_objects", None)
+    if published is not None:
+        return published.all()
+    return model.objects.filter(is_active=True)
+
+
+def resolve_shareable_target(content_type_str, object_id):
+    """
+    Resolve a (content_type string, id) pair to (ContentType, instance),
+    the same way P-053's _resolve_like_target does: unknown type ->
+    ValidationError (400), missing/unpublished/inactive target ->
+    NotFound (404).
+    """
+    if content_type_str not in SHARE_TO_CHAT_CONTENT_TYPES:
+        raise serializers.ValidationError(
+            {
+                "shared_content_type": (
+                    f"Unrecognized shared_content_type '{content_type_str}'. "
+                    f"Must be one of: {', '.join(SHARE_TO_CHAT_CONTENT_TYPES)}."
+                )
+            }
+        )
+    app_label, model_name = SHARE_TO_CHAT_CONTENT_TYPES[content_type_str]
+    model = apps.get_model(app_label, model_name)
+    target = _shareable_queryset(model).filter(pk=object_id).first()
+    if target is None:
+        raise NotFound(f"{model_name} not found.")
+    return ContentType.objects.get_for_model(model), target
+
+
+def shared_content_type_label(message):
+    """ "post" / "reel" / "product", or "" when nothing is shared."""
+    if message.shared_content_type_id is None:
+        return ""
+    return ContentType.objects.get_for_id(message.shared_content_type_id).model
+
+
+def build_shared_content_payload(message):
+    """
+    Viewer-INDEPENDENT description of a message's shared content, or None
+    when the message shares nothing. Deliberately carries no per-viewer
+    state (no is_liked / is_saved): the same payload is returned by REST
+    and broadcast over the WebSocket to the other participant. The Flutter
+    client fetches the live, per-viewer entity by (content_type, object_id)
+    and renders PostCard / ReelCard with it.
+
+    `available` is False when the target was unpublished / deactivated /
+    deleted after being shared; `preview` and the business fields are then
+    null so a taken-down item's details never keep leaking through chat.
+    Cost: one query per shared message (documented MVP limitation, same
+    class as ConversationListSerializer's N+1).
+    """
+    label = shared_content_type_label(message)
+    if not label:
+        return None
+
+    payload = {
+        "content_type": label,
+        "object_id": message.shared_object_id,
+        "available": False,
+        "business_id": None,
+        "business_name": None,
+        "preview": None,
+    }
+    model = ContentType.objects.get_for_id(message.shared_content_type_id).model_class()
+    if model is None:
+        return payload
+    target = (
+        _shareable_queryset(model)
+        .select_related("business")
+        .filter(pk=message.shared_object_id)
+        .first()
+    )
+    if target is None:
+        return payload
+
+    payload.update(
+        available=True,
+        business_id=target.business_id,
+        business_name=target.business.business_name,
+        preview=_preview_for(target),
+    )
+    return payload
 
 
 class ConversationSerializer(serializers.ModelSerializer):
@@ -47,6 +159,17 @@ class MessageSerializer(serializers.ModelSerializer):
       2) لو النوع مش صورة => نوع فيديو + سقف الفيديو.
     """
 
+    # Part P-077 — write side: two plain inputs (type string + id) resolved
+    # server-side by resolve_shareable_target(); read side: `shared_content`
+    # (viewer-independent payload, see build_shared_content_payload()).
+    # These two declared fields intentionally shadow the model's own
+    # shared_content_type / shared_object_id columns of the same name.
+    shared_content_type = serializers.CharField(write_only=True, required=False)
+    shared_object_id = serializers.IntegerField(
+        write_only=True, required=False, min_value=1
+    )
+    shared_content = serializers.SerializerMethodField()
+
     class Meta:
         model = Message
         fields = [
@@ -56,6 +179,9 @@ class MessageSerializer(serializers.ModelSerializer):
             "text",
             "media",
             "media_type",
+            "shared_content_type",
+            "shared_object_id",
+            "shared_content",
             "status",
             "created_at",
         ]
@@ -87,13 +213,39 @@ class MessageSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         text = (attrs.get("text") or "").strip()
         media = attrs.get("media")
-        if not text and media is None:
+
+        # Part P-077 — shared content: the type string and the id must
+        # come together, may accompany text, but never media.
+        has_shared_type = "shared_content_type" in attrs
+        has_shared_id = "shared_object_id" in attrs
+        if has_shared_type != has_shared_id:
             raise serializers.ValidationError(
-                "A message must contain text, media, or both."
+                "shared_content_type and shared_object_id must be sent together."
+            )
+        has_shared = has_shared_type and has_shared_id
+        if has_shared and media is not None:
+            raise serializers.ValidationError(
+                "A message cannot carry both media and shared content."
+            )
+
+        if not text and media is None and not has_shared:
+            raise serializers.ValidationError(
+                "A message must contain text, media, shared content, "
+                "or text together with shared content."
             )
         if media is not None:
             attrs["media_type"] = self._media_type
+        if has_shared:
+            content_type, _target = resolve_shareable_target(
+                attrs["shared_content_type"], attrs["shared_object_id"]
+            )
+            # Replace the client's string with the resolved ContentType
+            # instance so serializer.save() writes the real FK column.
+            attrs["shared_content_type"] = content_type
         return attrs
+
+    def get_shared_content(self, obj):
+        return build_shared_content_payload(obj)
 
 
 def _resolve_conversation_participant_display_name(user):
@@ -182,6 +334,7 @@ class ConversationListSerializer(serializers.ModelSerializer):
             "id": message.id,
             "text": message.text,
             "media_type": message.media_type,
+            "shared_content_type": shared_content_type_label(message),
             "sender_id": message.sender_id,
             "status": message.status,
             "created_at": message.created_at,
