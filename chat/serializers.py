@@ -1,7 +1,23 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
+from core.media import validate_upload
 
 from .models import Conversation, ConversationParticipant, Message
+
+# ---------------------------------------------------------------------------
+# Part P-076 — chat media limits (documented, single source of truth).
+#
+# Images: jpeg/png/webp, 5 MB — identical to Post.image / Product.image.
+# Video:  video/mp4 only, 25 MB. Chat video is NOT transcoded (no ffmpeg
+#         pipeline like Reel's), so the stricter 25 MB cap (vs Reel's
+#         100 MB) is the chosen alternative to transcoding. To also accept
+#         iPhone .mov later, add "video/quicktime" to CHAT_VIDEO_MIME_TYPES.
+# ---------------------------------------------------------------------------
+CHAT_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"]
+CHAT_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+CHAT_VIDEO_MIME_TYPES = ["video/mp4"]
+CHAT_VIDEO_MAX_BYTES = 25 * 1024 * 1024
 
 
 class ConversationSerializer(serializers.ModelSerializer):
@@ -17,17 +33,67 @@ class ConversationSerializer(serializers.ModelSerializer):
 
 class MessageSerializer(serializers.ModelSerializer):
     """
-    `text` هو الحقل الوحيد القابل للكتابة من الـ client. `conversation`
-    و`sender` بيتحددوا من الـ view (من الـ URL kwarg ومن request.user
-    على التوالي)، مش من جسم الـ request — بنفس منطق IDOR المتبع في
-    باقي الأجزاء (لا نثق بأي معرّف يبعته الـ client لتحديد الهوية أو
-    العلاقة). `status` بياخد قيمته الافتراضية 'sent' من الـ Model نفسه.
+    `text` و`media` هما الحقلان القابلان للكتابة من الـ client (كلاهما
+    اختياري، لكن لازم واحد منهما على الأقل). `conversation` و`sender`
+    بيتحددوا من الـ view، و`media_type` بيتحدد هنا من نوع الملف الحقيقي
+    (libmagic عبر validate_upload) — مش من أي حاجة يبعتها الـ client.
+
+    Part P-076: التحقق من الملف بيستخدم core.media.validate_upload()
+    نفسها بدون أي منطق تحقق بديل. ملحوظة: validate_upload بتفحص الحجم
+    قبل النوع، فلو استخدمنا سقف الصورة (5MB) مباشرة هيترفض فيديو 10MB
+    غلط. عشان كده الفحص على مرحلتين، كلهم عن طريق نفس الدالة:
+      1) نوع صورة + سقف الفيديو (25MB) — نجح => صورة، وبعدها نطبق سقف
+         الصورة (5MB) بنفس الدالة.
+      2) لو النوع مش صورة => نوع فيديو + سقف الفيديو.
     """
 
     class Meta:
         model = Message
-        fields = ["id", "conversation", "sender", "text", "status", "created_at"]
-        read_only_fields = ["id", "conversation", "sender", "status", "created_at"]
+        fields = [
+            "id",
+            "conversation",
+            "sender",
+            "text",
+            "media",
+            "media_type",
+            "status",
+            "created_at",
+        ]
+        read_only_fields = [
+            "id",
+            "conversation",
+            "sender",
+            "media_type",
+            "status",
+            "created_at",
+        ]
+
+    def validate_media(self, value):
+        try:
+            validate_upload(value, CHAT_IMAGE_MIME_TYPES, CHAT_VIDEO_MAX_BYTES)
+        except DjangoValidationError as exc:
+            if exc.code != "unsupported_file_type":
+                # file_too_large (أكبر من 25MB أيًا كان النوع) — نرفضه كما هو.
+                raise
+            # مش صورة: يا فيديو مسموح، يا يترفض بنفس رسالة validate_upload.
+            validate_upload(value, CHAT_VIDEO_MIME_TYPES, CHAT_VIDEO_MAX_BYTES)
+            self._media_type = Message.MediaType.VIDEO
+        else:
+            # صورة حقيقية: نطبق سقف الصورة (5MB) عبر نفس الدالة.
+            validate_upload(value, CHAT_IMAGE_MIME_TYPES, CHAT_IMAGE_MAX_BYTES)
+            self._media_type = Message.MediaType.IMAGE
+        return value
+
+    def validate(self, attrs):
+        text = (attrs.get("text") or "").strip()
+        media = attrs.get("media")
+        if not text and media is None:
+            raise serializers.ValidationError(
+                "A message must contain text, media, or both."
+            )
+        if media is not None:
+            attrs["media_type"] = self._media_type
+        return attrs
 
 
 def _resolve_conversation_participant_display_name(user):
@@ -66,6 +132,10 @@ class ConversationListSerializer(serializers.ModelSerializer):
     Acceptable at MVP scale (a user's conversation count is small); revisit
     with Prefetch objects if this list ever needs to scale to hundreds of
     conversations per user.
+
+    Part P-076: last_message now also carries `media_type` (additive) so
+    the list can show a "Photo"/"Video" preview for a media-only message
+    whose `text` is blank.
     """
 
     other_participant = serializers.SerializerMethodField()
@@ -111,6 +181,7 @@ class ConversationListSerializer(serializers.ModelSerializer):
         return {
             "id": message.id,
             "text": message.text,
+            "media_type": message.media_type,
             "sender_id": message.sender_id,
             "status": message.status,
             "created_at": message.created_at,

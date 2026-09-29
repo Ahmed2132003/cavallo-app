@@ -15,6 +15,9 @@ message_id sends the same "would-be push" log line again — it performs
 no writes, so there is nothing to double-apply. Genuine push delivery
 itself remains unverified end-to-end pending Firebase credentials
 (Section 7 item 4); see PROJECT_PROGRESS.md.
+
+Part P-076: a media-only message has blank text, so the push body falls
+back to a short media label instead of an empty string.
 """
 
 import logging
@@ -25,6 +28,11 @@ from chat.models import ConversationParticipant, Message
 from notifications.services import send_push_notification
 
 logger = logging.getLogger(__name__)
+
+_MEDIA_PUSH_BODIES = {
+    Message.MediaType.IMAGE: "Sent a photo",
+    Message.MediaType.VIDEO: "Sent a video",
+}
 
 
 @shared_task(name="chat.notify_offline_recipient", ignore_result=True)
@@ -64,7 +72,7 @@ def notify_offline_recipient(message_id):
     send_push_notification(
         user_id=recipient.id,
         title="New message",
-        body=message.text[:120],
+        body=message.text[:120] or _MEDIA_PUSH_BODIES.get(message.media_type, ""),
         data={
             "type": "chat_message",
             "conversation_id": message.conversation_id,

@@ -45,6 +45,10 @@ class Message(TimestampedModel):
         DELIVERED = "delivered", "Delivered"
         READ = "read", "Read"
 
+    class MediaType(models.TextChoices):
+        IMAGE = "image", "Image"
+        VIDEO = "video", "Video"
+
     conversation = models.ForeignKey(
         Conversation,
         on_delete=models.CASCADE,
@@ -60,6 +64,21 @@ class Message(TimestampedModel):
         max_length=20,
         choices=Status.choices,
         default=Status.SENT,
+    )
+    # Part P-076. Plain FileField (not ImageField): same P-013/P-032/P-041
+    # convention as Post.image / Reel.video / Story.media (no Pillow).
+    # Real content validation happens in MessageSerializer.validate_media()
+    # via core.media.validate_upload(). Optional: a text-only message
+    # leaves it null; a media-only message leaves `text` blank.
+    media = models.FileField(upload_to="chat/media/", null=True, blank=True)
+    # "image" / "video" / "" (no media). Set by the serializer from the
+    # SNIFFED content type (never from the client), so the Flutter client
+    # can render the right bubble without guessing from a filename.
+    media_type = models.CharField(
+        max_length=10,
+        choices=MediaType.choices,
+        blank=True,
+        default="",
     )
 
     class Meta:
