@@ -9297,3 +9297,287 @@ send flow. Worth doing before or alongside P-075: build the app's
 actual bottom navigation shell (currently nonexistent anywhere in the
 codebase) so the two temporary debug-menu/FAB bridges above can be
 retired for good.
+
+## PART P-075 — Flutter: Local Outbound Message Queue + Automatic Retry — ✅ COMPLETE
+
+**Status:** COMPLETE — All P-075 requirements have been fully implemented, tested, verified, committed, and pushed to `main`. There is no pending work remaining for P-075.
+
+**Final Commit:** `460610c`
+**Branch:** `main`
+**Repository:** `Ahmed2132003/cavallo-mobile`
+**Commit Message:** `P-075: widget tests for outbound queue UI + fix ref.read in ChatThreadScreen.dispose`
+
+### What was implemented
+
+* Implemented a **Local Outbound Message Queue** for Chat REST message sending.
+* The queue is separate from the WebSocket reconnection mechanism implemented in P-073.
+* Implemented:
+
+  * Attempt counter.
+  * Automatic retry.
+  * Exponential backoff:
+
+    * 2s
+    * 4s
+    * 8s
+    * 16s
+  * Maximum of 5 attempts.
+  * Injectable backoff delay for tests.
+  * Manual retry resets the attempt counter to 1.
+* Implemented **Optimistic UI**:
+
+  * The message input is cleared immediately after pressing Send.
+  * A local pending bubble is displayed immediately.
+  * On successful sending, the pending entry is removed.
+  * `OutboundMessageSent` is emitted through `sentStream`.
+  * `ChatThreadScreen` upserts the real server `Message`.
+* Implemented outbound message UI states:
+
+  * Sending — clock icon.
+  * Retrying — clock icon + `Retrying…`.
+  * Failed — error-colored bubble + `Failed to send · Tap to retry`.
+* Tapping anywhere on a failed bubble triggers retry.
+* A small `×` button allows discarding a failed message.
+* Pending messages are displayed only for the current conversation.
+* Pending messages are displayed after confirmed messages.
+* If message history fails to load while pending messages exist, the pending messages are displayed instead of the history-error state.
+* Removed the old `_isSending` and send-button spinner logic from `ChatThreadScreen`.
+* Added `sentStream` subscription handling to `ChatThreadScreen`.
+* Fixed `ref.read` usage inside `ChatThreadScreen.dispose`.
+* Preserved the existing public API of `MessageBubbleWidget`.
+
+### Retry behavior
+
+P-075 uses the following retry policy:
+
+* **Only `NetworkFailure` is automatically retried.**
+* The following failures are not automatically retried and immediately transition to failed:
+
+  * `ValidationFailure`
+  * `AuthFailure`
+  * `ServerFailure`
+  * `UnknownFailure`
+  * Any unexpected exception
+* Unexpected exceptions never silently lose the message; they transition to the failed state with the retry affordance.
+
+### Architecture decisions
+
+* The outbound queue is **in-memory only** and is not persisted across app restarts.
+* The provider is not `autoDispose`.
+* If the user leaves the conversation while a retry is in progress, the retry continues.
+* When the user returns to the conversation, the pending message appears again.
+* In-flight HTTP requests cannot currently be cancelled because `sendMessage` does not accept a `CancelToken`.
+* `discardFailedMessage` only operates on messages currently in the failed state.
+* Dedicated typedef:
+
+  * `MessageBackoffDelayForAttempt`
+* Provider:
+
+  * `outboundMessageQueueProvider`
+* Provider type:
+
+  * `NotifierProvider<OutboundMessageQueueNotifier, List<OutboundMessage>>`
+* API:
+
+  * `enqueueMessage({conversationId, text})`
+  * `retryFailedMessage(id)`
+  * `discardFailedMessage(id)`
+  * `sentStream`
+
+### Important implementation details
+
+* `MessageRepository.sendMessage()` throws `ApiFailure` directly rather than `DioException`.
+* The queue handles `ApiFailure` according to the P-075 retry policy.
+* The implementation preserves the established **never silently lose message content** reliability guarantee.
+* The queue follows the reliability pattern previously established by `StoryUploadQueueNotifier` in P-051 while applying the specific retry policy required by P-075.
+
+### Files created
+
+* `lib/features/chat/presentation/outbound_message_queue_provider.dart`
+* `test/features/chat/presentation/outbound_message_queue_provider_test.dart`
+* `test/features/chat/presentation/chat_thread_screen_outbound_test.dart`
+* `test/features/chat/presentation/outbound_message_bubble_widget_test.dart`
+
+### Files modified
+
+* `lib/features/chat/presentation/chat_thread_screen.dart`
+* `lib/features/chat/presentation/message_bubble_widget.dart`
+
+### Widget/UI tests added
+
+The previously tracked widget-test debt has now been completed.
+
+Added:
+
+* `test/features/chat/presentation/chat_thread_screen_outbound_test.dart`
+* `test/features/chat/presentation/outbound_message_bubble_widget_test.dart`
+
+These tests cover the outbound queue UI and ChatThreadScreen behavior, including pending, retrying, failed, retry, and discard interactions.
+
+### Tests
+
+#### Outbound Queue unit tests
+
+Implemented **13 unit tests** covering:
+
+* Eventual success with zero failures.
+* Eventual success after two failures.
+* `sentStream` event on successful send.
+* Always-failing request reaches failed after exactly 5 attempts.
+* `ValidationFailure` is not retried.
+* `AuthFailure` is not retried.
+* `ServerFailure` is not retried.
+* Unexpected exception transitions to failed.
+* Manual retry resets attempt to 1 and can succeed.
+* Retry is a no-op when the message is not failed.
+* Failed-message discard.
+* Discard is a no-op while retrying.
+* Backoff function receives failed attempts 1 through 4.
+* Dispose during a pending retry cancels the retry.
+
+#### Widget tests
+
+Added and verified:
+
+* Outbound message bubble UI.
+* Chat thread outbound queue UI.
+* Sending/pending state.
+* Retrying state.
+* Failed state.
+* Retry interaction.
+* Discard interaction.
+* Queue → ChatThreadScreen success hand-off.
+
+### Final verification results
+
+The final code was verified on the real development environment.
+
+```text
+flutter test test/features/chat/presentation/chat_thread_screen_outbound_test.dart
+00:04 +6: All tests passed!
+```
+
+```text
+flutter analyze
+Analyzing social_commerce_app...
+No issues found! (ran in 5.1s)
+```
+
+```text
+flutter test test/features/chat/
+00:05 +52: All tests passed!
+```
+
+**Final Chat test result: `52/52 PASS`**
+
+**Flutter Analyze: `No issues found!`**
+
+### Manual verification
+
+A real network-loss test was performed using **airplane mode** on the real device/emulator against the running backend.
+
+Verified successfully:
+
+* Message appears optimistically as pending.
+* Network loss does not silently lose the message.
+* Automatic retry works.
+* Message transitions to failed after retry exhaustion.
+* Manual retry works.
+* Failed message can be discarded.
+* Successful retry replaces the pending state with the real server message.
+
+**Manual real-network-loss test: PASSED**
+
+An earlier manual smoke test was performed while `chat_thread_screen.dart` still contained the old implementation and therefore is not counted as P-075 verification. The later airplane-mode test was performed after the final queue wiring was confirmed and is the authoritative manual verification.
+
+### Git verification
+
+Final working-tree changes were:
+
+```text
+M lib/features/chat/presentation/chat_thread_screen.dart
+?? test/features/chat/presentation/chat_thread_screen_outbound_test.dart
+?? test/features/chat/presentation/outbound_message_bubble_widget_test.dart
+```
+
+Files were staged:
+
+```text
+git add lib/features/chat/presentation/chat_thread_screen.dart test/features/chat/presentation/outbound_message_bubble_widget_test.dart test/features/chat/presentation/chat_thread_screen_outbound_test.dart
+```
+
+Commit created:
+
+```text
+git commit -m "P-075: widget tests for outbound queue UI + fix ref.read in ChatThreadScreen.dispose"
+```
+
+Result:
+
+```text
+[main 460610c] P-075: widget tests for outbound queue UI + fix ref.read in ChatThreadScreen.dispose
+3 files changed, 519 insertions(+), 8 deletions(-)
+```
+
+Push completed successfully:
+
+```text
+git push origin main
+```
+
+Result:
+
+```text
+1b3540d..460610c  main -> main
+```
+
+**Git Push: SUCCESS**
+
+### Final P-075 state
+
+* Implementation: ✅ COMPLETE
+* Local outbound message queue: ✅ COMPLETE
+* Automatic retry: ✅ COMPLETE
+* Optimistic UI: ✅ COMPLETE
+* Sending state: ✅ COMPLETE
+* Retrying state: ✅ COMPLETE
+* Failed state: ✅ COMPLETE
+* Manual retry: ✅ COMPLETE
+* Discard failed message: ✅ COMPLETE
+* Unit tests: ✅ PASS
+* Widget tests: ✅ PASS
+* Full Chat test suite: ✅ `52/52 PASS`
+* `flutter analyze`: ✅ CLEAN
+* Real airplane-mode test: ✅ PASS
+* Commit: ✅ `460610c`
+* Push to `origin/main`: ✅ SUCCESS
+* Pending work for P-075: **NONE**
+* Backend changes: **NONE REQUIRED**
+
+### Known issues carried forward
+
+The following are known architectural items from previous parts or future improvements. They do **not** represent pending work for P-075:
+
+* There is currently no `client_message_id` backend deduplication mechanism. If a request reaches the server but its response is lost, an automatic retry could create a duplicate message. The future fix requires a client-generated ID plus backend deduplication.
+* Independently queued messages may not preserve strict server-side ordering when repeated failures occur.
+* `fetchMessageHistory()` still needs defensive handling if the backend returns a non-enveloped array response.
+* The temporary chat-entry bridges from P-074 remain:
+
+  * `ChatListScreen` — `New chat (test)` FAB.
+  * `HomeFeedScreen` — `Open Chat (debug)` menu entry.
+* The real bottom-navigation shell has not yet replaced those temporary chat-entry bridges.
+
+These items do not block P-075 completion and are not part of the P-075 Definition of Done.
+
+### Next starting point
+
+**P-076 — Chat Media**
+
+P-076 can reuse `OutboundMessageQueueNotifier` as the reliability/state-machine template for:
+
+* Attempt tracking.
+* Backoff.
+* Retryable vs non-retryable failures.
+* Successful-send hand-off through `sentStream`.
+
+The real bottom-navigation shell can also be implemented before or alongside P-076 to retire the remaining temporary chat-entry bridges.
