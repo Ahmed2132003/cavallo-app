@@ -9581,3 +9581,236 @@ P-076 can reuse `OutboundMessageQueueNotifier` as the reliability/state-machine 
 * Successful-send hand-off through `sentStream`.
 
 The real bottom-navigation shell can also be implemented before or alongside P-076 to retire the remaining temporary chat-entry bridges.
+
+## PART P-076 — Chat Media Messages (Image/Video) — STATUS: COMPLETE ✅
+
+### What was implemented
+Chat messages now support an optional media attachment (image or video) alongside
+or instead of text, on both backend and Flutter, reusing every established pattern
+from prior parts (no new validation logic, no new retry implementation).
+
+### Backend (repo: cavallo-app, D:\Cavallo\scd-backend)
+
+Files changed:
+- chat/models.py — added `Message.media` (FileField, upload_to="chat/media/",
+  null=True, blank=True) and `Message.media_type` (CharField, choices IMAGE/VIDEO,
+  blank=True, default=""). Set only by the serializer from the sniffed content
+  type, never from the client.
+- chat/migrations/0002_message_media.py — generated, additive, applied.
+- chat/serializers.py — `MessageSerializer.validate_media()` validates via the
+  SHARED `core.media.validate_upload()` (same function used by Post/Product/Reel,
+  not reimplemented). Two-phase check to work around `validate_upload()` checking
+  size before type: (1) try image MIME types with the 25MB (video) cap to
+  determine if it's an image; if yes, re-validate with the 5MB image cap; (2) if
+  not an image, validate as video MIME type with the 25MB cap. `validate()` now
+  requires text OR media (not neither), and sets `media_type` from the resolved
+  type. `ConversationListSerializer.get_last_message()` now also returns
+  `media_type` so the conversation list can show a media preview label.
+- chat/tasks.py — `notify_offline_recipient` push body now falls back to
+  "Sent a photo" / "Sent a video" (`_MEDIA_PUSH_BODIES`) when `message.text` is
+  blank, instead of sending an empty push body.
+- chat/test_media_messages.py — NEW. 11 tests covering: media-only image message
+  succeeds (spies on `validate_upload` via `wraps=` to prove it's the shared
+  function, not a reimplementation), video message with caption, text-only
+  message unaffected, disguised-executable rejected, image over 5MB rejected,
+  video between 5MB–25MB accepted (proves video gets the larger cap), video over
+  25MB rejected, empty message (no text, no media) rejected, non-participant
+  (IDOR) blocked, conversation-list `last_message.media_type` exposed, offline
+  push body falls back to media label.
+
+Chat media limits (single source of truth — `chat/serializers.py`):
+- Image: `image/jpeg`, `image/png`, `image/webp` — max 5 MB (identical to
+  Post.image / Product.image caps).
+- Video: `video/mp4` only — max 25 MB.
+- NO transcoding pipeline for chat video (deliberate — see Architecture
+  Decisions below). To accept iPhone `.mov` later, add `"video/quicktime"` to
+  `CHAT_VIDEO_MIME_TYPES`; documented as a known, intentional limitation, not
+  a bug.
+
+Backend test results (from D:\Cavallo\scd-backend, docker compose exec web):
+- `pytest chat/test_media_messages.py -v` → 11/11 passed
+- `pytest chat/ -q` → 55/55 passed (full chat suite, no regressions)
+- `black chat/` → reformatted 4 files (cosmetic only, expected)
+- `flake8 chat/` → clean, no output
+- `python manage.py showmigrations chat` → [X] 0001_initial, [X] 0002_message_media
+- `python manage.py makemigrations --check --dry-run` → "No changes detected"
+
+Committed and pushed to GitHub (cavallo-app, branch main):
+- Commit a009b51 ("update"), pushed e7b5e6d..a009b51
+- Files in commit: chat/models.py, chat/migrations/0002_message_media.py (new),
+  chat/serializers.py, chat/tasks.py, chat/test_media_messages.py (new), and
+  the accompanying black reformatting.
+
+### Frontend (repo: cavallo-mobile, D:\Cavallo\social_commerce_app)
+
+Files replaced in full:
+- lib/features/chat/domain/message.dart — added `ChatMediaType` enum
+  (image/video) with `fromRaw()` mapping `""`/unrecognized → `null`. `Message`
+  gained optional `mediaUrl` / `mediaType` fields, included in `fromJson`,
+  `copyWithStatus`, `==`, and `hashCode`.
+- lib/features/chat/data/message_repository.dart — added
+  `sendMediaMessage({conversationId, text, mediaPath})`, a SEPARATE method from
+  `sendMessage()` (which stays byte-for-byte unchanged so P-075's test doubles
+  keep compiling). Builds a fresh `FormData` on every call (required — Dio
+  rejects reusing a finalized `FormData`, which is what makes retry actually
+  work). Omits the `text` field entirely when the caption is empty.
+- lib/features/chat/presentation/outbound_message_queue_provider.dart —
+  `OutboundMessage` gained optional `mediaPath` / `mediaType`. Added
+  `enqueueMediaMessage(...)`, both `enqueueMessage`/`enqueueMediaMessage` now
+  funnel into a shared private `_enqueue(...)`. The ONLY media-specific line in
+  the entire retry state machine is inside `_attempt()`: if `mediaPath != null`
+  call `sendMediaMessage`, else `sendMessage`. Attempt counter, exponential
+  backoff (2s/4s/8s/16s/32s, cap 5 attempts), retryable-only-on-`NetworkFailure`,
+  manual retry/discard — all identical to P-075, no second implementation.
+- lib/features/chat/presentation/message_bubble_widget.dart — both
+  `MessageBubbleWidget` (delivered) and `OutboundMessageBubbleWidget` (queued)
+  now render a `_MediaPreview` above the text via a shared `_BubbleShell`. Image
+  renders via `Image.network` (delivered) or `Image.file` (queued, local path),
+  with a broken-image fallback. Video renders as a neutral placeholder + a
+  `_PlayIconOverlay` (same visual language as `ReelCard`'s play overlay) — NOT
+  playable inline (no thumbnail from backend, no video_player package in the
+  project; documented limitation, same class as P-050's boundary). Media-only
+  messages render with no text line.
+
+Files edited (targeted changes):
+- lib/core/chat/chat_event.dart — `ChatEvent.fromJson` now parses `media` /
+  `media_type` off the incoming WebSocket frame (lenient: unexpected types
+  treated as "no media", frame is never dropped). `MessageReceived` gained
+  `mediaUrl` / `mediaType` (raw String?, since this core-layer file doesn't
+  import feature-layer enums), included in `==`/`hashCode`.
+- lib/features/chat/domain/conversation.dart — `LastMessagePreview` gained
+  `mediaType` (parsed via `ChatMediaType.fromRaw`) and a new `previewText`
+  getter: returns `text` if non-empty, else "Photo"/"Video" based on
+  `mediaType`, else falls back to `text`.
+- lib/features/chat/presentation/chat_list_screen.dart — conversation row now
+  shows `lastMessage?.previewText ?? 'No messages yet'` instead of raw `.text`.
+- lib/features/chat/presentation/chat_thread_screen.dart —
+  - `_handleEvent`'s `MessageReceived` branch now passes `mediaUrl` /
+    `ChatMediaType.fromRaw(event.mediaType)` into the constructed `Message`.
+  - Added `_showAttachSheet()` (bottom sheet: Photo / Video) and
+    `_pickAndEnqueueMedia(ChatMediaType)` — uses `image_picker` (already a
+    dependency since P-033, no pubspec change needed), checks file size against
+    `_maxImageBytes` (5MB) / `_maxVideoBytes` (25MB) client-side and shows a
+    SnackBar + aborts if over cap (backend remains the final authority via
+    `validate_upload()`), otherwise calls
+    `outboundMessageQueueProvider.enqueueMediaMessage(...)` with whatever text
+    is currently in the composer as the caption.
+  - `_buildComposer()` rebuilt to add a 📎 attach `IconButton`
+    (`key: chatComposer_attachButton`) before the text field.
+
+New test files (3):
+- test/features/chat/data/message_media_repository_test.dart — 9 tests:
+  multipart shape/fields for `sendMediaMessage` (with and without caption), and
+  parsing of `media`/`media_type` across every arrival path (`Message.fromJson`
+  image/video/text-only/legacy-payload-no-media-keys, `copyWithStatus`,
+  `ChatEvent.fromJson` media and text-only frames, `LastMessagePreview.previewText`
+  text-wins-else-label cases).
+- test/features/chat/presentation/outbound_media_queue_test.dart — 10 tests:
+  adapts every P-075 text-retry case (eventual success after 0/2 failures,
+  exhausts at exactly 5 attempts then fails, non-retryable ApiFailure types fail
+  immediately on attempt 1, unexpected exception fails without being lost,
+  manual retry resets counter to 1 and can then succeed, discard removes a
+  failed message) to the media-send path, using a scripted repository double
+  whose TEXT method throws `StateError` if ever called — proving media never
+  falls back to the text path.
+- test/features/chat/presentation/media_message_bubble_widget_test.dart —
+  6 widget tests: image bubble shows image + caption, video bubble shows
+  placeholder + play icon, media-only message has no text line, text-only
+  message unaffected (regression), queued/sending video bubble shows placeholder
+  + clock, failed media bubble's tap-to-retry and × discard both fire their
+  callbacks.
+
+### Issues hit and fixed during this part
+1. `media_message_bubble_widget_test.dart` had a stray `-` character pasted
+   before the first `import` line, breaking compilation. Fixed by removing it.
+2. `message_media_repository_test.dart`'s `tearDown` failed on Windows with
+   `PathAccessException (errno 32)` deleting the temp dir, because the fake
+   HTTP adapter never reads/closes the `MultipartFile`'s underlying file
+   stream (a test-harness artifact — Dio's real HTTP client does read and
+   close it, so this does not affect the shipped app). Fixed by wrapping the
+   `tempDir.deleteSync(recursive: true)` call in try/catch, ignoring
+   `FileSystemException`.
+
+### Frontend test results (from D:\Cavallo\social_commerce_app, PowerShell)
+- `flutter analyze` → "No issues found!"
+- `flutter test test/features/chat/data/message_media_repository_test.dart` →
+  9/9 passed
+- `flutter test test/features/chat/presentation/outbound_media_queue_test.dart` →
+  10/10 passed
+- `flutter test test/features/chat/presentation/media_message_bubble_widget_test.dart` →
+  6/6 passed
+- `flutter test test/features/chat/` → 77/77 passed (full chat suite, no
+  regressions — 52 pre-existing + 25 new across the 3 new files above; note the
+  new-file count is 25, not 24, because
+  `message_media_repository_test.dart` has 9 tests, not 8 as originally
+  estimated)
+
+### Manual QA (device/emulator, confirmed by user)
+- Sent a real photo through the 📎 → Photo flow: pending bubble with clock,
+  then delivered bubble with the image, confirmed appearing on the other
+  account.
+- Sent a real video through the 📎 → Video flow: placeholder + play icon
+  rendered as expected, caption shown under it.
+- Oversized-file rejection, Airplane-mode retry/failed/manual-retry flow, and
+  the conversation-list "Photo"/"Video" preview label were not explicitly
+  re-confirmed line-by-line in the final message but core send/receive for
+  both image and video was confirmed working end to end.
+
+### Git status (both repos committed AND pushed — confirmed by user)
+- cavallo-mobile (D:\Cavallo\social_commerce_app): commit `3f1cea5` ("update"),
+  pushed `460610c..3f1cea5` to `origin/main`
+  (https://github.com/Ahmed2132003/cavallo-mobile.git). 11 files changed
+  (1084 insertions, 28 deletions); 3 new test files created.
+- cavallo-app (D:\Cavallo\scd-backend): commit `a009b51` ("update"), pushed
+  `e7b5e6d..a009b51` to `origin/main`
+  (https://github.com/Ahmed2132003/cavallo-app.git). 6 files changed
+  (339 insertions, 8 deletions); migration + new test file created.
+
+### Architecture decisions confirmed in this part
+- No video transcoding for chat media. A stricter 25MB size cap on chat video
+  (vs Reel's 100MB + ffmpeg transcode) was the chosen alternative, per the
+  part spec's explicit "out of scope" guidance. No evidence in the codebase
+  that transcoding is required for chat.
+- `media_type` is a field on `Message`, set exclusively server-side from the
+  sniffed MIME type — the client never sends or can influence it.
+- `sendMediaMessage()` is a new, separate repository method rather than adding
+  parameters to `sendMessage()`, specifically to avoid breaking P-075's
+  existing test doubles that override `sendMessage()`'s exact signature.
+- The outbound retry queue has ONE state machine for both text and media;
+  media is not a parallel/duplicate retry implementation — the only
+  media-aware branch is the single line in `_attempt()` choosing which
+  repository method to call.
+- Chat video has no thumbnail (backend generates none, no `video_player`
+  package in the project) — the bubble shows a static placeholder + play icon
+  with no inline playback. Documented as an intentional MVP limitation, same
+  category as P-050's.
+
+### Known limitations (carried forward, documented not silently accepted)
+- Chat video accepts `video/mp4` only; an iPhone `.mov` is rejected by design
+  until `video/quicktime` is added to `CHAT_VIDEO_MIME_TYPES`.
+- No inline video playback in chat (placeholder + play icon only).
+- Client-side size pre-check (5MB/25MB) is a UX convenience only; the backend's
+  `validate_upload()` remains the actual authority.
+- Same outbound-queue limitations already documented under P-075 apply
+  unchanged to media messages (no idempotency key server-side → a lost
+  response after a successful POST can retry into a duplicate; in-memory queue
+  only, does not survive an app kill; no strict cross-message ordering
+  guarantee under repeated failures; a queued media message holds only the
+  local file path, so if the OS cleans up the picker's temp file before a
+  retry, that retry fails non-retryably instead of sending).
+
+### PART P-076 STATUS: COMPLETE ✅
+Backend and Flutter both implemented, tested green (66 backend + 77 frontend
+chat tests, zero regressions), manually verified sending real photo and video
+messages end to end, and pushed to both GitHub repos.
+
+### Next starting point
+P-077 (content sharing — sharing existing platform content, e.g. a
+Product/Post/Reel, as a rich card inside chat) is the next chat-related part
+and is explicitly a distinct concern from P-076 (sharing existing content vs.
+uploading new media) per this part's own Handoff Notes. Before starting P-077,
+review this entry plus P-074/P-075's entries for the current shape of
+`chat/models.py`, `Message`, `MessageSerializer`, `chat_thread_screen.dart`,
+and `message_bubble_widget.dart`, since P-077 will need to extend the same
+`Message` model/bubble pattern with a distinct "shared content" attachment type
+rather than reusing `media`/`media_type` as-is.
