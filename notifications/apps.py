@@ -3,17 +3,21 @@ from django.apps import AppConfig
 
 class NotificationsConfig(AppConfig):
     """
-    Part P-072 (early stub) — Phase 13 will build this app out fully
-    (real FCM SDK integration, device-token model).
+    Notifications app (Part P-072 seam, completed in Part P-078).
 
-    Follows the project-wide top-level-app convention established in
-    P-011/P-012/P-013/P-016/P-024/P-025/P-036/P-041/P-046 (no ``apps/``
-    package) — this app lives at ``notifications/``, not
-    ``apps/notifications/``, matching the Part spec's own "Files
-    Expected" list adapted to the real project convention (see this
-    part's PROJECT_PROGRESS.md entry).
+    Follows the project-wide top-level-app convention (no ``apps/``
+    package) - this app lives at ``notifications/``, not
+    ``apps/notifications/``.
     """
 
     default_auto_field = "django.db.models.BigAutoField"
     name = "notifications"
     verbose_name = "Notifications"
+
+    def ready(self):
+        # Registers the post_save receiver that auto-creates a
+        # NotificationPreference for every new User. Imported here
+        # (not at module load time) per Django's standard convention
+        # for wiring signal receivers, so app-registry/model loading
+        # order is never a problem.
+        import notifications.signals  # noqa: F401
