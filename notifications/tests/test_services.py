@@ -2,9 +2,9 @@
 Service tests for notifications.services (Part P-078).
 
 Proves create_notification() persists correctly, that
-send_push_notification() is still a non-raising, logging stub with its
-frozen signature, and that the two functions are truly independent
-(neither calls the other).
+send_push_notification() keeps its frozen signature (its real FCM
+behaviour is tested in test_push.py, Part P-081), and that the two
+functions are truly independent (neither calls the other).
 """
 
 import inspect
@@ -166,7 +166,7 @@ def test_send_push_notification_never_creates_a_notification_row():
     assert Notification.objects.count() == 0
 
 
-def test_send_push_notification_stub_does_not_raise_and_logs(caplog):
+def test_send_push_notification_without_tokens_does_not_raise_and_logs(caplog):
     with caplog.at_level(logging.INFO, logger="notifications.services"):
         result = send_push_notification(
             user_id=123,
@@ -176,7 +176,7 @@ def test_send_push_notification_stub_does_not_raise_and_logs(caplog):
         )
 
     assert result is None
-    assert "[STUB] Would send push to user 123" in caplog.text
+    assert "user 123 has no device tokens" in caplog.text
 
 
 def test_send_push_notification_signature_is_frozen():

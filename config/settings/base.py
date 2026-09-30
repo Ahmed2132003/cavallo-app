@@ -433,6 +433,12 @@ OBJECT_STORAGE_PUBLIC_ENDPOINT_URL = (
     OBJECT_STORAGE_PUBLIC_ENDPOINT_URL or OBJECT_STORAGE_ENDPOINT_URL
 )
 
+# Part P-081: Firebase Cloud Messaging. Blank until the Firebase project
+# exists (architecture Section 7 item 4); blank means pushes are skipped
+# with a log line (see notifications.services._get_firebase_app).
+FCM_PROJECT_ID = env("FCM_PROJECT_ID", default="")
+FCM_SERVICE_ACCOUNT_JSON_PATH = env("FCM_SERVICE_ACCOUNT_JSON_PATH", default="")
+
 STORAGES = {
     "default": {
         "BACKEND": "core.storage_backends.MediaStorage",

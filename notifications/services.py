@@ -5,8 +5,9 @@ Two INDEPENDENT functions live here, per architecture Sections 17/18:
 
 * create_notification(...) - the in-app half. Writes one Notification
   row. Never sends a push.
-* send_push_notification(...) - the push half. Sends (currently:
-  logs) a push. Never writes a Notification row.
+* send_push_notification(...) - the push half. Sends a real FCM push
+  to every device token the recipient has registered (Part P-081).
+  Never writes a Notification row.
 
 NEITHER FUNCTION MAY CALL THE OTHER. Part P-079's Celery task is the
 one place that calls both together for a real event. Keeping them
@@ -17,6 +18,11 @@ no refactor.
 
 import logging
 
+import firebase_admin
+from django.conf import settings
+from firebase_admin import credentials, messaging
+
+from devices.models import DeviceToken
 from notifications.models import Notification
 
 logger = logging.getLogger(__name__)
@@ -73,21 +79,107 @@ def create_notification(
     )
 
 
+def _get_firebase_app():
+    """
+    Return the initialised Firebase Admin app, or None when FCM is not
+    configured (or fails to initialise).
+
+    Reads ``settings.FCM_SERVICE_ACCOUNT_JSON_PATH``. While the Firebase
+    project does not exist (architecture Section 7 item 4) that setting
+    is blank and this returns None, so pushes are skipped with a log
+    line instead of raising. Once the service-account key exists, only
+    that setting changes - no code change.
+
+    The app is created once and reused; ``firebase_admin.get_app()``
+    raises ValueError when no default app exists yet.
+    """
+    try:
+        return firebase_admin.get_app()
+    except ValueError:
+        pass
+
+    key_path = getattr(settings, "FCM_SERVICE_ACCOUNT_JSON_PATH", "")
+    if not key_path:
+        return None
+
+    try:
+        return firebase_admin.initialize_app(credentials.Certificate(key_path))
+    except Exception:
+        logger.exception(
+            "send_push_notification: could not initialise Firebase from %r.",
+            key_path,
+        )
+        return None
+
+
+def _stringify_data(data: dict) -> dict[str, str]:
+    """
+    FCM data payloads only accept string keys AND string values.
+
+    ``None`` values are omitted (e.g. ``target_id`` for a notification
+    that navigates nowhere), so the client reads a missing key - or an
+    empty ``deep_link_type`` - as "no deep link".
+    """
+    return {str(key): str(value) for key, value in data.items() if value is not None}
+
+
 def send_push_notification(user_id: int, title: str, body: str, data: dict) -> None:
     """
     Push-sending seam. Signature frozen since Part P-072 (called by
-    chat.tasks.notify_offline_recipient) - do not change it.
+    notifications.tasks.dispatch_notification) - do not change it.
 
-    Still a log-only stub. Does NOT create a Notification row; see
-    create_notification().
+    Sends one FCM message to every DeviceToken owned by ``user_id``.
+    Does NOT create a Notification row; see create_notification().
+
+    Never raises for an expected condition:
+
+    * no registered tokens -> logged and skipped (a user who has not
+      granted permission / not opened the app yet);
+    * Firebase not configured -> logged and skipped;
+    * one token fails (invalid / expired) -> logged, and the remaining
+      tokens are still tried.
     """
-    # TODO(P-081): replace with the real FCM SDK call once the Firebase
-    # project exists (Section 7 item 4) and device-token registration
-    # lands. Signature must not change.
+    tokens = list(
+        DeviceToken.objects.filter(user_id=user_id).values_list("token", flat=True)
+    )
+    if not tokens:
+        logger.info("send_push_notification: user %s has no device tokens.", user_id)
+        return
+
+    app = _get_firebase_app()
+    if app is None:
+        logger.warning(
+            "send_push_notification: Firebase is not configured; skipped push "
+            "to user %s (%d device(s)).",
+            user_id,
+            len(tokens),
+        )
+        return
+
+    payload = _stringify_data(data)
+    notification = messaging.Notification(title=title, body=body)
+    sent = 0
+    for token in tokens:
+        message = messaging.Message(
+            token=token,
+            notification=notification,
+            data=payload,
+            android=messaging.AndroidConfig(priority="high"),
+        )
+        try:
+            messaging.send(message, app=app)
+            sent += 1
+        except Exception:
+            # Log a token PREFIX only: the full value is credential-like.
+            logger.exception(
+                "send_push_notification: FCM send failed for user %s (token %s...).",
+                user_id,
+                token[:8],
+            )
+
     logger.info(
-        "[STUB] Would send push to user %s: %s | body=%r data=%r",
+        "send_push_notification: sent %d/%d push(es) to user %s.",
+        sent,
+        len(tokens),
         user_id,
-        title,
-        body,
-        data,
     )
