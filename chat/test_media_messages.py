@@ -189,7 +189,7 @@ def test_conversation_list_last_message_exposes_media_type():
     assert last_message["text"] == ""
 
 
-def test_offline_push_body_falls_back_to_media_label_when_text_blank():
+def test_offline_push_body_falls_back_to_media_label_when_text_blank(dispatch_delay):
     _, _, conversation, sender, recipient = _setup("push_media")
     message = Message.objects.create(
         conversation=conversation,
@@ -197,9 +197,9 @@ def test_offline_push_body_falls_back_to_media_label_when_text_blank():
         media_type=Message.MediaType.VIDEO,
     )
 
-    with patch("chat.tasks.send_push_notification") as mock_send:
-        notify_offline_recipient(message.id)
+    notify_offline_recipient(message.id)
 
-    mock_send.assert_called_once()
-    assert mock_send.call_args.kwargs["body"] == "Sent a video"
-    assert mock_send.call_args.kwargs["user_id"] == recipient.id
+    dispatch_delay.assert_called_once()
+    assert dispatch_delay.call_args.kwargs["body"] == "Sent a video"
+    assert dispatch_delay.call_args.kwargs["recipient_id"] == recipient.id
+    assert dispatch_delay.call_args.kwargs["notification_type"] == "chat_message"

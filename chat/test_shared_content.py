@@ -9,7 +9,6 @@ whitelist (unpublished / inactive / unknown types are rejected), the
 fallbacks, and the database-level both-or-neither constraint.
 """
 
-from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -368,7 +367,7 @@ def test_conversation_list_last_message_exposes_shared_content_type():
     assert last_message["text"] == ""
 
 
-def test_offline_push_body_falls_back_to_shared_content_label():
+def test_offline_push_body_falls_back_to_shared_content_label(dispatch_delay):
     _, _, conversation, sender, recipient = _setup()
     post = _make_post()
     message = Message.objects.create(
@@ -378,12 +377,11 @@ def test_offline_push_body_falls_back_to_shared_content_label():
         shared_object_id=post.id,
     )
 
-    with patch("chat.tasks.send_push_notification") as mock_send:
-        notify_offline_recipient(message.id)
+    notify_offline_recipient(message.id)
 
-    mock_send.assert_called_once()
-    assert mock_send.call_args.kwargs["user_id"] == recipient.id
-    assert mock_send.call_args.kwargs["body"] == "Shared a post"
+    dispatch_delay.assert_called_once()
+    assert dispatch_delay.call_args.kwargs["recipient_id"] == recipient.id
+    assert dispatch_delay.call_args.kwargs["body"] == "Shared a post"
 
 
 def test_database_rejects_a_half_set_shared_reference():

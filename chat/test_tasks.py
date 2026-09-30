@@ -1,17 +1,15 @@
 """
-Tests for chat.tasks.notify_offline_recipient (Part P-072).
+Tests for chat.tasks.notify_offline_recipient (Part P-072, updated P-079).
 
 Runs the task as a plain function call (Celery's shared_task decorator
-makes it directly callable without a worker) — same convention as
+makes it directly callable without a worker) - same convention as
 moderation/tests/test_tasks.py (P-039) and stories/tests/test_tasks.py
-(P-048). notifications.services.send_push_notification is mocked here
-because it's a documented stub (Phase 13 replaces it for real) — this
-test only proves the task resolves the right recipient and calls the
-seam with a reasonable, deep-link-ready payload, not that a real push
-was sent.
-"""
+(P-048).
 
-from unittest.mock import patch
+Part P-079: the task no longer calls send_push_notification directly; it
+enqueues notifications.tasks.dispatch_notification. The dispatch_delay
+fixture (root conftest.py) is the mocked dispatch_notification.delay.
+"""
 
 import pytest
 from django.contrib.auth import get_user_model
@@ -33,7 +31,9 @@ def _make_user(username):
     )
 
 
-def test_notify_offline_recipient_resolves_other_participant_not_sender():
+def test_notify_offline_recipient_resolves_other_participant_not_sender(
+    dispatch_delay,
+):
     sender = _make_user("task_sender")
     recipient = _make_user("task_recipient")
     conversation = Conversation.objects.create()
@@ -43,26 +43,38 @@ def test_notify_offline_recipient_resolves_other_participant_not_sender():
         conversation=conversation, sender=sender, text="hello offline user"
     )
 
-    with patch("chat.tasks.send_push_notification") as mock_send:
-        notify_offline_recipient(message.id)
+    notify_offline_recipient(message.id)
 
-    mock_send.assert_called_once_with(
-        user_id=recipient.id,
+    dispatch_delay.assert_called_once_with(
+        recipient_id=recipient.id,
+        notification_type="chat_message",
         title="New message",
         body="hello offline user",
-        data={
-            "type": "chat_message",
-            "conversation_id": conversation.id,
-            "message_id": message.id,
-        },
+        deep_link_type="chat_thread",
+        target_id=conversation.id,
     )
 
 
-def test_notify_offline_recipient_handles_missing_message_gracefully():
-    # لا يوجد Message بهذا الـ id على الإطلاق — لازم الـ task يسجل
-    # ويرجع من غير ما يعمل exception (best-effort, matching P-072's
-    # architecture rule).
-    with patch("chat.tasks.send_push_notification") as mock_send:
-        notify_offline_recipient(999999)
+def test_notify_offline_recipient_handles_missing_message_gracefully(
+    dispatch_delay,
+):
+    # No Message with this id at all - the task must log and return
+    # without raising (best-effort, matching P-072's architecture rule).
+    notify_offline_recipient(999999)
 
-    mock_send.assert_not_called()
+    dispatch_delay.assert_not_called()
+
+
+def test_notify_offline_recipient_skips_when_no_other_participant(
+    dispatch_delay,
+):
+    sender = _make_user("lonely_sender")
+    conversation = Conversation.objects.create()
+    ConversationParticipant.objects.create(conversation=conversation, user=sender)
+    message = Message.objects.create(
+        conversation=conversation, sender=sender, text="anyone there?"
+    )
+
+    notify_offline_recipient(message.id)
+
+    dispatch_delay.assert_not_called()

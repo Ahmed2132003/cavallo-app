@@ -1,5 +1,5 @@
 """
-Moderation state-machine service (Part P-037).
+Moderation state-machine service (Part P-037, notifications added in P-079).
 
 approve() and reject() are the ONLY sanctioned way any code may move a
 Moderatable content object's ``status`` to "published" or "rejected".
@@ -20,15 +20,35 @@ Each function performs the full state transition in ONE transaction:
 
 all three or none. If any step fails, nothing is persisted.
 
-This module contains no permission checks, no HTTP concerns and no
-notifications: the API layer (P-038) calls these functions, and
-notifications arrive with Phase 13.
+This module contains no permission checks and no HTTP concerns.
+
+Part P-079: AFTER the transaction has committed, the content's business
+owner is notified through notifications.tasks.enqueue_notification (the
+single notification orchestration path; never call
+create_notification/send_push_notification from here). The notification
+is best-effort: a failure to enqueue is logged and never affects the
+moderation decision that has already been committed. This module still
+imports no specific content model: the owner and the deep link are
+resolved generically from ``content.business`` and the model name.
 """
+
+import logging
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from moderation.models import Moderatable, ModerationLog, ModerationQueue
+from notifications.tasks import enqueue_notification
+
+logger = logging.getLogger(__name__)
+
+# model_name -> deep_link_type (target_id = the content's own id).
+# Anything not listed (today: story) has no detail screen in the P-078
+# contract, so it deep-links to the owning business profile instead.
+_CONTENT_DEEP_LINKS = {
+    "post": "post_detail",
+    "reel": "reel_detail",
+}
 
 
 class AlreadyDecidedError(ValidationError):
@@ -90,6 +110,53 @@ def _get_moderatable_content(locked_queue_item):
     return content
 
 
+def _notify_content_owner(content, approved, reason=""):
+    """
+    Tell the content's business owner about the moderation decision
+    (Part P-079). Best-effort: never raises.
+
+    Content without a ``business`` (for example P-036's throwaway
+    DummyContent) has nobody to notify, so nothing is sent.
+    """
+    try:
+        business = getattr(content, "business", None)
+        owner_id = getattr(business, "user_id", None)
+        if owner_id is None:
+            return
+
+        model_name = content._meta.model_name
+        deep_link_type = _CONTENT_DEEP_LINKS.get(model_name)
+        if deep_link_type:
+            target_id = content.pk
+        else:
+            deep_link_type = "business_profile"
+            target_id = business.pk
+
+        if approved:
+            notification_type = "moderation_approved"
+            title = f"Your {model_name} was approved"
+            body = f"Your {model_name} is now published."
+        else:
+            notification_type = "moderation_rejected"
+            title = f"Your {model_name} was rejected"
+            body = f"Reason: {reason}"
+
+        enqueue_notification(
+            recipient_id=owner_id,
+            notification_type=notification_type,
+            title=title,
+            body=body,
+            deep_link_type=deep_link_type,
+            target_id=target_id,
+        )
+    except Exception:
+        logger.exception(
+            "Moderation notification could not be prepared for %r; the "
+            "moderation decision is unaffected.",
+            content,
+        )
+
+
 def approve(queue_item, reviewer):
     """
     Approve a pending queue item: the content object becomes
@@ -118,6 +185,8 @@ def approve(queue_item, reviewer):
     # Only reached if the transaction committed: keep the caller's
     # in-memory object in sync with the database.
     queue_item.status = locked.status
+
+    _notify_content_owner(content, approved=True)
     return log
 
 
@@ -127,13 +196,13 @@ def reject(queue_item, reviewer, reason):
     Returns the created ModerationLog row.
 
     ``reason`` is required and must not be blank: a rejection without a
-    reason is useless to the business owner who receives it later. The
-    check happens BEFORE any database access, so an invalid call
-    touches nothing.
+    reason is useless to the business owner who receives it. The check
+    happens BEFORE any database access, so an invalid call touches
+    nothing.
 
     Raises ValidationError for a blank reason, and AlreadyDecidedError
-    if the item is not pending; in both cases nothing is changed and no
-    log row is created.
+    if the item is not pending; in both cases nothing is changed, no log
+    row is created and no notification is sent.
     """
     cleaned_reason = (reason or "").strip()
     if not cleaned_reason:
@@ -157,4 +226,6 @@ def reject(queue_item, reviewer, reason):
         )
 
     queue_item.status = locked.status
+
+    _notify_content_owner(content, approved=False, reason=cleaned_reason)
     return log

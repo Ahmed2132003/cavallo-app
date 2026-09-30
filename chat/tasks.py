@@ -1,23 +1,27 @@
 """
-Offline-recipient push-notification dispatch (Part P-072).
+Offline-recipient notification dispatch (Part P-072, rewired in P-079).
 
 Called (best-effort, never blocking the HTTP response) from
 chat.views.MessageSendView.post() when the recipient was NOT connected
 at broadcast time (per chat.consumers.presence_cache_key / P-070).
 Resolves the actual recipient (the OTHER ConversationParticipant, not
-the sender — a Conversation always has exactly two participants, see
-chat/models.py) and calls notifications.services.send_push_notification(),
-which is currently a log-only stub (Phase 13 replaces its body; this
-task's own code must not need to change when that happens).
+the sender - a Conversation always has exactly two participants, see
+chat/models.py) and hands the event to the single orchestration task
+notifications.tasks.dispatch_notification, which checks the recipient's
+NotificationPreference and then creates the in-app Notification row and
+sends the push.
 
-Idempotency (Section 5 rule 8): re-running this task for the same
-message_id sends the same "would-be push" log line again — it performs
-no writes, so there is nothing to double-apply. Genuine push delivery
-itself remains unverified end-to-end pending Firebase credentials
-(Section 7 item 4); see PROJECT_PROGRESS.md.
+Part P-079: this task no longer calls send_push_notification directly.
+Per the P-079 architecture rule, no notification source may bypass
+dispatch_notification.
 
-Part P-076: a media-only message has blank text, so the push body falls
-back to a short media label instead of an empty string.
+Idempotency (Section 5 rule 8): this task itself performs no writes; it
+only enqueues dispatch_notification once. Re-running it for the same
+message_id enqueues another dispatch (a possible duplicate notification).
+See notifications/tasks.py for the honest MVP idempotency statement.
+
+Part P-076: a media-only message has blank text, so the notification
+body falls back to a short media label instead of an empty string.
 """
 
 import logging
@@ -26,7 +30,7 @@ from celery import shared_task
 
 from chat.models import ConversationParticipant, Message
 from chat.serializers import shared_content_type_label
-from notifications.services import send_push_notification
+from notifications.tasks import dispatch_notification
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +64,10 @@ def notify_offline_recipient(message_id):
     )
     if message is None:
         # Race: message deleted/never existed by the time the task ran.
-        # Best-effort by design — log and stop, no exception to retry.
+        # Best-effort by design - log and stop, no exception to retry.
         logger.warning(
             "notify_offline_recipient: Message id=%s no longer exists; "
-            "skipping push dispatch.",
+            "skipping notification dispatch.",
             message_id,
         )
         return
@@ -77,7 +81,7 @@ def notify_offline_recipient(message_id):
     if recipient_participant is None:
         logger.warning(
             "notify_offline_recipient: no other participant found for "
-            "conversation_id=%s (message_id=%s); skipping push dispatch.",
+            "conversation_id=%s (message_id=%s); skipping notification dispatch.",
             message.conversation_id,
             message_id,
         )
@@ -85,13 +89,11 @@ def notify_offline_recipient(message_id):
 
     recipient = recipient_participant.user
 
-    send_push_notification(
-        user_id=recipient.id,
+    dispatch_notification.delay(
+        recipient_id=recipient.id,
+        notification_type="chat_message",
         title="New message",
         body=_push_body(message),
-        data={
-            "type": "chat_message",
-            "conversation_id": message.conversation_id,
-            "message_id": message.id,
-        },
+        deep_link_type="chat_thread",
+        target_id=message.conversation_id,
     )

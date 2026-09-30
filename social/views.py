@@ -34,6 +34,8 @@ from core.permissions import HasCapability
 
 from businesses.models import BusinessProfile
 
+from notifications.tasks import enqueue_notification
+
 from .models import Comment, Follow, Like, Save, Share
 
 User = get_user_model()
@@ -73,6 +75,20 @@ class FollowToggleView(APIView):
                 User.objects.filter(pk=request.user.pk).update(
                     following_count=F("following_count") + 1
                 )
+
+        # Part P-079: notify the followed business's owner, only for a
+        # genuinely new follow (never on an idempotent repeat) and never
+        # for someone following their own business. Runs after the
+        # transaction.atomic() block has committed.
+        if created and business.user_id != request.user.id:
+            enqueue_notification(
+                recipient_id=business.user_id,
+                notification_type="new_follower",
+                title="New follower",
+                body="Someone started following your business.",
+                deep_link_type="business_profile",
+                target_id=business.pk,
+            )
 
         return Response({"following": True})
 
@@ -364,6 +380,25 @@ class CommentCreateView(APIView):
             )
             model.objects.filter(pk=obj.pk).update(
                 comments_count=F("comments_count") + 1
+            )
+
+        # Part P-079: notify the content's owner (never for a comment on
+        # your own content). Runs after the transaction.atomic() block
+        # has committed; a failure here never affects the 201.
+        try:
+            owner_id = obj.business.user_id
+        except Exception:
+            owner_id = None
+        if owner_id is not None and owner_id != request.user.id:
+            enqueue_notification(
+                recipient_id=owner_id,
+                notification_type="comment_on_content",
+                title="New comment",
+                body=data["text"][:100],
+                deep_link_type={"post": "post_detail", "reel": "reel_detail"}[
+                    data["content_type"]
+                ],
+                target_id=obj.pk,
             )
 
         return Response(CommentSerializer(comment).data, status=201)
