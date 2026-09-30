@@ -87,6 +87,7 @@ INSTALLED_APPS = [
     "ratings",  # Part P-109: Rating model + average_rating/ratings_count.
     "chat",
     "notifications",  # Part P-072 (early stub): send_push_notification() seam.
+    "devices",  # Part P-081: FCM device-token registration.
 ]
 
 # ---------------------------------------------------------------------------

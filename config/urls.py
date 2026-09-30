@@ -103,4 +103,6 @@ urlpatterns = [
     # Product and isn't business-scoped.
     path("api/v1/search/", include("search.urls")),
     path("api/v1/conversations/", include("chat.urls")),
+    # Part P-081: FCM device-token registration (POST register/).
+    path("api/v1/devices/", include("devices.urls")),
 ]
