@@ -105,4 +105,6 @@ urlpatterns = [
     path("api/v1/conversations/", include("chat.urls")),
     # Part P-081: FCM device-token registration (POST register/).
     path("api/v1/devices/", include("devices.urls")),
+    # Part P-082: notification center (list, mark-read, preferences).
+    path("api/v1/notifications/", include("notifications.urls")),
 ]
