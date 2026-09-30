@@ -10141,3 +10141,140 @@ Backend `cavallo-app` main @ 991086e (P-079): `pytest notifications/` 71 passed,
 
 ### Exact next starting point
 P-081 (Phase 13): implement the real `send_push_notification()` (currently a log-only stub in `notifications/services.py`; P-081 only needs to change that function's body, signature frozen since P-072) plus the device-token model, and the Flutter FCM setup/tap handling. Read the push data payload from P-079: {"type", "notification_id", "deep_link_type" ("" if none), "target_id" (id or null)}. Convert `target_id` to int, then call `resolveDeepLink(deepLinkType, targetId)` from `lib/core/deep_link_resolver.dart`. For `chat_thread`, load/supply the `Conversation` as `extra` (see the caveat above). Rule from P-079 still applies: no code may call `create_notification()` or `send_push_notification()` directly for a real event; go through `notifications.tasks.enqueue_notification(...)` / `dispatch_notification.delay(...)`. First, run the full backend `pytest -q` and record the number.
+
+## PART P-081 — FCM Integration (Backend device tokens + real push send, Flutter token lifecycle / foreground / tap handling) — STATUS: PLUMBING COMPLETE ✅ (mock-tested; LIVE PUSH DELIVERY UNVERIFIED — BLOCKED on Section 7 item 4)
+
+Two repos, executed in 4 steps with one user confirmation per step: (1) backend `devices` app, (2) backend real `send_push_notification` body, (3) Flutter FcmService token lifecycle, (4) Flutter foreground stream + tap handling + session wiring. Verified on the real machine (backend via Docker on D:\Cavallo\scd-backend, Flutter on D:\Cavallo\social_commerce_app, Windows PowerShell).
+
+HONEST STATUS: every piece of mechanical plumbing is built and covered by mock/fake tests. NO real push has ever been sent or received, because no Firebase project exists (architecture Section 7 item 4, BLOCKED since P-072). This is expected, not a defect. See "What is still needed for live delivery" below for the exact list.
+
+### What was implemented
+
+Backend (repo cavallo-app):
+1. New top-level app `devices/` (no `apps/` package, same convention as `notifications/`, `chat/`). Model `DeviceToken(TimestampedModel)`: `user` FK (CASCADE, related_name `device_tokens`), `token` CharField(max_length=512, **unique=True globally**), `platform` CharField (`ios` | `android`), ordering `-created_at`. `__str__` prints only the first 8 chars of the token.
+2. Endpoint `POST /api/v1/devices/register/` (authenticated), body `{"token": "...", "platform": "ios"|"android"}`. UPSERT keyed on `token`: unknown token -> row created for `request.user` (HTTP 201); existing token (same user again, or a DIFFERENT user after a device change / reinstall) -> the row is updated in place: owner becomes `request.user`, platform refreshed (HTTP 200). Response body is `{"id": <int>, "platform": "<str>"}`; the token is never echoed. Owner is ALWAYS `request.user`, never read from the body (IDOR rule, same as businesses/me/). Invalid payload -> 400 in the standard envelope `{"error": {"code": "VALIDATION_ERROR", "fields": {...}}}`; unauthenticated -> 401.
+3. The serializer is a plain `Serializer`, NOT a `ModelSerializer`, on purpose: a ModelSerializer would attach a `UniqueValidator` to `token` and reject the very case that must succeed (re-registering an existing token) with a 400. Token is trimmed; empty / whitespace-only / longer than 512 -> 400.
+4. `notifications.services.send_push_notification(user_id, title, body, data)` now sends real FCM messages through the Firebase Admin SDK. SIGNATURE UNCHANGED since P-072 (pinned by a test). `notifications/tasks.py` and every notification source are untouched.
+5. Behavior of `send_push_notification`: fetch all `DeviceToken` rows of `user_id`; none -> log INFO and return (normal case); Firebase not configured (`FCM_SERVICE_ACCOUNT_JSON_PATH` blank or key file unusable) -> log WARNING and return; otherwise one `messaging.send()` per token with `Notification(title, body)`, the stringified `data` payload and Android `priority="high"`, each inside its own try/except so one dead token never blocks the user's other devices; failures are logged with `logger.exception` showing only the first 8 chars of the token; a final INFO line reports `sent N/M`. It never raises for an expected condition.
+6. Helpers in `notifications/services.py`: `_get_firebase_app()` (reuses the default app via `firebase_admin.get_app()`, else initializes from `credentials.Certificate(FCM_SERVICE_ACCOUNT_JSON_PATH)`; returns None when blank or on any init error, which is logged) and `_stringify_data(data)` (FCM data accepts string keys AND string values only; None values are DROPPED, everything else `str()`).
+7. Settings: `FCM_PROJECT_ID` and `FCM_SERVICE_ACCOUNT_JSON_PATH` read with `env(..., default="")` in `config/settings/base.py`. Both already existed in `.env.example` / `CONFIG.md` as Section 7 placeholders. NOTE: `FCM_PROJECT_ID` is defined but NOT used by any code yet (the service-account JSON already contains the project id).
+8. `requirements.txt`: `firebase-admin==6.*` (resolved 6.9.0 in the Docker image). Pinned to 6.x because 7.x emits a DeprecationWarning for `Message(token=...)` (7.x prefers `fid`), which this code uses. Revisit when bumping.
+
+Flutter (repo cavallo-mobile):
+1. `pubspec.yaml`: `firebase_core: ^3.13.0`, `firebase_messaging: ^15.2.5` (resolved firebase_core 3.15.2, firebase_messaging 15.2.10). Pinned to the 3.x / 15.x lines because the validated toolchain is Flutter 3.29.3 / Dart 3.7.2; firebase_core 4.x / firebase_messaging 16.x need a much newer Flutter. Bump BOTH together, never one alone.
+2. `android/app/src/main/AndroidManifest.xml`: added `<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>` (runtime permission on Android 13+).
+3. `lib/core/push/fcm_service.dart` (new). Contents:
+   - `PushMessage {title, body, data: Map<String,String>}`: Firebase-independent message model.
+   - `PushDeepLink {type, targetId?, notificationId?}` with `String get route => resolveDeepLink(type, targetId)` (P-080) and `static PushDeepLink? fromData(Map<String,String>)`: returns null when `deep_link_type` is missing or blank (backend meaning: "navigates nowhere"); `target_id` / `notification_id` parsed with `int.tryParse` (non-numeric -> null -> route falls back to /home).
+   - `abstract class PushMessagingClient` (ensureInitialized, requestPermission, getToken, onTokenRefresh, onForegroundMessage, onMessageOpenedApp, getInitialMessage) + the production `FirebaseMessagingClient`. Same pattern as `ChatSocket` in `core/chat/`. `pushMessageFromRemote(RemoteMessage)` (`@visibleForTesting`) converts Firebase messages (null data values dropped, others stringified).
+   - `enum FcmInitResult {registered, unsupportedPlatform, notConfigured, permissionDenied, noToken, registrationFailed, stopped, failed}`.
+   - `class FcmService` (public API): `Future<FcmInitResult> initialize()`, `Future<void> stop()`, `Future<void> dispose()`, `Stream<PushMessage> foregroundMessages` (broadcast), `Stream<PushDeepLink> taps` (broadcast), `List<PushDeepLink> takePendingTaps()`. Registration endpoint constant `FcmService.registerPath = '/api/v1/devices/register/'`, called through the shared Dio client (`dioClientProvider`), so the Authorization header and silent refresh come for free. Request body `{"token", "platform"}`; platform resolved by `defaultPushPlatform()` (android / ios; web and desktop -> null -> `unsupportedPlatform`, Firebase never touched).
+   - Providers: `pushMessagingClientProvider` (real client, overridable in tests) and `fcmServiceProvider` (disposes the service with the container).
+4. `initialize()` flow: platform check -> `ensureInitialized()` (false => `notConfigured`) -> `requestPermission()` (denied => `permissionDenied`, NOTHING registered and NO listeners started) -> cancel any previous subscriptions -> subscribe to `onTokenRefresh`, `onMessage`, `onMessageOpenedApp` (subscribing BEFORE reading the token so a rotation in between cannot be missed) -> `getInitialMessage()` (once per service lifetime) -> `getToken()` -> POST register. A backend/network failure is reported through `reportError` and returns `registrationFailed`; the refresh listener stays active. Every rotated token is re-registered.
+5. Race protection: `stop()` and every new `initialize()` bump a generation counter; an in-flight `initialize()` re-checks it after each await and returns `FcmInitResult.stopped` instead of registering (covers "logout while the permission prompt is open"). `initialize()` is safe to call repeatedly: subscriptions are replaced, never stacked.
+6. Tap handling: a tap (background via `onMessageOpenedApp`, terminated via `getInitialMessage`) is parsed with `PushDeepLink.fromData`; no deep link -> ignored; otherwise emitted live on `taps` if someone is listening, else QUEUED and returned once by `takePendingTaps()` (oldest first, queue cleared). `stop()` clears the queue. `getInitialMessage()` is asked only ONCE per service lifetime (per app launch) so logout/login never replays the launch notification.
+7. `lib/features/notifications/presentation/push_session_bridge.dart` (new): `pushSessionBridgeProvider` (`ref.listen` on `sessionProvider`, `fireImmediately: true`) and widget `PushSessionBridge`. On `AsyncData(user != null)` -> `FcmService.initialize()` (fresh login AND cold-start restored session); on `AsyncData(null)` -> `FcmService.stop()` (logout, `invalidateSession`). Loading and error states are ignored (SessionNotifier passes through a bare loading state on every login/logout).
+8. WHERE THE CALL WAS ADDED to the P-021 session flow: `lib/main.dart`, in `main()`, `runApp(ProviderScope(overrides: [...], child: const PushSessionBridge(child: SocialCommerceApp())))`. It is deliberately in `main()` and NOT inside `SocialCommerceApp`, so widget tests that pump `SocialCommerceApp` directly (`widget_test.dart`, `business_profile_router_gate_test.dart`) never touch Firebase and needed no change. `SessionNotifier`, `sessionProvider`, the router and the auth screens were NOT modified.
+
+### Push data payload contract (backend -> Flutter)
+FCM message = `notification {title, body}` + `data` (all string values): `type`, `notification_id`, `deep_link_type`, `target_id`. `target_id` is OMITTED (not "null") when the notification has none; `deep_link_type` is an empty string when the notification navigates nowhere. Flutter treats missing OR blank `deep_link_type` as "no deep link". The `deep_link_type` strings are the P-078 locked contract mirrored in `DeepLinkTypes` (P-080); the P-080 COUPLING note applies unchanged.
+
+### Files created
+Backend (a609803): devices/__init__.py, devices/apps.py, devices/models.py, devices/serializers.py, devices/views.py, devices/urls.py, devices/migrations/__init__.py, devices/migrations/0001_initial.py, devices/tests/__init__.py, devices/tests/test_models.py, devices/tests/test_api.py
+Backend (657e5d4): notifications/tests/test_push.py
+Flutter (af368ce): lib/core/push/fcm_service.dart, lib/features/notifications/presentation/push_session_bridge.dart, test/core/push/fake_push_messaging_client.dart, test/core/push/fcm_service_test.dart, test/features/notifications/push_session_bridge_test.dart
+
+### Files modified
+Backend: config/settings/base.py (a609803: `"devices"` in INSTALLED_APPS; 657e5d4: the two FCM settings), config/urls.py (a609803: `path("api/v1/devices/", include("devices.urls"))`), notifications/services.py (real body + helpers + new imports `firebase_admin`, `credentials`, `messaging`, `DeviceToken`), notifications/tests/test_services.py (the old test `test_send_push_notification_stub_does_not_raise_and_logs`, which asserted the removed "[STUB] Would send push" log line, was replaced by `test_send_push_notification_without_tokens_does_not_raise_and_logs`; module docstring updated), requirements.txt (`firebase-admin==6.*`)
+Flutter: pubspec.yaml, android/app/src/main/AndroidManifest.xml, lib/main.dart (import + wrapping in runApp)
+
+### Architecture decisions
+- `devices/` is a top-level app (no `apps/`); the master plan text writes `apps/devices/...` but the project convention (P-072 onward) wins.
+- Token uniqueness is GLOBAL (one physical installation = one row); ownership MOVES on re-registration instead of erroring. The old owner stops receiving that device's pushes.
+- No admin.py for `DeviceToken` (tokens are credential-like and it was out of spec).
+- `send_push_notification`: signature frozen; never calls `create_notification` (independence rule from P-072 unchanged); check for tokens BEFORE checking Firebase config so the common no-token case never touches the SDK.
+- Flutter depends on a `PushMessagingClient` abstraction (pattern of `ChatSocket`), so unit tests use a plain fake and never call `Firebase.initializeApp()`. DEVIATION from the spec sentence "using Firebase's testing/mocking utilities": no Firebase mocking utility is used at all; this is more reliable while no Firebase project exists.
+- The app MUST run without Firebase configured: `Firebase.initializeApp()` failure is caught and turned into `FcmInitResult.notConfigured`.
+- The session bridge lives in `features/notifications/presentation/` (not `core/push/`) because it imports the auth feature and `core/` must stay feature-agnostic (same reasoning as the note in `dio_client.dart`).
+- SCOPE SPLIT with P-082 (resolves the P-080 "double-check the split" note): P-081 EXTRACTS and EXPOSES (foreground stream, tap stream, pending-tap queue, `PushDeepLink.route`). P-081 does NOT show any banner and does NOT navigate. P-082 builds the banner UI and the navigation. The master-plan Scope text says P-081 "shows an in-app banner/snackbar" and "calls P-080's resolver once the app opens"; the execution prompt says to expose a stream for P-082. The execution prompt was followed.
+- No `FirebaseMessaging.onBackgroundMessage` handler: the backend sends messages that carry a `notification` block, which the OS displays itself in background / terminated. A handler is only needed for data-only messages.
+
+### Commands
+Backend (D:\Cavallo\scd-backend, PowerShell):
+docker compose build   (needed once: requirements.txt changed)
+docker compose up -d
+docker compose exec web python manage.py migrate devices
+docker compose exec web black devices/ notifications/
+docker compose exec web flake8 devices/ notifications/
+docker compose exec web python manage.py makemigrations --check --dry-run
+docker compose exec web pytest devices/ -v
+docker compose exec web pytest notifications/tests/test_push.py notifications/tests/test_services.py -v
+docker compose exec web pytest notifications/ chat/ moderation/ social/ devices/ -q
+docker compose exec web pytest -q
+Flutter (D:\Cavallo\social_commerce_app, PowerShell):
+flutter pub get
+dart format lib/core/push lib/features/notifications lib/main.dart test/core/push test/features/notifications
+flutter analyze
+flutter test test/core/push/ test/features/notifications/
+flutter test
+
+### Tests / verification results (all real, from the user's machine)
+Backend:
+- `pytest devices/ -v`: 22 passed (5 model tests + 17 API tests: documented URL, 401 when unauthenticated, create, token not echoed, several tokens per user, whitespace trim, same-user idempotent 201 then 200, different user takes ownership, platform refreshed, owner never taken from the body, 7 invalid-payload cases in the standard envelope).
+- FULL `pytest -q` at a609803 (STEP 1, includes the 22 new tests): 996 passed, 1 skipped. This also closes the full-suite regression owed since P-079 (the earlier baseline is therefore about 974 passed + 1 skipped).
+- `pytest notifications/tests/test_push.py notifications/tests/test_services.py -v` (STEP 2): 20 passed (10 new in test_push.py: signature unchanged, one message per token with exact payload and `app=` kwarg, only the recipient's tokens used, no tokens = no-op and Firebase never touched, unconfigured Firebase skips, one failing token does not block the others and the full token is never logged, `_stringify_data`, and 3 tests of `_get_firebase_app`).
+- `pytest notifications/ chat/ moderation/ social/ devices/ -q` (STEP 2): 413 passed, 1 warning (the pre-existing "database test_scd_dev is being accessed by other users" teardown PytestWarning).
+- Manual smoke (STEP 2): `send_push_notification` for a user with one token and no Firebase config logged `Firebase is not configured; skipped push to user 1 (1 device(s))` and did not raise.
+- black: clean on devices/ and notifications/. flake8: clean on devices/ and notifications/.
+- `makemigrations --check`: No changes detected. `migrate devices`: `devices.0001_initial` applied OK. `manage.py check`: no issues.
+- NOT RE-RUN after STEP 2: the FULL `pytest -q`. Expected about 1006 passed, 1 skipped (996 + 10 new), but this number is a prediction, not a result.
+Flutter:
+- `flutter analyze`: No issues found.
+- `flutter test test/core/push/ test/features/notifications/`: 35 passed (30 in fcm_service_test.dart, 5 in push_session_bridge_test.dart).
+- `flutter test` (FULL): 771 passed, 0 failed, "All tests passed!" (736 baseline at 0e8efc8 + 35 new).
+- Noise in the full run (does not fail): `[reportError] DioException ... 500` lines come from the deliberate backend-failure tests in fcm_service_test.dart; `[HTTP] ... -> 400` lines and the very long stack trace come from pre-existing router/gate/integration tests (the trace is the deliberate widget-build error in test/core/integration_test.dart).
+- Manual QA on device/emulator (confirmed OK by the user): the app opens, login works and reaches Home with no crash, logout/login works; FcmService reports Firebase-not-configured and stays a safe no-op.
+
+### Issues hit and fixed during this part
+- Twice a file was created in the wrong folder and fixed with a Move-Item: the test file landed in `lib/core/push/` (analyze: depend_on_referenced_packages; `flutter test` said the folder did not exist) and `push_session_bridge.dart` landed in `lib/core/notifications/presentation/` (14 analyzer errors, compiler exit). Both moved to the correct paths; the stray `lib/core/notifications/` folder was deleted. Final layout is what this section lists.
+- The manual `POST /api/v1/devices/register/` check written for STEP 1 was run with the literal placeholders `EMAIL_BTA3AK` / `PASSWORD_BTA3AK` (login answered 400, then register answered 401). So the endpoint was NOT exercised by hand against the running server with real credentials. It is covered by the 17 API tests; do the manual check once when convenient (login, POST twice, expect 201 then 200 with the same id, then delete the row in `manage.py shell`).
+- `black config/` (a broad path) reformatted `config/asgi.py` and `config/urls.py` locally. Those formatting-only changes, plus the runtime file `celerybeat-schedule`, were deliberately NOT committed and are still uncommitted in the backend working tree.
+
+### Git status (both repos committed AND pushed — confirmed by user)
+Backend: https://github.com/Ahmed2132003/cavallo-app (branch main)
+  a609803 — "update" (STEP 1: devices app; 14 files changed, 452 insertions; b9fe37a..a609803)
+  657e5d4 — "P-081: real send_push_notification via Firebase Admin SDK (+ FCM settings, firebase-admin, tests)" (5 files changed, 308 insertions, 18 deletions; a609803..657e5d4)
+  (b9fe37a "update" before them only touched celerybeat-schedule + Progress on top of P-079's 991086e.)
+Flutter: https://github.com/Ahmed2132003/cavallo-mobile (branch main)
+  af368ce — "P-081: FCM integration (token registration/refresh, foreground stream, tap handling, session bridge) + tests" (8 files changed, 1192 insertions, 3 deletions; 0e8efc8..af368ce)
+
+### What is still needed for LIVE push delivery (Section 7 item 4)
+No Dart or Python LOGIC change is expected, but real credentials alone are not enough: some native build configuration must also be added. None of this can be done or tested before a Firebase project exists.
+1. Create the Firebase project and register the Android app. The Android `applicationId` is still the Flutter default placeholder `com.example.social_commerce_app` (android/app/build.gradle.kts). Decide the final application id BEFORE registering the app in Firebase, otherwise it must be re-registered.
+2. Android: put `google-services.json` in `android/app/` and add the Google Services Gradle plugin (`com.google.gms.google-services`) to `android/settings.gradle.kts` (plugins block, alongside AGP 8.7.0 / Kotlin 2.2.0) and apply it in `android/app/build.gradle.kts`. The plugin was NOT added in P-081 on purpose: without the JSON file the Android build fails.
+3. iOS: add `GoogleService-Info.plist` to the Runner target, enable the Push Notifications capability and Background Modes > Remote notifications in Xcode, and upload an APNs key to Firebase. NOTE: `ios/Podfile` does not exist in the repo yet (generated on the first iOS build on a Mac); no iOS build has ever been done in this project.
+4. Backend: create a service-account key in Firebase, mount it INTO the web AND celery_worker containers (the push is sent inside the Celery task from P-079, so the worker needs it, not only web), set `FCM_SERVICE_ACCOUNT_JSON_PATH` to the in-container path, and make sure the JSON is git-ignored and never committed. `FCM_PROJECT_ID` is optional (unused by code).
+5. Then verify end to end: sign in on a real device, confirm a row appears in `devices_devicetoken`, trigger an offline chat message (an already-wired source) and confirm the push arrives; test foreground, background tap and terminated tap.
+
+### Known issues / remaining work
+- LIVE DELIVERY UNVERIFIED (see above). Also unverified on real hardware: notification permission prompts (Android 13+ and iOS), token rotation, and `getInitialMessage` / `onMessageOpenedApp` behavior.
+- OWED (backend): run the FULL `pytest -q` again after STEP 2 and record the real number (expected about 1006 passed, 1 skipped).
+- No token cleanup on logout: there is no unregister/delete endpoint (not in the spec). Between a logout and the next login on that device, the previous user's pushes are still delivered to it; the next login's upsert moves the token to the new user. A `DELETE`/unregister endpoint called on logout would close this window.
+- Stale tokens are not pruned: an `UnregisteredError` (app uninstalled) is only logged. Deleting the row on `messaging.UnregisteredError` would keep `sent N/M` clean. Not done (out of spec).
+- Sends are sequential per token inside the Celery task (`messaging.send`). Fine for MVP; `send_each` / multicast is a later optimization.
+- Permission is requested immediately after login with no pre-permission explanation screen. If the user denies, nothing is registered; if they later allow it in OS settings, registration happens on the next launch or login (each `initialize()` re-asks and re-registers).
+- FCM data is string-only: `target_id` is omitted when absent and `deep_link_type` may be "". Any consumer must use `PushDeepLink.fromData` (or equivalent) and not assume the keys exist.
+- Nothing consumes the new streams yet. P-082 MUST: (a) call `takePendingTaps()` once at startup, then subscribe to `taps`; (b) subscribe to `foregroundMessages` to show the in-app banner (FCM does not display foreground notifications); (c) navigate with `PushDeepLink.route`. CAVEAT inherited from P-080: `chat_thread` resolves to `/chat/<id>`, but the router's P-074 guard sends any `/chat/<id>` without a `Conversation` in `extra` to the chat list. The caller must load the Conversation by id and pass it as `extra`. The other four targets need no extra. Also still to check in P-082: a deep link to a rejected Post/Reel may lead to a screen the owner cannot open.
+- Cold-start tap timing: `getInitialMessage()` is read inside `initialize()`, i.e. only AFTER the session is restored/login succeeded. If the app is launched from a notification while signed out, the tap is queued after the user logs in (it is not lost, but it is not acted on until then).
+- `FirebaseMessaging` foreground presentation options on iOS are left at defaults (no system banner in foreground); the in-app banner is P-082's job.
+- Firebase packages are pinned to 3.x / 15.x and firebase-admin to 6.x for toolchain reasons (see above); bump deliberately and together.
+- Pre-existing, unrelated: flake8 reports F405 for INSTALLED_APPS in `config/settings/test.py` (star import from `.dev`); `celerybeat-schedule` is a tracked runtime file that shows as modified after every run.
+
+### Baselines to preserve
+Flutter `cavallo-mobile` main @ af368ce: `flutter analyze` clean, `flutter test` = 771 passed, `flutter test test/core/push/ test/features/notifications/` = 35 passed.
+Backend `cavallo-app` main @ 657e5d4: `pytest devices/` 22 passed; `pytest notifications/tests/test_push.py notifications/tests/test_services.py` 20 passed; `pytest notifications/ chat/ moderation/ social/ devices/` 413 passed; full `pytest -q` was 996 passed + 1 skipped at a609803 (not re-run at 657e5d4, expect about 1006 + 1 skipped). Migrations: `devices` at 0001_initial, `notifications` at 0002_backfill_notification_preferences.
+
+### PART P-081 STATUS: PLUMBING COMPLETE ✅ — live push delivery BLOCKED on Section 7 item 4
+
+### Exact next starting point
+1) Backend: run the FULL `docker compose exec web pytest -q` and record the real number. 2) Continue Phase 13 with PART P-082 (notification center UI). Start from `FcmService` in lib/core/push/fcm_service.dart: subscribe to `foregroundMessages` (banner), call `takePendingTaps()` then listen to `taps`, resolve with `PushDeepLink.route` and handle the chat_thread `Conversation` extra caveat above. Reuse `pushSessionBridgeProvider` (already mounted in main()) and do NOT call `FcmService.initialize()` from anywhere else. Do not change the `send_push_notification` signature or notifications/tasks.py. 3) When the Firebase project exists, follow "What is still needed for LIVE push delivery" above.
