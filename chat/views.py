@@ -14,6 +14,7 @@ from rest_framework.views import APIView
 
 from django.db.models import F, Max, OuterRef, Subquery
 from rest_framework import generics
+from businesses.models import BusinessProfile
 
 from chat.consumers import presence_cache_key
 from chat.models import Conversation, ConversationParticipant, Message
@@ -59,37 +60,85 @@ def _require_participant(conversation_id, user):
 class ConversationStartView(APIView):
     """
     POST /api/v1/conversations/start/
-    Body: {"recipient_id": <int>}
+    Body: {"recipient_id": <int>}   OR   {"business_id": <int>}
 
     Resolves to an existing conversation between request.user and the
     recipient if one exists, or creates a new one plus both
     ConversationParticipant rows. No account_type check of any kind —
     any two authenticated accounts can start a conversation, per the
     confirmed any-to-any decision.
+
+    Part P-077 (activating the product screen's "Message Business"
+    button): the recipient can alternatively be named by `business_id`
+    — the id of a BusinessProfile, the only identifier the public
+    product / business APIs expose. The owning user is resolved
+    server-side, so a client never needs (and never receives) a
+    business owner's internal user id from a public endpoint.
+    `recipient_id` behaves exactly as before. Sending both, or
+    neither, is a 400.
+
+    A business that does not exist, is soft-deleted, or whose owner
+    account is inactive is a 404 "Business not found." — one message
+    for all three, so the response does not reveal which it was.
     """
 
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         recipient_id = request.data.get("recipient_id")
-        if not recipient_id:
+        business_id = request.data.get("business_id")
+
+        if recipient_id and business_id:
             return Response(
-                {"detail": "recipient_id is required."},
+                {"detail": "Provide either recipient_id or business_id, not both."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if str(recipient_id) == str(request.user.id):
+        if not recipient_id and not business_id:
             return Response(
-                {"detail": "Cannot start a conversation with yourself."},
+                {"detail": "recipient_id or business_id is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        recipient = User.objects.filter(id=recipient_id).first()
-        if recipient is None:
-            return Response(
-                {"detail": "Recipient not found."},
-                status=status.HTTP_404_NOT_FOUND,
+        if business_id:
+            try:
+                business_pk = int(business_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "business_id must be an integer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            business = (
+                BusinessProfile.objects.select_related("user")
+                .filter(pk=business_pk, user__is_active=True)
+                .first()
             )
+            if business is None:
+                return Response(
+                    {"detail": "Business not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            recipient = business.user
+            if recipient.pk == request.user.pk:
+                return Response(
+                    {"detail": "Cannot start a conversation with yourself."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            if str(recipient_id) == str(request.user.id):
+                return Response(
+                    {"detail": "Cannot start a conversation with yourself."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            recipient = User.objects.filter(id=recipient_id).first()
+            if recipient is None:
+                return Response(
+                    {"detail": "Recipient not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
         existing = (
             Conversation.objects.filter(participants__user=request.user)
