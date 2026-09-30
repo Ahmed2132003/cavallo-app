@@ -9979,3 +9979,165 @@ Commit: 3eb3f40 — "P-078: Notification + NotificationPreference models, create
 
 ### Exact next starting point
 P-079: async Celery task that, per notification-triggering event, checks the recipient's NotificationPreference, then calls `create_notification()` and `send_push_notification()`. First consumers to wire: chat offline delivery (`chat.tasks.notify_offline_recipient`), moderation approve/reject (`moderation.services`, which today explicitly sends no notifications), Follow, Like, Comment, Share, Rating. Baselines to preserve: backend `main` @ 3eb3f40, `pytest -q` = 930 passed / 1 skipped, `notifications` migrations at `0002_backfill_notification_preferences`.
+
+## PART P-079 — Async Dispatch Service (Celery Orchestration) — STATUS: CODE COMPLETE ✅ (full-suite regression NOT yet run, see Known issues)
+
+Executed in 2 steps. Step 1: dispatch task + chat rewire. Step 2: moderation / follow / comment rewire. Also fixed two chat tests that step 1 missed.
+
+### What was implemented
+1. `notifications/tasks.py`: Celery task `dispatch_notification(recipient_id, notification_type, title, body, deep_link_type=None, target_id=None)`, registered as "notifications.dispatch_notification". Flow: recipient exists? -> preference category enabled? -> `create_notification()` -> `send_push_notification()`. A disabled category returns immediately (NO Notification row, NO push).
+2. `notifications/tasks.py`: helper `enqueue_notification(**kwargs)`. Best-effort `dispatch_notification.delay(**kwargs)`; any broker error is logged and swallowed. Every source (moderation, follow, comment) uses this helper.
+3. All four sources now go through this one task: chat offline fallback, moderation approve/reject, follow, comment.
+4. Root `conftest.py` with an autouse fixture `dispatch_delay` that mocks `dispatch_notification.delay` in EVERY test, so no test ever publishes to the real Redis broker (pytest runs on dev settings with a real broker and no eager mode). Tests that assert dispatch request `dispatch_delay` by name.
+
+### notification_type -> preference field mapping (exact, defined as NOTIFICATION_TYPE_TO_PREFERENCE_FIELD in notifications/tasks.py)
+chat_message         -> chat_notifications_enabled
+moderation_approved  -> moderation_notifications_enabled
+moderation_rejected  -> moderation_notifications_enabled
+new_follower         -> social_notifications_enabled
+comment_on_content   -> social_notifications_enabled
+new_like             -> social_notifications_enabled
+new_share            -> social_notifications_enabled
+new_rating           -> social_notifications_enabled
+system_announcement  -> no toggle, always delivered
+Pinned by test_mapping_matches_locked_contract. A type missing from the dict is treated as "no toggle".
+
+### REQUIRED PATTERN FOR ALL FUTURE NOTIFICATION CODE (new architecture rule)
+No code may call create_notification() or send_push_notification() directly for a real event. Every notification-triggering source must call notifications.tasks.enqueue_notification(...) (or dispatch_notification.delay(...) from inside a Celery task) so the preference check applies universally. Call it AFTER the surrounding transaction.atomic() block has exited. Only notifications/tasks.py may call the two service functions.
+
+### Source wiring (exact payloads)
+- Chat (chat/tasks.py notify_offline_recipient): dispatch_notification.delay(recipient_id=<other participant>, notification_type="chat_message", title="New message", body=<text[:120] or media/shared label>, deep_link_type="chat_thread", target_id=<conversation id>). It no longer calls send_push_notification.
+- Moderation (moderation/services.py approve()/reject()): sent AFTER the transaction commits, via _notify_content_owner(). Recipient = content.business.user_id. approve -> moderation_approved, title "Your <model_name> was approved", body "Your <model_name> is now published.". reject -> moderation_rejected, title "Your <model_name> was rejected", body "Reason: <cleaned reason>". Deep link: post -> post_detail, reel -> reel_detail (target_id = content id); any other model (story) -> business_profile with target_id = business id (the P-078 contract has no story screen). Content with no `business` (e.g. P-036 DummyContent) sends nothing. moderation/ still imports no specific content model (uses content._meta.model_name string). Nothing is sent on AlreadyDecidedError or a blank reject reason.
+- Follow (social/views.py FollowToggleView.post): only when created=True (never on an idempotent repeat), and never when the follower owns the business. new_follower, title "New follower", body "Someone started following your business.", deep_link_type business_profile, target_id = business id. The body deliberately has no follower name (usernames can be emails).
+- Comment (social/views.py CommentCreateView.post): recipient = obj.business.user_id, skipped when the commenter owns the content. comment_on_content, title "New comment", body = comment text[:100], deep_link_type post_detail or reel_detail, target_id = content id.
+- Push data payload built by the task: {"type": notification_type, "notification_id": <id>, "deep_link_type": <str, "" if none>, "target_id": <id or None>}. NOTE: the old chat payload keys conversation_id / message_id are no longer in the push data; the chat thread id is now in target_id with deep_link_type "chat_thread". P-081/P-082 must read the deep link from these fields.
+
+### IDEMPOTENCY (honest statement, not overclaimed)
+The task is NOT fully idempotent. No dedup key was built. Mitigations only: call sites enqueue once per genuine event; no autoretry configured; acks_late left at default (False); a push failure is caught and logged AFTER the in-app row is written so it never triggers a retry that duplicates the row. Accepted residual risk: a rare Celery double-execution (e.g. broker redelivery) can create one duplicate Notification row and one duplicate push. If this ever matters, add an event-id dedup key on Notification.
+
+### Files created
+conftest.py, notifications/tasks.py, notifications/tests/test_tasks.py, notifications/tests/test_enqueue.py, notifications/tests/test_sources.py
+
+### Files modified
+chat/tasks.py, chat/test_tasks.py, chat/test_media_messages.py, chat/test_shared_content.py, moderation/services.py, social/views.py
+
+### Architecture decisions
+- Suppression is all-or-nothing (no row AND no push) per the spec.
+- Missing NotificationPreference row is treated as "all enabled" (no crash, no silent block).
+- Push failure never raises and never removes the in-app row. An invalid notification_type/deep_link_type DOES raise ValueError (programming error, loud).
+- Notification enqueue failures never break the moderation decision, the follow, or the comment (helper swallows and logs).
+- Source-integration tests live in notifications/tests/test_sources.py so moderation/ and social/ keep their "never import each other's models" isolation tests intact.
+
+### Commands
+docker compose exec web black notifications/ moderation/services.py social/views.py chat/
+docker compose exec web flake8 notifications/ moderation/services.py chat/test_media_messages.py chat/test_shared_content.py
+docker compose exec web pytest notifications/ -v
+docker compose exec web pytest chat/ -q
+docker compose exec web python manage.py makemigrations --check --dry-run
+
+### Tests / verification results (real, from the user's machine)
+- pytest notifications/: 71 passed (28 from P-078 + 19 test_tasks + 2 test_enqueue + 22 test_sources).
+- pytest chat/: 86 passed (after fixing the two tests that patched chat.tasks.send_push_notification).
+- flake8 (notifications/, moderation/services.py, the two edited chat tests): clean. black applied.
+- makemigrations --check --dry-run: No changes detected. No migrations in this part.
+- Suppression proven for both effects (no Notification row AND push mock not called) for every mapped type, and again end to end for each of the four sources via test_sources.py::TestSourcesAgainstRealTask.
+- NOT RUN before the push: pytest moderation/ social/ -q and the full pytest -q. moderation/services.py and social/views.py were changed, so this regression is still owed.
+
+### Known issues / remaining work
+- OWED FIRST THING NEXT SESSION: run pytest moderation/ social/ -q and then pytest -q (last full baseline was 930 passed / 1 skipped at P-078; expected around 1000 passed now: 930 + 41 from this part). Fix anything red before starting the next part.
+- Like (new_like), Share (new_share) and Rating (new_rating) are NOT wired yet. P-079's scope covered only chat, moderation, follow and comment. The mapping already supports the three types, so wiring them later is one enqueue_notification(...) call each.
+- send_push_notification() is still a log-only stub (real FCM + device-token model: P-081). P-081 only needs to change that function's body.
+- No REST API yet for listing notifications / marking read / preferences (later Phase 13 parts).
+- Rejected-content deep link (post_detail / reel_detail) may be a screen the owner cannot open if the public detail endpoint hides rejected content; check in P-082.
+- Follow/comment notifications carry no actor name (deferred decision).
+- Pre-existing, unchanged: celerybeat-schedule (tracked runtime file) still shows as modified locally and was NOT committed; consider adding it to .gitignore. flake8 E402 in social/views.py and other flagged lint debt untouched.
+- The GitHub main head before this commit was da53ab2 (the P-078 entry says 3eb3f40), so main moved between P-078 and P-079. Not investigated.
+
+### GitHub reference
+Repo: https://github.com/Ahmed2132003/cavallo-app (branch: main)
+Commit: 991086e — "P-079: async dispatch service - dispatch_notification task, rewire chat/moderation/follow/comment" (11 files changed, 1119 insertions, 74 deletions; da53ab2..991086e)
+
+### Exact next starting point
+1) Run the owed regression: pytest moderation/ social/ -q, then pytest -q. 2) Continue Phase 13 with the next part in the master plan; P-081 (real FCM) must only replace the body of notifications.services.send_push_notification() and leave notifications/tasks.py and every source untouched. Any new notification source must use enqueue_notification (required pattern above).
+
+## PART P-080 — Deep-Link Payload Contract (Flutter resolver) — STATUS: COMPLETE ✅
+
+Flutter-only part, no backend change. Executed in 3 steps, one confirmation per step: (1) resolver file, (2) unit tests, (3) full regression + commit/push. All verified on the real machine (D:\Cavallo\social_commerce_app, Windows PowerShell).
+
+### What was implemented
+1. `lib/core/deep_link_resolver.dart`: pure function `String resolveDeepLink(String deepLinkType, int? targetId)` that turns the backend Notification fields (`deep_link_type` + `target_id`, locked in P-078) into a route path that ALREADY exists in `RouteNames`.
+2. `class DeepLinkTypes` holds the five backend strings as constants plus `all` (a `Set<String>`), and `const String deepLinkFallbackRoute = RouteNames.homePath` (`/home`).
+3. Resolution table (built from `RouteNames.*Path` patterns by replacing `:id` (`RouteNames.idParam`) with the id, so no path string is duplicated):
+   business_profile -> /business/<id>    (RouteNames.businessProfilePath)
+   post_detail      -> /post/<id>        (RouteNames.postDetailPath)
+   reel_detail      -> /reel/<id>        (RouteNames.reelDetailPath)
+   product_detail   -> /product/<id>     (RouteNames.productDetailPath)
+   chat_thread      -> /chat/<id>        (RouteNames.chatThreadPath)
+4. Fallback (`/home`) for: unknown type, empty type (backend meaning: "navigates nowhere"), null targetId, targetId <= 0. Never throws, never returns null, never produces `/business/null`.
+5. NO new route, NO UI, NO FCM handling, NO router change (`route_names.dart` and `app_router.dart` untouched).
+
+### COUPLING (flagged on purpose, per the part spec)
+`DeepLinkTypes` and the `switch` in `resolveDeepLink` MIRROR the backend `deep_link_type` choice list in `notifications/models.py` (pinned there by `test_choice_values_are_the_locked_contract`). Any future phase that adds a new notification source with a new deep-link target MUST update ALL of these together, in the same change:
+- backend `notifications/models.py` choice list (+ its pinning test),
+- `lib/core/deep_link_resolver.dart` (`DeepLinkTypes` constant, `all`, and the switch),
+- `test/core/deep_link_resolver_test.dart` (`knownTypes`, the resolution tests, and the `DeepLinkTypes.all` contract test),
+- the P-078 "LOCKED CONTRACT" paragraph in this file.
+The Flutter test `DeepLinkTypes.all is exactly the five backend P-078 values` fails if the Flutter side changes alone. There is NO automated cross-repo check: if only the backend adds a value, Flutter silently falls back to /home until this file is updated.
+
+### Files created
+lib/core/deep_link_resolver.dart (74 lines), test/core/deep_link_resolver_test.dart (165 lines)
+
+### Files modified
+None.
+
+### Architecture decisions
+- Return type is non-nullable `String` (the master plan text shows both `String` and `String?`). The fallback guarantees a value, so callers never need a null check before navigating.
+- `targetId <= 0` is treated as invalid, not only null. The spec only required null; ids are positive DB primary keys, so 0/negative can only be malformed payloads.
+- Matching is exact and case-sensitive, with no trimming. `Business_Profile` and ` business_profile ` fall back to /home. The backend sends the exact lowercase strings, so lenient matching would only hide contract drift.
+- New import direction: `lib/core/deep_link_resolver.dart` imports `lib/routing/route_names.dart`. `route_names.dart` is constants only with no imports, so there is no cycle. This is the first `lib/core` file that depends on `lib/routing`.
+- Tests deliberately spell out the literal strings ('business_profile', '/business/5', ...) instead of reusing `DeepLinkTypes`/`RouteNames` everywhere, so an accidental rename on either side fails a test. One test also checks the resolver output against the `RouteNames.*Path` patterns.
+
+### Commands
+flutter analyze
+dart format test\core\deep_link_resolver_test.dart lib\core\deep_link_resolver.dart
+flutter test test/core/deep_link_resolver_test.dart
+flutter test test/core/
+flutter test
+git add lib/core/deep_link_resolver.dart test/core/deep_link_resolver_test.dart
+git commit -m "P-080: deep-link resolver (resolveDeepLink) + unit tests"
+git push origin main
+(all Flutter commands from D:\Cavallo\social_commerce_app)
+Backend regression owed from P-079 (from D:\Cavallo\scd-backend):
+docker compose exec web pytest moderation/ social/ -q
+
+### Tests / verification results (all real, from the user's machine)
+- flutter analyze: No issues found (before the files, after creating them, after dart format, and again before the commit).
+- flutter test test/core/deep_link_resolver_test.dart: 23 passed.
+- flutter test test/core/: 116 passed (93 existing + 23 new).
+- flutter test (FULL suite): 736 passed, 0 failed (713 baseline at 9cb0343 + 23 new), "All tests passed!".
+- Test coverage of the resolver: 5 known types resolve to exact paths, large id, unknown type, empty type, case-sensitivity, whitespace, null id for each of the 5 types, zero id, negative id, unknown type + null id, DeepLinkTypes.all contract, fallback == /home, no ':' placeholder left, paths match the RouteNames patterns, no exception for Arabic/10000-char/huge-int input.
+- Backend (P-079 owed regression, first half): `pytest moderation/ social/ -q` = 224 passed, 1 warning (the pre-existing PytestWarning about tearing down `test_scd_dev`, "accessed by other users"). No backend code was touched by P-080.
+- Noise in the full Flutter run: many `[HTTP] xx ... -> 400` lines and a long stack trace come from existing router/gate/integration tests (files P-080 did not touch); they print but do not fail. The long stack trace is the deliberate widget-build error in `test/core/integration_test.dart`.
+- Not applicable: no UI, so no manual device test in this part.
+
+### Known issues / remaining work
+- OWED (backend, from P-079): the FULL `pytest -q` has still NOT been run. Only `pytest notifications/`, `pytest chat/` (P-079) and `pytest moderation/ social/` (224 passed, now) are verified. P-079 expected roughly 1000 passed for the full suite (930 baseline + 41 from P-079). Run it before or at the start of P-081 and record the real number.
+- `chat_thread` CAVEAT FOR P-081/P-082: `resolveDeepLink('chat_thread', 101)` returns `/chat/101`, but the router's P-074 redirect guard (`_isChatThreadLocation`) sends any `/chat/<id>` location whose `extra` is not a `Conversation` to `/chat` (the chat list). So a raw `context.go(resolveDeepLink(...))` for a chat notification lands on the chat list, not the thread. The caller (P-081 FCM tap / P-082 notification center) must load the `Conversation` by id (or otherwise supply it as `extra`) before navigating. The resolver does NOT do this and the router guard was deliberately not changed.
+- All other four targets (`/business/:id`, `/post/:id`, `/reel/:id`, `/product/:id`) need no `extra` and are ordinary protected routes (signed-in only).
+- Inherited from P-079: a rejected Post/Reel deep link (post_detail/reel_detail) may lead to a screen the owner cannot open if the public detail endpoint hides rejected content. Still to be checked in P-082.
+- Inherited from P-079: story moderation notifications use `business_profile` (the P-078 contract has no story deep link). A `storyViewer` route (`/stories/:id`, business id) exists in Flutter but is intentionally NOT reachable through `deep_link_type`; adding it is a coupling change (see COUPLING).
+- The resolver only builds a path string. It does not check at runtime that the target exists or that the user may see it; that is up to the destination screens and the router guards.
+- Cosmetic: `Get-Content` in Windows PowerShell 5 prints the em dashes in the code comments as "â€”" (console encoding only). The files are UTF-8 and correct in the repo.
+- Master plan wording to double-check when starting P-081/P-082: P-080 lists "real FCM tap-handling" as P-081 and also says P-082 wires the resolver into the notification center AND FCM tap-handling. Confirm the exact split in the P-081/P-082 spec before coding.
+
+### GitHub reference
+Flutter: https://github.com/Ahmed2132003/cavallo-mobile (branch: main)
+Commit: 0e8efc8 — "P-080: deep-link resolver (resolveDeepLink) + unit tests" (2 files changed, 239 insertions; 9cb0343..0e8efc8)
+Backend: https://github.com/Ahmed2132003/cavallo-app (branch: main). Not changed by this part; last recorded head is 991086e (P-079).
+
+### Baselines to preserve
+Flutter `cavallo-mobile` main @ 0e8efc8: `flutter analyze` clean, `flutter test` = 736 passed, `flutter test test/core/` = 116 passed.
+Backend `cavallo-app` main @ 991086e (P-079): `pytest notifications/` 71 passed, `pytest chat/` 86 passed, `pytest moderation/ social/` 224 passed; full `pytest -q` not yet re-run; `notifications` migrations at 0002_backfill_notification_preferences.
+
+### Exact next starting point
+P-081 (Phase 13): implement the real `send_push_notification()` (currently a log-only stub in `notifications/services.py`; P-081 only needs to change that function's body, signature frozen since P-072) plus the device-token model, and the Flutter FCM setup/tap handling. Read the push data payload from P-079: {"type", "notification_id", "deep_link_type" ("" if none), "target_id" (id or null)}. Convert `target_id` to int, then call `resolveDeepLink(deepLinkType, targetId)` from `lib/core/deep_link_resolver.dart`. For `chat_thread`, load/supply the `Conversation` as `extra` (see the caveat above). Rule from P-079 still applies: no code may call `create_notification()` or `send_push_notification()` directly for a real event; go through `notifications.tasks.enqueue_notification(...)` / `dispatch_notification.delay(...)`. First, run the full backend `pytest -q` and record the number.
