@@ -9814,3 +9814,103 @@ review this entry plus P-074/P-075's entries for the current shape of
 and `message_bubble_widget.dart`, since P-077 will need to extend the same
 `Message` model/bubble pattern with a distinct "shared content" attachment type
 rather than reusing `media`/`media_type` as-is.
+
+## PART P-077 — Content Sharing in Chat (Post/Reel/Product Share Cards) + "Message Business" Activation — STATUS: COMPLETE ✅
+
+### What was implemented
+1. A chat message can reference a Post, Reel or Product ("shared content"), alone or together with text, rendered in the thread as a tappable card.
+2. The Share icon (Post/Reel cards + detail screens, and a new Share action on the Product detail screen) opens a two-option sheet: "Share via…" (the existing P-058 native flow, unchanged) and "Share to conversation" (a conversation picker that sends the reference and opens the thread).
+3. The "Message Business" button on `ProductDetailScreen` — a deliberately disabled stub since P-034 — is now ACTIVE: it starts (or resumes) a real conversation with the product's business and opens the thread.
+
+Executed in 6 steps (1 backend, 2-5B Flutter/backend), one step per confirmation, plus one post-step fix of stale routing tests (below).
+
+### Backend (repo: cavallo-app, D:\Cavallo\scd-backend)
+Commits on `origin/main`: `e180349` (shared content), `813668c` (start-by-business_id).
+
+Files changed:
+- `chat/models.py` — `Message.shared_content_type` (FK ContentType, null) + `Message.shared_object_id` (PositiveIntegerField, null) + `GenericForeignKey`, plus DB CheckConstraint `message_shared_ref_both_or_neither` (a half-set reference is impossible at the DB level).
+- `chat/migrations/0003_message_shared_content.py` — additive migration (fields + constraint).
+- `chat/serializers.py` — `SHARE_TO_CHAT_CONTENT_TYPES` closed whitelist (`post`/`reel` -> content app, `product` -> products app); `resolve_shareable_target()` (unknown type -> 400, missing/unpublished/inactive -> 404, same idea as P-053's like-target resolver); `build_shared_content_payload()`; `shared_content_type_label()`; `MessageSerializer` accepts write-only `shared_content_type`/`shared_object_id` and emits read-only `shared_content`; `ConversationListSerializer.last_message` exposes `shared_content_type`.
+- `chat/views.py` — `MessageSendView` accepts the pair; **`ConversationStartView` now also accepts `business_id`** (see Architecture decisions).
+- `chat/tasks.py` — offline push body falls back to a shared-content label ("Shared a post/reel/product") when a message has no text.
+- `chat/test_shared_content.py` (new, 17 tests), `chat/test_start_by_business.py` (new, 13 tests).
+
+Wire contract:
+- Send: `POST /api/v1/conversations/<id>/messages/` JSON `{text?, shared_content_type: "post"|"reel"|"product", shared_object_id: <int>}`. Type without id (or id without type) -> 400; shared content together with `media` -> 400; a message with no text, media or shared content -> 400; non-participant -> 403.
+- Message JSON (REST and WebSocket, identical): `shared_content` = `null` or `{content_type, object_id, available, business_id, business_name, preview: {preview_text, preview_image_url}}`. The payload is viewer-INDEPENDENT (no is_liked/is_saved).
+- Taken down after sharing (unpublished / deactivated / deleted): `available: false` and `business_id`, `business_name`, `preview` are all `null` — the message itself is never deleted.
+- Conversation list `last_message.shared_content_type` = `"post"|"reel"|"product"|""`.
+- Start conversation: `POST /api/v1/conversations/start/` with EITHER `{recipient_id}` (unchanged) OR `{business_id}` (BusinessProfile id). Both/neither -> 400; non-integer `business_id` -> 400; own business -> 400 "Cannot start a conversation with yourself."; unknown / soft-deleted / inactive-owner business -> 404 "Business not found." (one message for all three). Response shape unchanged (`ConversationSerializer`: 201 created, 200 resumed). Dedupe works across both paths and both directions.
+
+### Flutter (repo: cavallo-mobile, D:\Cavallo\social_commerce_app)
+Commits on `origin/main`: `1cadaf3` (steps 2-3), `4bde131` (steps 4-5B), `9cb0343` (stale routing tests fix).
+
+Created:
+- `lib/features/chat/domain/shared_content.dart` — `SharedContentType` (`post`/`reel`/`product`, `raw`, lenient `fromRaw`) and `SharedContent` (lenient `tryParse`; null for non-map / unknown type / non-int id).
+- `lib/features/chat/presentation/shared_content_card.dart` — `SharedContentCard`.
+- `lib/features/chat/presentation/share_to_conversation_sheet.dart` — `shareTargetConversationsProvider` (autoDispose) and `showShareOptionsSheet()`.
+- Tests: `test/features/chat/data/shared_content_data_test.dart` (12), `test/features/chat/presentation/shared_content_bubble_widget_test.dart` (9), `test/features/chat/presentation/share_to_conversation_sheet_test.dart` (5), `test/features/chat/data/start_conversation_with_business_test.dart` (3), `test/features/products/presentation/message_business_button_test.dart` (4).
+
+Modified:
+- `lib/features/chat/domain/message.dart` — optional `sharedContent`.
+- `lib/core/chat/chat_event.dart` — `MessageReceived.sharedContent` kept as a RAW map (core layer imports no feature types); value equality via `jsonEncode`.
+- `lib/features/chat/domain/conversation.dart` — `LastMessagePreview.sharedContentType`; `previewText` falls back to "Shared a post/reel/product" (text > media label > shared label).
+- `lib/features/chat/data/message_repository.dart` — new `sendSharedContentMessage()` (separate method; `sendMessage()` signature untouched so P-075 test doubles still compile).
+- `lib/features/chat/data/conversation_repository.dart` — new `startConversationWithBusiness({businessId})`; `startConversation()` untouched.
+- `lib/features/chat/presentation/message_bubble_widget.dart` — a delivered message with `sharedContent` renders `SharedContentCard` ABOVE a normal text bubble (text + time/status footer).
+- `lib/features/chat/presentation/chat_thread_screen.dart` — passes `SharedContent.tryParse(event.sharedContent)` when building a `Message` from a WebSocket `MessageReceived` (2 lines).
+- `lib/features/social/presentation/content_action_row.dart` — Share icon opens the two-option sheet. The native flow (share tracking + `SharePlus`) is unchanged; "Share to conversation" sends the reference, then does best-effort share tracking, then opens the thread.
+- `lib/features/products/presentation/product_detail_screen.dart` — new AppBar Share action; `_ProductView` became a `ConsumerStatefulWidget`; "Message Business" active (loading state, double-tap guard, error snackbar).
+- `test/features/products/presentation/product_detail_screen_test.dart` — 3 assertions adapted (see Notes).
+- `test/routing/app_router_test.dart` — stale P-007 placeholder assertions updated (see Notes).
+
+### Architecture decisions
+- Rendering reuse: `PostCard`/`ReelCard` are used UNMODIFIED (zero-modification-elsewhere). They need the live per-viewer entity, so `SharedContentCard` fetches it via the existing `postPublicDetailProvider` / `reelPublicDetailProvider`. Loading or fetch error -> compact preview card built from the payload (never a blank bubble, still tappable); fetched `null` -> "unavailable"; `available:false` -> "unavailable" with NO network call. Product has no `ProductCard` in the project, so a lightweight compact card is used (spec-allowed).
+- The Share icon's real home is `content_action_row.dart` (used by PostCard, ReelCard and both detail screens), NOT `post_card.dart`/`reel_card.dart` as the spec literally named — so those two files stay untouched.
+- `MessageBubbleWidget` stays a `StatelessWidget` with the same API; Riverpod is only inside `SharedContentCard`, so older bubble tests (no ProviderScope) are unaffected.
+- `sendSharedContentMessage` / `startConversationWithBusiness` are separate methods, not extra params (same pattern as P-076's `sendMediaMessage`).
+- **Backend contract change for "Message Business" (decided with the user, option A of two):** no public endpoint exposes a business owner's USER id (`Product.business` and `BusinessProfile.id` are BusinessProfile ids, a different id space from `recipient_id`). Instead of exposing `user_id` on public serializers (rejected: leaks internal ids into a public API and changes serializers other screens depend on), `/conversations/start/` accepts `business_id` and resolves the owner server-side. The `recipient_id` path is unchanged. (A conversation's own participants still see participant ids in their own conversation, as `other_participant.id` already did.)
+- The start endpoint returns only `{id, participant_ids}` and the app deliberately never knows its own user id (P-074 design), so it cannot pick "the other participant" from it. `startConversationWithBusiness` therefore re-reads the conversation from `GET /conversations/` (empty conversations are listed) and returns the real `Conversation` with the resolved display name. It returns `null` if the conversation is not in the list; the UI then shows a snackbar instead of opening a thread with wrong data.
+- Share tracking (P-056) for "Share to conversation" is best-effort and runs only AFTER the message was delivered; its failure never surfaces as an error. Products have no share-tracking endpoint (P-056 covers Post/Reel only).
+- All new fields are additive and optional: no earlier test broke because of the models/parsers.
+
+### Commands
+Backend (from D:\Cavallo\scd-backend):
+- `docker compose exec web python manage.py migrate chat`
+- `docker compose exec web black chat/` ; `docker compose exec web flake8 chat/`
+- `docker compose exec web pytest chat/ -q` ; `docker compose exec web pytest -q`
+- `docker compose exec web python manage.py makemigrations --check --dry-run`
+
+Flutter (from D:\Cavallo\social_commerce_app):
+- `flutter analyze`
+- `flutter test` (full) ; `flutter test test/features/chat/`
+- `flutter test test/features/social/ test/features/products/ test/features/content/`
+
+### Tests / verification results
+- Backend: `chat/test_shared_content.py` 17 passed; `chat/test_start_by_business.py` 13 passed; `pytest chat/` 85 passed (72 before 5A + 13); full suite after step 1: 889 passed, 1 skipped; full suite after 5A re-run and reported passing by the user (exact count not recorded here); `makemigrations --check`: No changes detected; black/flake8 clean.
+- Flutter: `flutter analyze` No issues found; **full `flutter test`: 713 passed, 0 failed**; `test/features/chat/` 106 passed (77 before P-077 + 29); `test/features/social/ test/features/products/ test/features/content/` 168 passed.
+- The "Message Business" proof required by the spec: `message_business_button_test.dart` taps the real button on the real `ProductDetailScreen` and asserts (a) the start call receives THIS product's `businessId`, (b) the thread route opens with the resolved `Conversation` as `extra`, plus loading / double-tap / failure / not-in-list paths. `start_conversation_with_business_test.dart` proves the HTTP request shape (`{"business_id": 7}`), and the backend tests prove the endpoint.
+- **Manual end-to-end on a real device/emulator against the running backend: PASSED** (user-confirmed): "Message Business" starts/resumes a real conversation and opens the thread, and sharing into a conversation delivers a tappable card. The manual checklist covered: first-time start with real business name, resume of the SAME conversation on a second tap, business owner messaging themselves -> "Cannot start a conversation with yourself.", Share to conversation for Product/Post/Reel, "Share via…" still working, conversation-list preview labels, and text/media/offline-retry regression. Individual step results were confirmed as a whole, not itemized.
+
+### Notes on adapted / fixed existing tests
+- `product_detail_screen_test.dart`: the product screen legitimately gained UI, so (1) the "NO transactional UI" test now allows exactly ONE `IconButton` (the Share icon) and exactly two `ButtonStyleButton`s (AppBar Share + body "Message Business", split by location — in Material 3 an IconButton builds a `ButtonStyleButton`), with the body button now asserted ENABLED; (2) the old "Message Business is DISABLED / (coming soon)" test now asserts the button is ENABLED and the note is gone.
+- `app_router_test.dart` (commit `9cb0343`): the FIRST full `flutter test` run in this part surfaced stale P-007 placeholder assertions (`Route: search`, `Route: chatList`, `Route: chatThread`) left over after the real `SearchScreen` (Phase 11) and `ChatListScreen` / redirect guard (P-074) replaced those placeholders — the same class of staleness the file already had for home/discover/login/register/businessProfile/productDetail. Fixed by removing `search`/`chatList` from the placeholder loop, adding dedicated `find.byType(SearchScreen)` / `find.byType(ChatListScreen)` tests, and rewriting the chatThread test to assert that a `/chat/:id` visit without its `Conversation` extra is redirected to the chat list (P-074 guard). `notifications` and `businessConsole` remain placeholders and stay in the loop. No application code changed. Lesson: earlier chat parts (P-074+) only ran `test/features/chat/`, never the full suite.
+- Test-harness note: widget tests using `PostCard` with a real `imageUrl` trigger `Image.network`, which `flutter_test` answers with HTTP 400 and the exception can land on an unrelated test — P-077 fixtures deliberately use no `imageUrl`. Large screens: tests tapping a button at the bottom of a scroll view must enlarge `tester.view.physicalSize`, or the tap misses (see `message_business_button_test.dart`).
+
+### Known issues / limitations (documented, not silently accepted)
+- The share picker lists the first page of `GET /conversations/` only (the endpoint currently returns a plain array, so this is the whole list today).
+- The app sends a shared-content message without accompanying text (the backend supports text + shared content; the picker UI does not offer a caption yet).
+- No inline video/reel playback in the shared card (Reel card behaviour unchanged from P-045).
+- The outbound retry queue (P-075) is not used for shared-content sends: the picker sends directly and reports failure in a snackbar; the user retries by picking again.
+- `startConversationWithBusiness` costs one extra GET (conversation list) after the POST — accepted so the app never needs its own user id.
+- There is still no real navigation shell: Search / Discover / Chat list are reached through the Home screen's debug menu (⋮), as before P-077. Reaching another business's product for manual testing: Home ⋮ -> Search -> tap a product (or a business, then a product in its Products section).
+
+### Remaining work
+- None for P-077.
+- P-077's Handoff Note carried forward: Phase 13's real `send_push_notification()` is the last piece of the offline-delivery guarantee that P-072 began (P-072 left it a stub; shared-content messages already use the same offline-push dispatch with the label fallback).
+
+### PHASE 12 (Chat & Realtime Reliability) STATUS: COMPLETE ✅
+P-066 through P-077 all recorded COMPLETE and validated; P-077's backend suite, full Flutter suite (713/713), `flutter analyze` and manual end-to-end check all passed. The long-deferred "Message Business" stub (inert since P-034/Phase 5) is now genuinely functional. This is the gate Phase 13 checks before beginning.
+
+### Next starting point
+Phase 13 — Notifications & Deep Links. First job: implement the real `send_push_notification()` that P-072 left as a stub, then wire deep links (including opening a chat thread and a shared post/reel/product). Before starting, read this entry plus P-072's entry: the offline-push dispatch (`chat/tasks.py::notify_offline_recipient`) and its shared-content label fallback are the current integration point. Also worth doing early in Phase 13: run the FULL `flutter test` and full `pytest` at the end of every part (see the app_router_test lesson above). Repos/commits at the end of P-077: cavallo-app `813668c`, cavallo-mobile `9cb0343`.
