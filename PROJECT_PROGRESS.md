@@ -9914,3 +9914,68 @@ P-066 through P-077 all recorded COMPLETE and validated; P-077's backend suite, 
 
 ### Next starting point
 Phase 13 — Notifications & Deep Links. First job: implement the real `send_push_notification()` that P-072 left as a stub, then wire deep links (including opening a chat thread and a shared post/reel/product). Before starting, read this entry plus P-072's entry: the offline-push dispatch (`chat/tasks.py::notify_offline_recipient`) and its shared-content label fallback are the current integration point. Also worth doing early in Phase 13: run the FULL `flutter test` and full `pytest` at the end of every part (see the app_router_test lesson above). Repos/commits at the end of P-077: cavallo-app `813668c`, cavallo-mobile `9cb0343`.
+
+## PART P-078 — notifications App: Notification + NotificationPreference Models — STATUS: COMPLETE ✅ (CLOSED)
+
+Executed in 2 steps (data layer, then services/admin), one confirmation per step. Both steps verified on the real machine (D:\Cavallo\scd-backend, docker compose, real Postgres).
+
+### What was implemented
+1. `Notification(TimestampedModel)` and `NotificationPreference(TimestampedModel)` in the existing top-level `notifications/` app (no `apps/` prefix, per repo convention; the app already existed from P-072).
+2. `notification_type` (WHY) and `deep_link_type` + `target_id` (WHERE) kept as separate fields.
+3. `post_save` receiver on User auto-creates one `NotificationPreference` (all toggles True); a data migration backfilled it for pre-existing users.
+4. `notifications/services.py` split: `create_notification()` (writes the in-app row) and `send_push_notification()` (stub, signature frozen since P-072). Neither calls the other.
+5. Both models registered in Django Admin.
+
+### LOCKED CONTRACT (P-079 and P-082 depend on these exact strings)
+notification_type: `chat_message`, `moderation_approved`, `moderation_rejected`, `new_follower`, `comment_on_content`, `new_like`, `new_share`, `new_rating`, `system_announcement`
+deep_link_type: `business_profile`, `post_detail`, `reel_detail`, `product_detail`, `chat_thread`  (blank = navigates nowhere)
+target_id meaning by deep_link_type: business_profile -> BusinessProfile id; post_detail -> Post id; reel_detail -> Reel id; product_detail -> Product id; chat_thread -> Conversation id.
+Preference category -> notification_type (enforced by P-079, not here): chat_notifications_enabled -> chat_message; moderation_notifications_enabled -> moderation_approved, moderation_rejected; social_notifications_enabled -> new_follower, comment_on_content, new_like, new_share, new_rating. system_announcement has no toggle (always delivered).
+Flutter route names for these deep links already exist in `lib/routing/app_router.dart` (businessProfile, postDetail, reelDetail, productDetail, chatThread).
+A test (`test_choice_values_are_the_locked_contract`) pins both choice lists; changing a value requires updating that test and this section deliberately.
+
+### Files created
+notifications/models.py, notifications/signals.py, notifications/admin.py, notifications/migrations/__init__.py, notifications/migrations/0001_initial.py, notifications/migrations/0002_backfill_notification_preferences.py, notifications/tests/__init__.py, notifications/tests/test_models.py, notifications/tests/test_signals.py, notifications/tests/test_services.py, notifications/tests/test_admin.py
+
+### Files modified
+notifications/apps.py (ready() wires signals), notifications/services.py (create_notification added; stub TODO now points at P-081)
+
+### Architecture decisions
+- Added three types beyond the spec minimum: `new_share` (social.Share exists), `new_rating` (ratings.Rating exists), `system_announcement` (Admin "Global/Business/Customer Notification" in the product presentation). Decision confirmed by Ahmed.
+- `deep_link_type` is blank-able (default ""), `target_id` nullable. `create_notification()` raises ValueError (nothing written) for an unknown notification_type, unknown deep_link_type, or a target_id without a deep_link_type.
+- Signal wired in `NotificationsConfig.ready()`, same pattern as categories/moderation signals; skips `raw` (fixture loading); uses get_or_create so it is idempotent.
+- Backfill migration `0002` is idempotent and additive; without it existing users would have had no preference row and P-079 would hit RelatedObjectDoesNotExist.
+- Notification does not inherit SoftDeleteModel (per-user bookkeeping, not moderated content).
+- `create_notification()` does NOT check NotificationPreference and does NOT send a push: both belong to P-079.
+- Indexes on Notification: `notif_recipient_created_idx` (recipient, -created_at) for the list; `notif_recipient_read_idx` (recipient, is_read) for the unread badge.
+
+### Commands
+docker compose exec web python manage.py migrate notifications
+docker compose exec web black notifications/ ; docker compose exec web flake8 notifications/
+docker compose exec web python manage.py makemigrations --check --dry-run
+docker compose exec web python manage.py check
+docker compose exec web pytest notifications/ -v ; docker compose exec web pytest chat/ -q ; docker compose exec web pytest -q
+
+### Tests / verification results (all real, from the user's machine)
+- pytest notifications/: 28 passed (admin 4, models 9, services 10, signals 5).
+- pytest chat/: 85 passed (regression for chat.tasks importing send_push_notification from the rewritten services.py).
+- Full suite: 930 passed, 1 skipped (916 after step 1, +14 in step 2; baseline before P-078 was 889 passed / 1 skipped after P-077).
+- migrate notifications: 0001_initial and 0002_backfill_notification_preferences applied OK.
+- makemigrations --check --dry-run: No changes detected. manage.py check: no issues. flake8: clean. black applied.
+- Backfill on the real dev DB: users 13, prefs 13, missing 0.
+- Pre-existing, unrelated: a PytestWarning at the end of the full run about tearing down `test_scd_dev` ("accessed by other users").
+
+### Known issues / remaining work
+- `chat/tasks.py` still calls `send_push_notification()` directly and does NOT create an in-app Notification yet; wiring both together is P-079.
+- Preference toggles are stored but not consulted anywhere yet (P-079).
+- `send_push_notification()` is still a log-only stub (real FCM + device-token model: P-081).
+- Admin classes use default Django permissions; the existing `can_manage_notifications` permission is not applied to them.
+- No REST API yet for listing / marking read / reading and updating preferences (later Phase 13 parts).
+- Not verified manually in the browser: the Django Admin pages were only covered by automated changelist-load tests.
+
+### GitHub reference
+Repo: https://github.com/Ahmed2132003/cavallo-app (branch: main)
+Commit: 3eb3f40 — "P-078: Notification + NotificationPreference models, create/push service split" (13 files changed, 994 insertions, 22 deletions; ad5e048..3eb3f40)
+
+### Exact next starting point
+P-079: async Celery task that, per notification-triggering event, checks the recipient's NotificationPreference, then calls `create_notification()` and `send_push_notification()`. First consumers to wire: chat offline delivery (`chat.tasks.notify_offline_recipient`), moderation approve/reject (`moderation.services`, which today explicitly sends no notifications), Follow, Like, Comment, Share, Rating. Baselines to preserve: backend `main` @ 3eb3f40, `pytest -q` = 930 passed / 1 skipped, `notifications` migrations at `0002_backfill_notification_preferences`.
