@@ -10278,3 +10278,86 @@ Backend `cavallo-app` main @ 657e5d4: `pytest devices/` 22 passed; `pytest notif
 
 ### Exact next starting point
 1) Backend: run the FULL `docker compose exec web pytest -q` and record the real number. 2) Continue Phase 13 with PART P-082 (notification center UI). Start from `FcmService` in lib/core/push/fcm_service.dart: subscribe to `foregroundMessages` (banner), call `takePendingTaps()` then listen to `taps`, resolve with `PushDeepLink.route` and handle the chat_thread `Conversation` extra caveat above. Reuse `pushSessionBridgeProvider` (already mounted in main()) and do NOT call `FcmService.initialize()` from anywhere else. Do not change the `send_push_notification` signature or notifications/tasks.py. 3) When the Firebase project exists, follow "What is still needed for LIVE push delivery" above.
+
+## PART P-082 — Flutter: Notification Center + Preferences Screen + Deep-Link Routing — STATUS: COMPLETE ✅ (in-app flow; LIVE PUSH DELIVERY still BLOCKED on Section 7 item 4)
+
+Phase 13 is COMPLETE for every mechanically-testable piece. Genuine push delivery (a real FCM message reaching a real device) remains pending Section 7 item 4 (real Firebase project). That is NOT a defect of this phase. The foreground banner and the push-tap navigation are proven by unit/widget tests with fakes only, never by a real push.
+
+### What was implemented
+Backend (cavallo-app) — the three endpoints P-078 had not added:
+- GET /api/v1/notifications/ (authenticated, request.user's own, CursorPagination)
+- PATCH /api/v1/notifications/<id>/read/ (explicit ownership check, IDOR discipline since P-026)
+- GET/PATCH /api/v1/notifications/preferences/ (singleton "/me/" style on request.user's NotificationPreference)
+Wired in notifications/urls.py (mounted under /api/v1/notifications/).
+
+Flutter (cavallo-mobile), lib/features/notifications/:
+- data/notification_repository_impl.dart: Dio implementation of NotificationRepository, provider `notificationRepositoryProvider`.
+- domain/: AppNotification, NotificationPreferences (+ NotificationCategory: chat, moderation, social), NotificationRepository.
+- presentation/notification_list_provider.dart: `notificationListProvider` (autoDispose AsyncNotifier, cursor pagination, refresh, loadMore, markAsRead).
+- presentation/notification_center_screen.dart: replaces the P-007 placeholder (the old notifications_screen.dart was DELETED). Unread rows visually distinguished; tapping a row starts markAsRead (not awaited) and navigates; app bar has a settings button to the preferences screen.
+- presentation/notification_preferences_provider.dart + notification_preferences_screen.dart: three switches (Chat messages, Content review, Social activity). Optimistic update, ONE PATCH per toggle carrying only that category, rollback + rethrow on failure (the screen shows a SnackBar "Could not save your preference. Please try again."). system_announcement has no switch (always delivered; a footer line says so).
+- presentation/notification_navigator.dart: `NotificationNavigator` / `notificationNavigatorProvider`, the ONE place where a tapped notification becomes navigation (center row = openNotification, banner and push tap = openPush). Always uses resolveDeepLink() from P-080; never builds a path by hand.
+- presentation/push_notification_handler.dart: `pushNotificationHandlerProvider` + `PushNotificationHandler` widget + `rootScaffoldMessengerKeyProvider`. Foreground banner (SnackBar, tappable, "View" action when the push has a deep link, also refreshes the notification list) and background/terminated tap handling (takePendingTaps() once at start, then listen to FcmService.taps). A tap with a notification_id also marks that notification read (best effort).
+
+Wiring changes:
+- lib/routing/route_names.dart: + notificationPreferences (name), notificationPreferencesPath = '/notifications/preferences'.
+- lib/routing/app_router.dart: /notifications now builds NotificationCenterScreen; new GoRoute for the preferences screen.
+- lib/main.dart: app wrapped as PushSessionBridge(child: PushNotificationHandler(child: SocialCommerceApp())); MaterialApp.router receives scaffoldMessengerKey: ref.watch(rootScaffoldMessengerKeyProvider).
+- lib/features/feed/presentation/home_feed_screen.dart: a bell IconButton (key 'home-notifications-button') in the Home app bar opens /notifications. This is the FIRST real entry point to the notification center; before it nothing in the app opened /notifications.
+
+### Architecture decisions
+- Single navigation mechanism: NotificationNavigator.open() for the center, the foreground banner and the push tap. No divergent per-source navigation logic.
+- chat_thread special case: resolveDeepLink('chat_thread', id) answers /chat/<id>, but the P-074 router guard sends any /chat/<id> whose extra is not a Conversation to the chat list. So for chat notifications the navigator first looks the Conversation up through the conversations list endpoint (the backend has no conversation-detail endpoint) and passes it as `extra`; if it cannot be found or the request fails, the user lands on the chat list (go), never on a broken screen. The router guard was NOT changed.
+- push vs go: real destinations use push (Back returns to the previous screen); the /home fallback and the chat-list fallback use go.
+- A blank deep_link_type means "this notification navigates nowhere" (P-078 contract): nothing happens.
+- The handler lives ABOVE MaterialApp, so the banner uses a global ScaffoldMessenger key (rootScaffoldMessengerKeyProvider) passed to MaterialApp.router. Before navigating on a tap it waits for the first frame (WidgetsBinding.instance.endOfFrame) so a tap that launched the app is handled once the router is mounted.
+- The handler is wrapped in main(), like PushSessionBridge, so widget tests that pump SocialCommerceApp directly never touch Firebase. FcmService.initialize() is still only called by pushSessionBridgeProvider (P-081 rule kept).
+- Backend untouched in tasks.py and send_push_notification (P-079/P-081 rules kept). Preference suppression is the P-079 logic in notifications/tasks.py: a disabled category means the Notification row is NOT created at all (new_follower, comment_on_content, new_like, new_share, new_rating -> social_notifications_enabled; chat_message -> chat_notifications_enabled; moderation_approved/rejected -> moderation_notifications_enabled).
+
+### Tests added/changed (cavallo-mobile)
+- test/features/notifications/presentation/notification_center_screen_test.dart (8): read/unread distinction, tap marks read + navigates, pagination, error/empty states.
+- test/features/notifications/presentation/notification_preferences_screen_test.dart (4): values from the server, exactly one PATCH with the right category/value, rollback + message on failure, system-announcement footer.
+- test/features/notifications/presentation/push_notification_handler_test.dart (6): foreground banner shows title/body, tapping it opens the deep link and marks read, background tap, launch tap (pending queue) opened once, banner without deep link has no action and opens nothing, message with no title/body shows nothing.
+- test/routing/app_router_test.dart: the stale 'Route: notifications' placeholder assertion was REMOVED (the real screen replaced the placeholder, same pattern as home P-061, discover P-062, chatList P-074); 3 new tests: notifications route resolves to NotificationCenterScreen, notificationPreferences route resolves to NotificationPreferencesScreen, the Home bell opens the notification center.
+- Helpers reused: test/features/notifications/fake_notification_repository.dart (FakeNotificationRepository, fakeNotification, fakePage), test/core/push/fake_push_messaging_client.dart.
+
+### Commands
+From D:\Cavallo\social_commerce_app (PowerShell):
+  dart format lib test
+  flutter analyze
+  flutter test test/features/notifications/
+  flutter test test/routing/app_router_test.dart
+  flutter test
+Backend (from D:\Cavallo\scd-backend):
+  docker compose exec web pytest notifications/ -q
+  docker compose exec web pytest -q        # full suite, see Known issues
+
+### Verification results
+- flutter analyze: No issues found.
+- flutter test test/features/notifications/: 69 passed.
+- flutter test test/routing/app_router_test.dart: 28 passed.
+- flutter test (FULL): 838 passed, 0 failed. (Baseline at P-081 was 771.) The noisy [HTTP] ... 400 lines and the long stack traces in the output are expected: tests that intentionally report errors, and the Flutter test binding answering every real HttpClient call with 400.
+- Manual (real backend, via the UI): Home bell opens the notification center, its settings button opens the preferences screen with three switches, a toggled switch is persisted after leaving and reopening the screen, a failed save rolls the switch back with the message. PASSED ✅.
+- Manual two-account end-to-end (Account A follows Account B's business -> B's center shows the notification unread -> tap opens B's business profile and marks it read; B switches Social off -> A unfollows and follows again -> NO new notification for B, the worker logs "dispatch_notification: suppressed new_follower ... social_notifications_enabled is disabled"): [CONFIRM] — change to PASSED ✅ or record the result. Requires the celery_worker container running (docker compose up -d celery_worker) and two DIFFERENT accounts (self-follow never notifies, and a repeat follow of an already-followed business never notifies; unfollow then follow again).
+- NOT verifiable now: real push delivery, the real foreground banner and the real background/terminated tap (no Firebase project). Covered by fake-based tests only.
+
+### GitHub references
+- cavallo-mobile: e74067c (STEP 4: notification_center_screen replaces the placeholder), 7cfc3d9 (STEP 5: preferences screen + route + settings button), 29468f1 "P-082: notification preferences screen, home bell entry point, foreground banner + push tap handling" (home bell, push handler, main.dart wiring, router test). Earlier P-082 steps (backend check, repository, list provider, navigator, preferences provider) are the "update" commits between af368ce (P-081) and e74067c.
+- cavallo-app: the P-082 endpoints are in the "update" commits after 657e5d4 (2ab9e77, dd9ebab).
+- Baselines to preserve: cavallo-mobile main @ 29468f1: flutter analyze clean, flutter test = 838 passed.
+
+### Known issues / notes
+- Section 7 item 4 (real Firebase project) is still BLOCKED. Follow "What is still needed for LIVE push delivery" in the P-081 entry. After that, run once on a real device: foreground push (banner appears and is tappable), background tap and terminated tap (each opens the right screen and marks the notification read).
+- The Home bell is a temporary entry point: the app still has no real navigation bar (same situation as the debug-menu entries for Search/Discover/Chat since P-074). It has no unread badge.
+- The foreground banner is shown for every push, including a chat message while the user is already inside that same chat; no suppression for that case yet.
+- Marking read from a banner/push tap is best effort (failure is swallowed); the notification list is refreshed afterwards.
+- test/routing/app_router_test.dart contains the 'search route resolves' and 'chatList route resolves' tests several times (old copy-paste duplication, harmless, not cleaned up).
+- The notification list provider is autoDispose, so the push handler marks read through the repository directly and then invalidates the list.
+- Backend: the FULL `pytest -q` was NOT re-run in this part; run it at the start of Phase 14 and record the real number (last recorded: 996 passed + 1 skipped at a609803).
+
+### PART P-082 STATUS: COMPLETE ✅ — PHASE 13 COMPLETE ✅ (live push delivery pending Section 7 item 4, not a defect of this phase)
+
+This is the explicit gate Phase 14 (Business Console / Mobile Business Tools) checks before beginning.
+
+### Exact next starting point
+1) Run the FULL `flutter test` and `flutter analyze` (expect 838 passed, clean) and the FULL backend `docker compose exec web pytest -q`, and record the real numbers. 2) Start Phase 14 (Business Console / Mobile Business Tools) with its first part in the master plan. The existing business console screen (RouteNames.businessConsole, opened from the Home debug menu) and the product management screens (P-033/P-034) are the current integration points. 3) Any new notification source must go through notifications.tasks.enqueue_notification(...) and the notification category mapping above; a new category needs a NotificationPreference field and a switch in notification_preferences_screen.dart. 4) When the Firebase project exists, do the live-push device checks listed under Known issues.
