@@ -10447,7 +10447,7 @@ Analytics placeholder and integration (Chat 4):
 - Incident during the part (no impact): a `dart format` run over the whole `stories` folder changed 16 existing files; they were restored with `git checkout --` by name, and the follow-up check showed no `M` on any protected path.
 
 ### GitHub references
-- cavallo-mobile branch `part-083`: `7ae8d1d` (Chats 1–3 plus the analytics placeholder), `ed3a018` (integration test and the `heroTag` fix), then one small commit with the by-name `dart format` of the two analytics placeholder files. Base: `main` @ `29468f1` (P-082).
+- cavallo-mobile branch `part-083`: `7ae8d1d` (Chats 1–3 plus the analytics placeholder), `ed3a018` (integration test and the `heroTag` fix), `1cd4ab3` (by-name `dart format` of the two analytics placeholder files). Base: `main` @ `29468f1` (P-082).
 - cavallo-app: no change in P-083 (`main` @ `f528f50`).
 - Baseline to preserve from here: cavallo-mobile `part-083`: `flutter analyze` clean, `flutter test` = 907 passed.
 
