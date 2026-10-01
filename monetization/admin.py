@@ -1,8 +1,7 @@
 from django.contrib import admin, messages
-from django.utils import timezone
 
 from monetization.models import FeaturedSubscription, Plan
-from monetization.services import activate_subscription
+from monetization.services import activate_subscription, deactivate_subscriptions
 
 
 @admin.register(Plan)
@@ -85,9 +84,9 @@ class FeaturedSubscriptionAdmin(admin.ModelAdmin):
 
     @admin.action(description="Deactivate selected")
     def deactivate_selected(self, request, queryset):
-        updated = queryset.filter(is_active=True).update(
-            is_active=False, updated_at=timezone.now()
-        )
+        # P-087: goes through the service so BusinessProfile.is_featured
+        # is cleared in the same transaction as the subscription flag.
+        updated = deactivate_subscriptions(queryset)
         self.message_user(
             request,
             f"Deactivated {updated} subscription(s).",

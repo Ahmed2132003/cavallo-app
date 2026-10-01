@@ -12,7 +12,7 @@ from django.contrib.auth import get_user_model
 import monetization
 from businesses.services import create_business_profile
 from monetization.models import FeaturedSubscription, Plan
-from monetization.services import activate_subscription
+from monetization.services import activate_subscription, deactivate_subscriptions
 
 User = get_user_model()
 
@@ -148,14 +148,141 @@ class TestActivateSubscription:
         assert first.is_active is True
         assert _active(business).count() == 1
 
-    def test_does_not_touch_business_is_featured(self):
-        """Wiring BusinessProfile.is_featured to this state is Part P-087."""
+    def test_activation_sets_business_is_featured(self):
+        """Part P-087: activation flips BusinessProfile.is_featured on."""
         business = _make_business()
+        assert business.is_featured is False
 
         activate_subscription(business, _make_plan())
 
+        # The caller's in-memory instance is updated...
+        assert business.is_featured is True
+        # ...and so is the stored column.
+        business.refresh_from_db()
+        assert business.is_featured is True
+
+    def test_superseding_activation_keeps_business_featured(self):
+        business = _make_business()
+        activate_subscription(business, _make_plan("Featured 7", 7))
+
+        activate_subscription(business, _make_plan("Featured 90", 90))
+
+        business.refresh_from_db()
+        assert business.is_featured is True
+        assert _active(business).count() == 1
+
+    def test_activation_only_features_that_business(self):
+        business_a = _make_business("a")
+        business_b = _make_business("b")
+
+        activate_subscription(business_a, _make_plan())
+
+        business_a.refresh_from_db()
+        business_b.refresh_from_db()
+        assert business_a.is_featured is True
+        assert business_b.is_featured is False
+
+    def test_failed_activation_leaves_business_not_featured(self):
+        """Atomicity: a failed activation must not feature the business."""
+        business = _make_business()
+        plan = _make_plan()
+
+        with mock.patch.object(
+            FeaturedSubscription.objects, "create", side_effect=RuntimeError("boom")
+        ):
+            with pytest.raises(RuntimeError):
+                activate_subscription(business, plan)
+
         business.refresh_from_db()
         assert business.is_featured is False
+        assert _active(business).count() == 0
+
+
+@pytest.mark.django_db
+class TestDeactivateSubscriptions:
+    """Part P-087: deactivation un-features the business, atomically."""
+
+    def test_deactivation_clears_flag_and_keeps_the_row(self):
+        business = _make_business()
+        sub = activate_subscription(business, _make_plan())
+
+        updated = deactivate_subscriptions(
+            FeaturedSubscription.objects.filter(pk=sub.pk)
+        )
+
+        assert updated == 1
+        sub.refresh_from_db()
+        business.refresh_from_db()
+        assert sub.is_active is False
+        assert business.is_featured is False
+        assert FeaturedSubscription.objects.filter(pk=sub.pk).exists()
+
+    def test_only_the_deactivated_business_is_unfeatured(self):
+        business_a = _make_business("a")
+        business_b = _make_business("b")
+        plan = _make_plan()
+        sub_a = activate_subscription(business_a, plan)
+        activate_subscription(business_b, plan)
+
+        deactivate_subscriptions(FeaturedSubscription.objects.filter(pk=sub_a.pk))
+
+        business_a.refresh_from_db()
+        business_b.refresh_from_db()
+        assert business_a.is_featured is False
+        assert business_b.is_featured is True
+        assert _active(business_b).count() == 1
+
+    def test_inactive_rows_in_the_queryset_are_ignored(self):
+        """A superseded (inactive) row must not un-feature its business."""
+        business = _make_business()
+        plan = _make_plan()
+        old = activate_subscription(business, plan)
+        activate_subscription(business, plan)  # supersedes `old`
+
+        updated = deactivate_subscriptions(
+            FeaturedSubscription.objects.filter(pk=old.pk)
+        )
+
+        assert updated == 0
+        business.refresh_from_db()
+        assert business.is_featured is True
+        assert _active(business).count() == 1
+
+    def test_empty_queryset_is_a_noop(self):
+        business = _make_business()
+        activate_subscription(business, _make_plan())
+
+        assert deactivate_subscriptions(FeaturedSubscription.objects.none()) == 0
+
+        business.refresh_from_db()
+        assert business.is_featured is True
+
+    def test_bulk_deactivation_of_several_businesses(self):
+        businesses = [_make_business(str(i)) for i in range(3)]
+        plan = _make_plan()
+        for business in businesses:
+            activate_subscription(business, plan)
+
+        updated = deactivate_subscriptions(
+            FeaturedSubscription.objects.filter(is_active=True)
+        )
+
+        assert updated == 3
+        for business in businesses:
+            business.refresh_from_db()
+            assert business.is_featured is False
+        assert FeaturedSubscription.objects.filter(is_active=True).count() == 0
+
+    def test_reactivation_after_deactivation_features_again(self):
+        business = _make_business()
+        plan = _make_plan()
+        sub = activate_subscription(business, plan)
+        deactivate_subscriptions(FeaturedSubscription.objects.filter(pk=sub.pk))
+
+        activate_subscription(business, plan)
+
+        business.refresh_from_db()
+        assert business.is_featured is True
 
 
 _WRITE_CALLS = {"create", "get_or_create", "update_or_create", "update", "bulk_create"}

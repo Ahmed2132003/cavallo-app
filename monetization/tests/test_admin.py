@@ -173,3 +173,37 @@ class TestMonetizationAdmin:
         assert sub.is_active is False
         assert _active(business).count() == 0
         assert FeaturedSubscription.objects.filter(pk=sub.pk).exists()
+        # Part P-087: the action also clears the business's flag.
+        business.refresh_from_db()
+        assert business.is_featured is False
+
+    def test_add_post_marks_the_business_featured(self, admin_client):
+        business = _make_business()
+        plan = _make_plan()
+        assert business.is_featured is False
+
+        response = admin_client.post(
+            reverse(ADD_URL), {"business": business.pk, "plan": plan.pk}
+        )
+
+        assert response.status_code == 302
+        business.refresh_from_db()
+        assert business.is_featured is True
+
+    def test_deactivate_action_leaves_other_businesses_featured(self, admin_client):
+        business_a = _make_business("a")
+        business_b = _make_business("b")
+        plan = _make_plan()
+        sub_a = activate_subscription(business_a, plan)
+        activate_subscription(business_b, plan)
+
+        admin_client.post(
+            reverse(CHANGELIST_URL),
+            {"action": "deactivate_selected", "_selected_action": [sub_a.pk]},
+            follow=True,
+        )
+
+        business_a.refresh_from_db()
+        business_b.refresh_from_db()
+        assert business_a.is_featured is False
+        assert business_b.is_featured is True
