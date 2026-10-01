@@ -10714,3 +10714,79 @@ None for P-086 itself, apart from the [CONFIRM] manual Admin check and the full 
 3) Update `monetization/tests/test_services.py::test_does_not_touch_business_is_featured` (it pins the P-086 behavior and will intentionally change in P-087). Keep `businesses/tests/test_is_featured.py` (P-059) green.
 4) P-088 is the expiry job (flips `is_active` off when `expires_at` passes; consider an index first); P-089/P-090 (payment flow + webhook) call `activate_subscription()` and remain BLOCKED on Section 7 item 3 (Paymob credentials) as recorded in P-085.
 5) Still open from before: the P-085 manual E2E, and a real full backend `pytest -q` number.
+
+## PART P-087 — Backend: Featured-Ranking Integration Into Feed/Search (BusinessProfile.is_featured wired to FeaturedSubscription state) — STATUS: COMPLETE ✅ (automated checks PASSED; manual Admin check [CONFIRM])
+
+### What was implemented
+- `BusinessProfile.is_featured` (real stored `BooleanField`, created as a P-059 placeholder) is now genuinely kept in sync with `FeaturedSubscription.is_active`. This **definitively resolves the open question flagged by P-059 and P-064**: the field exists, is a real DB column, and now reflects real subscription state.
+- `monetization/services.py`:
+  - `activate_subscription(business, plan)` now also sets `is_featured=True`, inside the same `transaction.atomic()` (after the new subscription row is created; a failed activation leaves the flag untouched). It also sets `business.is_featured = True` on the caller's in-memory instance.
+  - NEW `deactivate_subscriptions(subscriptions)`: takes a `FeaturedSubscription` queryset, in one transaction deactivates the ACTIVE rows in it, locks the affected business rows (pk ASC, same lock as activation), and recomputes `is_featured`. Returns the number of subscriptions actually deactivated. Rows are kept for history. Inactive rows in the queryset are ignored (a superseded row never un-features its business). Empty queryset returns 0.
+  - NEW private helper `_sync_business_featured_flag(business_ids)`: sets `is_featured=True` for businesses that have an active subscription and `False` for the others. Uses `BusinessProfile.all_objects ... .update(...)` (no `save()`, so no `post_save`/search-vector signal re-run; soft-deleted businesses stay consistent too).
+- `monetization/admin.py`: the "Deactivate selected" action now calls `deactivate_subscriptions()` instead of a raw `.update(is_active=False)`. Without this, a deactivated business would have stayed Featured (gap NOT mentioned in the master plan; found during the audit).
+- `businesses/models.py`: COMMENT ONLY (the "PLACEHOLDER / nothing sets this yet" note was no longer true). No field change, no migration.
+- Feed/Search audit result (verified in code, no change needed): `feed/services.py::fetch_backfill_tier` (serves Home and Discover) only EXCLUDES the user's followed businesses and own business, and orders by `-business__is_featured, -created_at, -id`; it never filters on `is_featured`. `search/services.py` filters on `is_featured` ONLY under `if filters.featured_only` (default `False`, explicit user opt-in = the deck's "Featured Filter"); otherwise it only orders. Post/Reel/Product resolve the status via `business__is_featured` (join) and `select_related("business")`. So `feed/services.py`, `search/services.py` and `search/views.py` were NOT modified.
+
+### Files created
+- `monetization/tests/test_featured_ranking_integration.py` (18 tests)
+
+### Files modified
+- `monetization/services.py` (rewritten; see above)
+- `monetization/admin.py` (Deactivate action -> service; removed now-unused `timezone` import)
+- `monetization/tests/test_services.py` (replaced the P-086 test `test_does_not_touch_business_is_featured`, which pinned the OLD behaviour, with 4 activation tests + new class `TestDeactivateSubscriptions` with 6 tests; import of `deactivate_subscriptions`)
+- `monetization/tests/test_admin.py` (flag assertion in the deactivate test + 2 new tests: add-post features the business, deactivate action leaves other businesses featured)
+- `businesses/models.py` (comment only)
+
+### Important implementation details / architecture decisions
+- **Stored column, not a property**: Feed/Search ordering AND the search cursor tuple `(is_featured, rank/created_at, content-type rank, id)` depend on a real DB column.
+- **Join-based resolution for Post/Reel/Product**: NO `is_featured` was added to them. A parametrized test (`test_content_models_do_not_duplicate_is_featured`) pins this. No verified performance reason to denormalize was found.
+- **Deviation from the plan text**: the plan said "set it in `activate_subscription()` and in P-088's expiry job". P-088 does not exist yet and the Admin Deactivate action ALSO needed it, so the deactivation write lives in ONE shared service, `deactivate_subscriptions()`, instead of being copied into each caller.
+- **Single source of truth**: `FeaturedSubscription.is_active`; `is_featured` is a mirror written only in `monetization/services.py`. The P-086 rule is unchanged: `is_active=True` is set ONLY in `activate_subscription()` (guard test `test_only_services_module_sets_is_active_true` still passes).
+- **Section 21 ("boost, not exclusion") re-verified**, both by code audit (above) and by tests: non-featured content is still served by Home feed, Discover and Search (default filters, recency and relevance modes), reachable by paging to the end, and only `featured_only=True` restricts.
+- The integration tests call the SERVICES (`get_home_feed`, `get_discover_feed`, `get_search_results`) directly, NOT the HTTP view, because `HomeFeedView` caches page 1 for 90s (see Known issues).
+- Tooling note for future PowerShell scripts: in PowerShell `-like`, the backtick is an escape character, so a pattern containing a literal backtick silently fails to match (this broke the first run of the STEP 2 script). Use `.Contains()`.
+
+### Commands
+- From `D:\Cavallo\scd-backend` (Docker):
+  - `docker compose exec web pytest monetization/ businesses/tests/test_is_featured.py -q`
+  - `docker compose exec web pytest monetization/tests/test_featured_ranking_integration.py -q`
+  - `docker compose exec web pytest monetization/ feed/ search/ businesses/ -q`
+  - `docker compose exec web python manage.py makemigrations --check --dry-run` (expected: No changes detected)
+
+### Tests / verification results (as reported by the developer)
+- After STEP 1: `monetization/` + `businesses/tests/test_is_featured.py` = **44 passed**.
+- After STEP 2: `monetization/tests/test_featured_ranking_integration.py` = **18 passed**.
+- Plan validation (`monetization/ feed/ search/ businesses/`) = **269 passed** (131s).
+- Flutter (`cavallo-mobile`): not touched by P-087.
+- NOT reported/[CONFIRM]: `makemigrations --check --dry-run` (no migration is expected: no model field changed), a real full backend `pytest -q` number, and the manual Admin check below.
+
+### Manual check [CONFIRM]
+Django Admin -> Featured subscriptions -> Add (business + plan): open that business and confirm it now ranks first in Search / Discover; then "Deactivate selected" on that subscription: ranking reverts and `BusinessProfile.is_featured` is False (note the Home Feed page 1 can lag up to 90s, see below).
+
+### Known issues / things to know
+- **Home Feed page-1 cache (P-060, by design)**: `HomeFeedView` caches page 1 per user for 90s with NO invalidate-on-write. After an activation/expiry the Home Feed (page 1, default page size) can show the old ranking for up to 90s. Discover and Search are not cached. Accepted architecturally in P-060; not changed here.
+- **Pre-P-087 dev data can be inconsistent**: subscriptions activated during P-086 manual checks (before this part) have an active row but `is_featured=False`. And a business set featured by hand (shell/Admin) with no subscription stays `True` until an activate/deactivate touches it. There is no reconcile job. Fix for dev data: re-activate via Admin "Re-activate selected", or run `_sync_business_featured_flag` from a Django shell for the affected business ids. P-088 may optionally add a reconcile step.
+- **Do not flip `FeaturedSubscription.is_active` to False by hand anywhere else** (queryset `.update`, shell): the flag would drift. Always use `deactivate_subscriptions()`.
+- `celerybeat-schedule` shows as modified; intentionally NOT committed (flagged since P-039/P-055; adding it to `.gitignore` is still pending). The helper scripts `p087_step1.ps1`, `p087_step2.ps1`, `p087_step2_fix.ps1` were NOT committed.
+- Still open from earlier parts: P-085 manual E2E, flake8/black EOF-newline issues and `accounts/views.py` leftover text (flagged since P-052).
+- `is_featured` is NOT exposed on `BusinessProfileSerializer` (per P-059). Whether the feed/search item serializers expose it to the client is NOT verified here: [CONFIRM] before P-110.
+
+### Remaining work
+None for P-087 itself, apart from the [CONFIRM] items above.
+
+### GitHub references
+- cavallo-app `main`: `cf38fcb` — "P-087: wire BusinessProfile.is_featured to FeaturedSubscription state (activate/deactivate in monetization.services), Admin Deactivate via service, Feed/Search ranking integration tests (boost, not exclusion)" (6 files changed, 637 insertions, 22 deletions; pushed as `d0536c1..cf38fcb`). https://github.com/Ahmed2132003/cavallo-app/commit/cf38fcb
+- cavallo-mobile: no change in P-087.
+- Baselines to preserve: `monetization/ feed/ search/ businesses/` = 269 passed; `monetization/tests/test_featured_ranking_integration.py` = 18 passed; `monetization/services.py` exposes `activate_subscription`, `deactivate_subscriptions`.
+
+### Answer to the execution prompt's question about P-088
+P-088 (expiry) does NOT need to set `is_featured=False` itself and I did NOT add an expiry job here (it does not exist yet). P-088 MUST call `monetization.services.deactivate_subscriptions(queryset_of_expired_active_rows)`; that call both flips `is_active` and clears `is_featured` atomically.
+
+### PART P-087 STATUS: COMPLETE ✅ — Phase 15 continues (P-088, P-089, P-090 remain)
+
+### Exact next starting point — Part P-088 (Featured subscription expiry job)
+1) `git pull` on `D:\Cavallo\scd-backend` so you are at `cf38fcb`; run `docker compose exec web pytest monetization/ feed/ search/ businesses/ -q` (expect 269 passed).
+2) Build the expiry job as a Celery task (follow the existing beat/task pattern, e.g. the P-084 analytics rollup): select `FeaturedSubscription.objects.filter(is_active=True, expires_at__lte=now)` and pass that queryset to `deactivate_subscriptions()`. Do NOT write `is_active=False` or `is_featured` directly.
+3) There is no index on `FeaturedSubscription.expires_at` / `(is_active, expires_at)` (flagged in P-086): decide whether to add one (migration) before sweeping.
+4) Test it in integration with Feed/Search (the plan says expiry ranking revert is tested "here in integration with it"): activate, expire (set `expires_at` in the past, run the task), confirm ranking reverts and `is_featured` is False.
+5) P-089/P-090 (payment flow + webhook) call `activate_subscription()` and remain BLOCKED on Section 7 item 3 (Paymob credentials). P-110 (Flutter Featured badge) reads this real `is_featured` state; verify first that the feed/search serializers expose it.
