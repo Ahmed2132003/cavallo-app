@@ -10361,3 +10361,100 @@ This is the explicit gate Phase 14 (Business Console / Mobile Business Tools) ch
 
 ### Exact next starting point
 1) Run the FULL `flutter test` and `flutter analyze` (expect 838 passed, clean) and the FULL backend `docker compose exec web pytest -q`, and record the real numbers. 2) Start Phase 14 (Business Console / Mobile Business Tools) with its first part in the master plan. The existing business console screen (RouteNames.businessConsole, opened from the Home debug menu) and the product management screens (P-033/P-034) are the current integration points. 3) Any new notification source must go through notifications.tasks.enqueue_notification(...) and the notification category mapping above; a new category needs a NotificationPreference field and a switch in notification_preferences_screen.dart. 4) When the Firebase project exists, do the live-push device checks listed under Known issues.
+
+## PART P-083 — Flutter: Business Console Dashboard Shell — STATUS: COMPLETE ✅
+
+> Where to add: append this whole section at the END of PROJECT_PROGRESS.md, right after the "PART P-082 … Exact next starting point" block. Nothing else in the file changes.
+
+P-083 pays off the navigation debt P-033 (Products), P-044 (Posts/Reels) and P-051 (Stories) each flagged: their management screens had no navigational home. The Business Console is now a `StatefulShellRoute.indexedStack` with a Material 3 `NavigationBar`, reachable only by Business accounts. No backend change in this part.
+
+### Findings that changed the plan (verified against the code before any edit)
+- The app had NO navigation pattern to extend: a flat `GoRoute` list, no `ShellRoute`, no bottom nav, no drawer. The console shell is therefore the app's FIRST shell and is self-contained.
+- `/business-console` already existed (P-007 placeholder `BusinessConsoleScreen`). P-083 replaces its builder with a redirect; it does not add a new entry point.
+- There was NO gate keeping a Customer out of `/business-console`. The only existing gate (P-028C1) sent a Business user without a profile to onboarding. A new gate was needed, modelled on the P-040 `/moderation` prefix gate.
+- There was no Stories list screen. P-051 only built creation and the upload queue.
+
+### Decisions (D1–D6)
+- D1: shell = `StatefulShellRoute.indexedStack` + `NavigationBar` with 4 destinations and NO shell-level AppBar; every branch root keeps its own AppBar.
+- D2: `/business-console` redirects to the Products branch. `BusinessConsoleScreen` is NOT deleted; it is simply unreferenced (tracked debt).
+- D3: `StoryUploadStatusBanner` moved to the top of the shell, visible above all four tabs. This resolves P-051's deferred FLAGGED SCOPE DECISION 6.
+- D4: the "Moderation Queue" button does NOT move into the console. It stays in the Home debug menu (it is not a business-owner tool).
+- D5: new gate in `redirect`: any location equal to or under `/business-console` with `accountType != business` goes to `/home`. Order: unauthenticated → `/login`, then the P-028C1 gate, then THIS gate, then the P-040 moderation gate. P-028C1 and P-040 are untouched.
+- D6: the four forms (`productForm`, `postForm`, `reelForm`, `storyForm`) stay top-level routes, so they open full-screen above the shell and dismissing them lands back on the same tab.
+
+### Shared contract (final)
+Branch order: 0 Products · 1 Posts/Reels · 2 Stories · 3 Analytics.
+- `RouteNames.storyList = 'storyList'`, `storyListPath = '/business-console/stories'`
+- `RouteNames.businessAnalytics = 'businessAnalytics'`, `businessAnalyticsPath = '/business-console/analytics'`
+- Nav keys: `business-console-nav-products`, `-content`, `-stories`, `-analytics` (+ `business-console-nav-bar` on the bar itself, an addition that does not change the contract)
+- Labels: `Products`, `Posts/Reels`, `Stories`, `Analytics`
+- Keys: `business-analytics-placeholder`; `story-list-create-button`, `story-list-empty`, `story-list-error`
+- Pre-existing route names and paths are unchanged: `businessConsole`, `productList`, `productForm`, `contentList`, `postForm`, `reelForm`, `storyForm`.
+
+### What was implemented (cavallo-mobile, branch `part-083`)
+Routing (Chat 1):
+- `lib/routing/route_names.dart`: added the four constants above (additions only).
+- `lib/routing/app_router.dart`: the business-only gate, the `StatefulShellRoute.indexedStack` with 4 branches (builder = `BusinessConsoleShell(navigationShell: …)`), `/business-console` → redirect to `productListPath`. `productList` and `contentList` were only MOVED into their branches with the same builders and callbacks.
+
+Shell (Chat 2), `lib/features/business_console/presentation/business_console_shell.dart`:
+- `BusinessConsoleShell` (ConsumerWidget): Scaffold without AppBar; body = Column of `StoryUploadStatusBanner` (only while the upload queue is non-empty) over `Expanded(navigationShell)`; `NavigationBar` with the 4 destinations; `goBranch(index, initialLocation: index == currentIndex)`.
+- When the banner is shown it sits under the status bar (top SafeArea) and the tab is told the top inset is consumed, so a tab's AppBar does not add it twice. The tree shape is stable, so the banner appearing or disappearing never remounts a tab.
+
+Stories list (Chat 3), new files only:
+- `lib/features/stories/domain/own_story_entity.dart`, `domain/own_stories_repository.dart`, `data/dtos/own_story_response_dto.dart`, `data/own_stories_repository.dart`, `presentation/own_stories_provider.dart`, `presentation/story_list_screen.dart`.
+- `GET /api/v1/stories/` returns the owner's stories as a paginated envelope `{results, next, previous}` (NOT a bare array). Real `status` values: `pending_review`, `published`, `rejected`. Chips: Pending / Published / Rejected / Expired / Unknown. Expired is derived client-side (not rejected and `expires_at` passed). Only the first page (20) is shown.
+- `ownStoriesProvider` is an autoDispose AsyncNotifier. It listens read-only to `storyUploadQueueProvider` and refreshes when an `uploading`/`retrying` task leaves the queue, which closes the gap P-051 left (its Flagged Decision 3) without touching any `story_upload_*` file.
+
+Analytics placeholder and integration (Chat 4):
+- `lib/features/business_console/presentation/analytics_placeholder_screen.dart`: `AnalyticsPlaceholderScreen()` const, AppBar "Analytics", empty state "Analytics coming soon" (key `business-analytics-placeholder`). No data, no providers.
+- `test/routing/business_console_integration_test.dart`: real `SocialCommerceApp` + real `appRouterProvider` + the real screens behind every destination; only repositories are faked.
+
+### Zero-regression evidence
+- `git diff --stat main origin/part-083` over `lib/features/products`, `lib/features/content`, `story_creation_screen.dart`, `story_upload_queue_provider.dart`, `story_upload_status_banner.dart`, `story_creation_repository.dart`, `business_console_screen.dart` and `lib/features/feed/presentation`: EMPTY.
+- Existing files modified by P-083 (4 only): `lib/routing/app_router.dart`, `lib/routing/route_names.dart`, `test/routing/app_router_test.dart`, `test/routing/app_router_redirect_test.dart`, plus ONE deliberate edit in the Chat 3 file `story_list_screen.dart` (see Deviations).
+- Stale tests were corrected, not weakened: in `app_router_test.dart` the P-007 placeholder assertion for `businessConsole` was replaced by two P-083 tests (a Business account lands on the shell's Products branch; a Customer is sent to `/home`).
+
+### Tests
+- `business_console_router_gate_test.dart` (9): Customer blocked from `/business-console` and from every subpath including the forms, and the Business profile provider is never built for them; Customer+moderator still blocked; Business with a profile reaches the console and sees all four destinations; Business without a profile goes to onboarding (P-028C1 wins); unauthenticated goes to `/login`; the `/moderation` gate still works; `/business-console` lands on branch 0 and the bar switches to Analytics and back.
+- `business_console_shell_test.dart` (7): four destinations in contract order with keys; each tap shows the right page; branch state is kept and re-tapping the current tab returns to its root; banner above every tab; the shell adds no AppBar; status-bar inset applied exactly once; banner never remounts a tab.
+- Stories list: entity 10, repository 8, provider 9, screen 12 (39 new; `test/features/stories/` = 64 passed).
+- `analytics_placeholder_screen_test.dart` (4). The const check is a compile-time declaration, NOT `identical(const A(), const A())`, because widget-creation tracking in `flutter test` gives every const widget call site its own hidden location argument.
+- `business_console_integration_test.dart` (9: 7 Business, 2 Customer): entering lands on Products and each of the four destinations opens its real screen; `pushNamed` entry lands on Products and popping returns to Home; the Stories tab shows the real empty state and Create Story button, Analytics shows the placeholder; Products create form opens above the shell and dismissing returns to Products (D6); New Post and New Reel forms return to the Posts/Reels tab (D6); Create Story opens `StoryCreationScreen` and returns to Stories with Products already visited (regression guard for the hero tag); banner visible above all four tabs while a task exists and gone when it ends (D3); a Customer cannot reach the console through `pushNamed`, `push` or `go`.
+
+### Verification results
+- `flutter analyze`: No issues found.
+- `flutter test` (FULL): **907 passed, 0 failed** (baseline 838, so +69: gate 9 + shell 7 + stories 39 + analytics placeholder 4 + integration 9 = 68, plus a net +1 in `app_router_test.dart`).
+- `flutter test test/routing/business_console_integration_test.dart`: 9 passed. `flutter test test/features/stories/`: 64 passed.
+- Manual run on a real device/emulator against the real backend, with a Business account (with profile) and a Customer account: the whole script passed as reported by the user. Covered: Customer cannot open the console from the Home debug menu; Business reaches the shell on Products; product create/edit/back; New Post and New Reel create/back; Stories list, empty state, pull-to-refresh, Create Story with no red error after visiting Products first, upload banner visible on all four tabs, list refreshes by itself when the upload ends; Analytics placeholder; tab state kept; Back leaves the console; another account's stories do not leak after logout/login. Individual per-step results were not itemised by the user, only "all passed".
+- NOT verified: behaviour on a real device with a notch/status bar beyond what `MediaQuery` simulation covers in tests; the Stories rejection-reason display (the backend does not send it, see Known issues).
+
+### Deviations from the contract (all recorded)
+1. Chat 4 edited a Chat 3 file: `lib/features/stories/presentation/story_list_screen.dart` got an explicit `heroTag: 'story-list-create'` on its `FloatingActionButton.extended`. `ProductListScreen` (protected) has a FAB with the default hero tag; both FABs are alive in the shell's IndexedStack, so pushing any route above the shell made Flutter assert "multiple heroes that share the same tag". A real defect that exists only because of the shell; `ProductListScreen` cannot be touched, so the fix had to be on the new screen. `ContentListScreen` was already safe (explicit `create-post` / `create-reel` tags).
+2. Chat 3 added `storyListClockProvider` inside `story_list_screen.dart` (not in the contract) to make the remaining-time label testable.
+3. Chat 2 added the key `business-console-nav-bar` to the `NavigationBar` and 2 more tests than planned (status-bar inset, no remount).
+4. After a push, `routerDelegate.currentConfiguration.uri` keeps reporting the base location (`/home`) while the pushed page is on screen. Tests that assert the location therefore enter the console with `go`; the `pushNamed` entry has its own test that asserts on widgets and the selected tab. (Explanation inferred from test evidence, not from reading the go_router source.)
+
+### Known issues / notes
+- `BusinessConsoleScreen` (`business_console_screen.dart`) and its old tests are now unreferenced by the router. Tracked debt: delete in a later part.
+- Possible double bottom navigation: if a main app navigation shell (Home/Discover/Search/Chat/Notifications) is built later, the console must be placed inside it or beside it. Deliberately deferred; not part of P-083.
+- Back from the root of any console tab leaves the whole console and returns to Home. Accepted until a main nav exists.
+- The Home debug-menu entry "Business Console (debug)" is still the only way in, via `pushNamed(businessConsole)`. A Customer who taps it silently stays on Home (no message). That is the specified behaviour.
+- Stories backend gaps (no backend change was allowed in P-083): (1) `rejection_reason` is NOT returned by `StorySerializer`, unlike Post and Reel (P-044), so a rejected story shows the chip "Rejected" with no reason, although the deck says the reason is always shown to the merchant; the DTO already reads an optional `rejection_reason`, so the screen shows it as soon as the backend sends it; (2) no caption / text overlay / product link on a Story (old P-046 gap); (3) the serializer returns `business` as an id only; (4) no video thumbnail (videos show a `videocam` icon).
+- The Stories list shows only the first page (20), with no "load more".
+- The Stories tab (branch 2) is built lazily the first time it is opened; in any test that opens it, override `ownStoriesRepositoryProvider`. If a test navigates away from a screen that contains an image story, use a `.mp4` URL or an empty list, because `Image.network` throws in the test environment after the route changes (a test-environment problem, not a screen bug).
+- `test/routing/app_router_test.dart` still contains the 'search route resolves' test ×7 and 'chatList route resolves' test several times. This duplication is already on `main` (from before P-083) and was left alone.
+- Formatting: `dart format --output=none --set-exit-if-changed lib test` reports 251 of 336 files as changed. This applies to files P-083 did not touch and is most likely a line-ending effect of Windows (not verified), so do NOT run `dart format lib test` on the whole tree; format files by name. A leftover format of the two analytics placeholder files was applied by name before closing this part.
+- Incident during the part (no impact): a `dart format` run over the whole `stories` folder changed 16 existing files; they were restored with `git checkout --` by name, and the follow-up check showed no `M` on any protected path.
+
+### GitHub references
+- cavallo-mobile branch `part-083`: `7ae8d1d` (Chats 1–3 plus the analytics placeholder), `ed3a018` (integration test and the `heroTag` fix), then one small commit with the by-name `dart format` of the two analytics placeholder files. Base: `main` @ `29468f1` (P-082).
+- cavallo-app: no change in P-083 (`main` @ `f528f50`).
+- Baseline to preserve from here: cavallo-mobile `part-083`: `flutter analyze` clean, `flutter test` = 907 passed.
+
+### PART P-083 STATUS: COMPLETE ✅
+
+### Exact next starting point (P-084 / P-085)
+1) Merge `part-083` into `main` after the format commit is pushed, then re-run `flutter analyze` and the FULL `flutter test` (expect 907 passed) and record the real number.
+2) P-085 (Analytics screen) plugs into branch 3. Replace ONLY the `builder` of the `businessAnalytics` GoRoute in `lib/routing/app_router.dart` (currently `AnalyticsPlaceholderScreen()`). Keep the route name `businessAnalytics`, the path `/business-console/analytics`, the shell, the other three branches and the redirect gate untouched. Keep the AppBar inside the Analytics screen (decision D1) and keep the key `business-console-nav-analytics`.
+3) P-084 and P-085 may add their own tests, but must not weaken `business_console_router_gate_test.dart` or `business_console_integration_test.dart`. The integration test already asserts that the Analytics tab shows `AnalyticsPlaceholderScreen`, so P-085 must update that one assertion to the real screen, fixing the stale test rather than deleting it.
+4) Backend, before relying on analytics data: the FULL `docker compose exec web pytest -q` still has to be run and recorded (last recorded: 996 passed + 1 skipped at a609803).
