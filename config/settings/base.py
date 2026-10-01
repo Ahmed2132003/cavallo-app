@@ -89,6 +89,7 @@ INSTALLED_APPS = [
     "notifications",  # Part P-072 (early stub): send_push_notification() seam.
     "devices",  # Part P-081: FCM device-token registration.
     "analytics",  # Part P-084: daily BusinessDailyStats rollup.
+    "monetization",  # Part P-086: Plan + FeaturedSubscription (Featured state).
 ]
 
 # ---------------------------------------------------------------------------
