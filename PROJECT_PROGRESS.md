@@ -10565,3 +10565,58 @@ None for P-084 itself. Possible future additions (each needs an explicit decisio
 4) The screen must show ONLY the four tracked metrics (new followers, likes received, comments received, story views). Do NOT show product views or profile views (not tracked). Treat a missing date as "no data" (not zero), and show an honest note that numbers are a daily rollup of the previous day (UTC) and never include today.
 5) P-085 must update the one assertion in `business_console_integration_test.dart` that currently expects `AnalyticsPlaceholderScreen` on the Analytics tab (fix the stale assertion, do not delete the test), and must not weaken `business_console_router_gate_test.dart`.
 6) Backend, still open: record a real full `docker compose exec web pytest -q` number (see Known issues).
+
+## PART P-085 — Flutter: Business Analytics Screen — STATUS: PARTIALLY VALIDATED (automated checks PASSED; manual E2E on the real backend still [CONFIRM])
+
+> Where to add: append this whole section after the "PART P-084 STATUS: COMPLETE" block at the end of PROJECT_PROGRESS.md. Nothing else in the file changes, except the Phase 14 line (see the last section).
+
+P-085 replaces the P-083 Analytics placeholder with a real screen fed by P-084's daily-stats endpoint, and closes the Business Console's four sections. No backend change.
+
+### Findings that changed the plan (verified against the code before any edit)
+- `GET /api/v1/analytics/business/{id}/daily/` returns a cursor envelope `{next, previous, results}`, newest date first (NOT a bare array). Query params are `date_from` / `date_to` / `page_size` (max 100) / `cursor`.
+- Today is never present in the API: the rollup computes YESTERDAY at 00:15 UTC. A missing date means "no data", not zero.
+- The Celery task path is `analytics.tasks.compute_daily_stats` (no `apps/` prefix). The backend repo/folder is `scd-backend`.
+- The Analytics placeholder was registered as a builder in `lib/routing/app_router.dart` (branch 3), NOT in `business_console_shell.dart` as the spec says. The shell was not touched.
+- The stale tests were in `test/routing/`, not `test/features/business_console/`.
+- `fl_chart 1.1.0` does not compile on Flutter 3.29.3 (`Matrix4.translateByDouble` needs vector_math >= 2.2.0, the SDK pins 2.1.4). Final pin: `fl_chart: 1.0.0` (no caret). A `flutter pub upgrade` or a Flutter bump to 3.35+ could reopen 1.1+.
+
+### Decisions (E1–E7)
+E1 two separate charts (New followers, Likes received), never a dual-axis chart · E2 range 7/14/30, default 7 · E3 NO zero-fill: only returned rows are plotted, "Days with data: X of N" shown, an empty response shows an empty state (not zeros) · E4 only the four tracked metrics (new_followers, total_likes_received, total_comments_received, total_story_views); no product/profile views anywhere · E5 business id comes from `businessProfileProvider` (AnalyticsBusinessUnavailableException if it is null) · E6 fl_chart 1.0.0 · E7 `AnalyticsPlaceholderScreen` and its test deleted.
+Additional: the range is computed from the UTC date (to = today UTC, from = to − (days−1)); `DailyStats.date` is `DateTime.utc` (display with `.day/.month`, never `.toLocal()`); `analyticsStatsProvider` opts out of Riverpod 3 auto-retry (`retry: (_, __) => null`) so a failure shows error + Retry instead of an endless loading state; any off-contract response (bare array, missing field, next without cursor) is an `UnknownFailure`, never an empty list.
+
+### Files
+Chat 1 (data): `pubspec.yaml` (+ lock) · NEW `lib/features/business_console/domain/daily_stats_entity.dart`, `data/dtos/daily_stats_response_dto.dart`, `data/analytics_repository.dart` (also defines `analyticsRepositoryProvider`), `presentation/analytics_provider.dart` · NEW tests `data/daily_stats_response_dto_test.dart`, `data/analytics_repository_test.dart`, `presentation/analytics_provider_test.dart`.
+Chat 2 (UI): NEW `presentation/analytics_screen.dart`, `analytics_summary.dart`, `analytics_line_chart.dart` · NEW tests `analytics_screen_test.dart` (7), `analytics_summary_test.dart` (6), `analytics_line_chart_test.dart` (6).
+Chat 3 (wiring): MODIFIED `lib/routing/app_router.dart` (the import + the Analytics builder only, 2 lines) · DELETED `analytics_placeholder_screen.dart` and its test · MODIFIED (stale assertions fixed, not weakened, plus an `analyticsRepositoryProvider` override so the real screen never hits the network) `test/routing/app_router_test.dart`, `test/routing/business_console_router_gate_test.dart`, `test/routing/business_console_integration_test.dart` · NEW `test/features/business_console/fake_analytics_repository.dart`, `test/features/business_console/analytics_integration_test.dart` (8).
+
+### Commands
+flutter pub get · dart format <files by name> (NOT the whole tree: it reports ~250 files as changed, most likely Windows line endings) · flutter analyze · flutter test test/features/business_console/ · flutter test test/routing/ · flutter test
+
+### Tests
+- Chat 1: 44 (DTO parsing, repository incl. 401/500/empty/query params/cursor, provider ordering, range change, missing profile).
+- Chat 2: 19 (summary sums, chart spots/order/single point, screen loading/error+retry/empty/data/range chip).
+- Chat 3: 8 integration tests on the REAL router + REAL screen + REAL providers (only the repository is faked): direct open, console tab, own business id (7), totals 6/12/3/9 and both charts, only the four tracked labels and no "product"/"placeholder" text or key inside the screen, 7 then 14 day range, empty is not zeros, error + Retry, Customer still blocked by the P-083 gate and the repository is never called.
+- Net full-suite arithmetic: 907 (P-083 baseline) − 4 (deleted placeholder test) + 44 + 19 + 8 = 974.
+
+### Verification results
+- flutter analyze: **No issues found** (PASSED, run on the real machine).
+- flutter test test/features/business_console/analytics_integration_test.dart: **8 passed** (PASSED).
+- flutter test test/routing/: **64 passed** (PASSED).
+- flutter test (FULL): **974 passed, 0 failed** (PASSED; baseline P-083 was 907).
+- Regression: `git diff --stat ed3a018 -- lib/features/products lib/features/content lib/features/stories lib/features/feed lib/features/business_profile lib/features/business_console/presentation/business_console_shell.dart` was EMPTY and the `lib/routing` diff was 2 lines, both checked on a clone of `origin/part-083`. On the real machine: [CONFIRM] re-run the same two commands against your baseline commit.
+- Manual E2E on the real backend (Business + Customer accounts): **[CONFIRM]** (see the script in the chat). Items: (a) follow/like/comment/story view by a Customer, (b) manual rollup for today's UTC date, (c) screen numbers equal the API/DB numbers, (d) 7/14/30 ranges, (e) a business with no rows shows the empty state, (f) `docker compose stop web` shows error + Retry that recovers.
+- Visual check of the charts on a device/emulator (30-day x-axis label crowding, colours): **[CONFIRM]** (widget tests only so far).
+
+### Known issues / notes
+- The live response shape was read from the P-084 code and tests, not from a live call (P-084's own curl checks were never run with a real token). If the live JSON differs, the fix is confined to `daily_stats_response_dto.dart` and `analytics_repository.dart`.
+- Days are UTC; a device in Egypt (UTC+2/+3) can show the last day missing near midnight. Not solved here.
+- Numbers are a daily rollup of the previous day; today appears only after a manual rollup. Follow and Like rows are physically deleted on unfollow/unlike, so an action undone before the rollup is not counted.
+- `businessProfileProvider` (not part of P-085) may auto-retry a failed profile load and keep the screen in a loading state when the backend is down. Not verified; watch E2E step (f). If it shows up, the fix belongs in the profile provider.
+- `lib/routing/route_names.dart` line ~189 still has a doc comment mentioning `AnalyticsPlaceholderScreen` (comment only, not changed).
+- `BusinessConsoleScreen` (P-007) is still unreferenced debt from P-083.
+- Backend full `pytest -q` still not recorded (last known 996 passed + 1 skipped at a609803). The test output's `[HTTP] ... 400` lines are expected (the Flutter test binding answers real HTTP with 400).
+
+### Exact next starting point — Phase 15 (Monetization: Featured State Integration)
+1) Run the manual E2E above and replace every [CONFIRM] with the real result.
+2) Phase 14: mark COMPLETE only if P-083, P-084 and P-085 all genuinely passed validation. Until the P-085 manual E2E passes, record Phase 14 as PARTIALLY VALIDATED with that gap named.
+3) Phase 15 is the first phase touching real payment infrastructure. Several of its parts remain BLOCKED on Section 7 items 1–3 (Web Dashboard stack, object storage provider, Paymob credentials).
