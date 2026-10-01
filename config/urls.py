@@ -107,4 +107,6 @@ urlpatterns = [
     path("api/v1/devices/", include("devices.urls")),
     # Part P-082: notification center (list, mark-read, preferences).
     path("api/v1/notifications/", include("notifications.urls")),
+    # Part P-084: owner-only daily analytics rollups (read-only).
+    path("api/v1/analytics/", include("analytics.urls")),
 ]

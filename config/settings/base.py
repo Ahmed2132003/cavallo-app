@@ -88,6 +88,7 @@ INSTALLED_APPS = [
     "chat",
     "notifications",  # Part P-072 (early stub): send_push_notification() seam.
     "devices",  # Part P-081: FCM device-token registration.
+    "analytics",  # Part P-084: daily BusinessDailyStats rollup.
 ]
 
 # ---------------------------------------------------------------------------
@@ -233,6 +234,7 @@ CELERY_TIMEZONE = "UTC"
 # minutes is deliberately tight relative to the 30-minute fast_path
 # threshold, so a breach is caught within one Beat tick of crossing it.
 # ---------------------------------------------------------------------------
+from celery.schedules import crontab  # noqa: E402
 CELERY_BEAT_SCHEDULE = {
     "check-moderation-sla": {
         "task": "moderation.check_moderation_sla",
@@ -247,6 +249,13 @@ CELERY_BEAT_SCHEDULE = {
     "expire-stale-stories": {
         "task": "stories.expire_stale_stories",
         "schedule": 1200.0,  # every 20 minutes, in seconds
+    },
+    # Part P-084. Daily rollup into analytics.BusinessDailyStats of the
+    # PREVIOUS UTC day. 00:15 UTC (CELERY_TIMEZONE = "UTC") so the day has
+    # fully ended. See analytics/tasks.py.
+    "compute-business-daily-stats": {
+        "task": "analytics.compute_daily_stats",
+        "schedule": crontab(hour=0, minute=15),
     },
 }
 
