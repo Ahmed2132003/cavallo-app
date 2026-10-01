@@ -10458,3 +10458,110 @@ Analytics placeholder and integration (Chat 4):
 2) P-085 (Analytics screen) plugs into branch 3. Replace ONLY the `builder` of the `businessAnalytics` GoRoute in `lib/routing/app_router.dart` (currently `AnalyticsPlaceholderScreen()`). Keep the route name `businessAnalytics`, the path `/business-console/analytics`, the shell, the other three branches and the redirect gate untouched. Keep the AppBar inside the Analytics screen (decision D1) and keep the key `business-console-nav-analytics`.
 3) P-084 and P-085 may add their own tests, but must not weaken `business_console_router_gate_test.dart` or `business_console_integration_test.dart`. The integration test already asserts that the Analytics tab shows `AnalyticsPlaceholderScreen`, so P-085 must update that one assertion to the real screen, fixing the stale test rather than deleting it.
 4) Backend, before relying on analytics data: the FULL `docker compose exec web pytest -q` still has to be run and recorded (last recorded: 996 passed + 1 skipped at a609803).
+
+## PART P-084 — Backend: analytics App (Daily BusinessDailyStats Rollup + Owner-Only Endpoint) — STATUS: COMPLETE ✅
+
+Split into 2 steps (STEP 1: app/model/task/Beat; STEP 2: read endpoint + API tests). Backend only; no Flutter change in this part. Spec was followed with the deviations listed below.
+
+### What was implemented
+- New top-level Django app **`analytics/`** (no `apps/` prefix, per repo convention).
+- `BusinessDailyStats(TimestampedModel)`: `business` FK → `businesses.BusinessProfile` (CASCADE, `related_name="daily_stats"`), `date` (DateField), `new_followers`, `total_likes_received`, `total_comments_received`, `total_story_views` (all `PositiveIntegerField(default=0)`), `unique_together = ("business", "date")`.
+- `analytics.tasks.compute_daily_stats(target_date=None)`, Celery task name `analytics.compute_daily_stats`. Default target = yesterday (UTC); accepts a `date` or an ISO `YYYY-MM-DD` string (Celery JSON); a future date raises `ValueError`. Loops over every `BusinessProfile` and does `BusinessDailyStats.objects.update_or_create(business=..., date=..., defaults={...})` (idempotent). One business failing is logged and skipped, so it cannot block the others. Returns `{"date", "businesses_processed", "businesses_failed"}`.
+- Beat: `"compute-business-daily-stats"` in `CELERY_BEAT_SCHEDULE`, `crontab(hour=0, minute=15)` (`CELERY_TIMEZONE = "UTC"`, so 00:15 UTC).
+- Endpoint **`GET /api/v1/analytics/business/{id}/daily/`** (`BusinessDailyStatsListView`, `generics.ListAPIView`): authenticated, owner-only, read-only, cursor-paginated.
+- Django Admin registration (counters are `readonly_fields`; the job owns them).
+
+### Files created
+- `analytics/__init__.py`, `analytics/apps.py`, `analytics/models.py`, `analytics/admin.py`, `analytics/tasks.py`
+- `analytics/migrations/__init__.py`, `analytics/migrations/0001_initial.py` (depends on `businesses.0008_businessprofile_average_rating_and_more`)
+- `analytics/pagination.py`, `analytics/serializers.py`, `analytics/views.py`, `analytics/urls.py`
+- `analytics/tests/__init__.py`, `analytics/tests/test_models.py`, `analytics/tests/test_tasks.py`, `analytics/tests/test_api.py`
+
+### Files modified
+- `config/settings/base.py`: `"analytics"` added to `INSTALLED_APPS` (after `devices`); `from celery.schedules import crontab  # noqa: E402` added just before `CELERY_BEAT_SCHEDULE`; new Beat entry `compute-business-daily-stats`.
+- `config/urls.py`: `path("api/v1/analytics/", include("analytics.urls"))` added at the end of `urlpatterns`.
+
+### WHAT IS TRACKED (for P-085 to display honestly)
+Only these four metrics exist, because only these have a real underlying data source:
+- `new_followers` ← `social.Follow` rows created on the date.
+- `total_likes_received` ← `social.Like` rows created on the date, on the business's Posts/Reels.
+- `total_comments_received` ← `social.Comment` rows created on the date, on the business's Posts/Reels.
+- `total_story_views` ← `stories.StoryView` rows created on the date, on the business's Stories (StoryView is unique per (story, viewer), so this counts first views).
+
+**NOT tracked anywhere in this system — correctly ABSENT, not a bug, a documented scope boundary:**
+- **Product views** — no tracking mechanism was ever built.
+- **Profile views** — same.
+- **Shares** (`social.Share`, P-056) and **Saves** — they exist as data, but P-084's spec scoped only the four metrics above; adding them later is a new field plus an additive migration.
+- Message/lead counts, story replies, product clicks (all listed in the presentation's analytics slide) — no source data.
+
+`analytics/tests/test_models.py::test_no_fields_for_untracked_metrics` pins the exact field set, so nobody adds a fabricated metric by accident. The Flutter screen (P-085) must NOT show product views or profile views.
+
+### Endpoint contract (for P-085)
+- `GET /api/v1/analytics/business/{id}/daily/`. `{id}` = the business's own `BusinessProfile` id.
+- Auth: `IsAuthenticated`. Check order: 401 (no token) → 404 (no such or soft-deleted business) → 403 (not the owner; also any Customer) → 400 (bad query params). Ownership is checked BEFORE query validation.
+- Query params (all optional): `date_from=YYYY-MM-DD`, `date_to=YYYY-MM-DD` (both inclusive), `cursor`, `page_size` (default 30, max 100).
+- Response: `{"next": <full URL|null>, "previous": <full URL|null>, "results": [...]}` — the standard cursor envelope, ordered newest `date` first (`-date`, via `DailyStatsCursorPagination`).
+- Each result is exactly: `{"date": "YYYY-MM-DD", "new_followers": int, "total_likes_received": int, "total_comments_received": int, "total_story_views": int}`.
+- Errors use the standard envelope `{"error": {"code", "message", "fields"}}`: `PERMISSION_DENIED` (403), `NOT_FOUND` (404), `VALIDATION_ERROR` (400, e.g. `fields.date_from` for a malformed date or `date_from > date_to`).
+- Read-only: POST/PUT/PATCH/DELETE → 405.
+- The endpoint returns only rows that exist. It does NOT zero-fill missing days, and **today is never present** (the rollup computes YESTERDAY at 00:15 UTC). The client must treat a missing date as "no data", not as zero, and must not promise live numbers.
+
+### Important implementation details / architecture decisions
+- "Day" = UTC calendar date (`TIME_ZONE = "UTC"`, `USE_TZ = True`, `CELERY_TIMEZONE = "UTC"`); the filter is `created_at__date=target_date`. Day boundaries are tested exactly (23:59:59 vs 00:00:00).
+- Likes/Comments are attributed through `ContentType` + `object_id__in` over the business's Posts and Reels. Decision: **`Post.all_objects` / `Reel.all_objects`** are used, so activity on soft-deleted content still counts and recomputing an old date gives the same number.
+- `Comment.objects` is used (SoftDeleteManager), so **soft-deleted comments are NOT counted**.
+- **Follow and Like rows are physically deleted on unfollow/unlike** (P-052/P-053), so the rollup counts rows that exist at run time. A follow or like that was undone before 00:15 UTC the next day is not counted. Inherent to the daily-rollup design over those tables.
+- Idempotency: `update_or_create` keyed on (business, date) plus the DB `unique_together`; re-running a date refreshes the row (tested: unchanged values, and refreshed values when new activity appears).
+- The task loops per business (spec-approved for MVP scale). The single-query-per-metric-across-all-businesses optimization is a reasonable future change, not required now.
+- Every business gets a row each run, including all-zero rows for inactive businesses.
+- **No automatic backfill.** Rows exist only from the first run onward. Backfill by hand: `docker compose exec web python manage.py shell -c "from analytics.tasks import compute_daily_stats; print(compute_daily_stats(target_date='YYYY-MM-DD'))"`.
+- The IDOR pattern is the same explicit `business.user_id != request.user.id` → `PermissionDenied` inside the view used since P-026/P-032/P-049 (`StoryViewCountView`), not left to `permission_classes` alone.
+- `DailyStatsCursorPagination` subclasses `StandardCursorPagination` with `ordering = "-date"` and `page_size = 30`, because `(business, date)` is unique so the order is total and the cursor is stable.
+- 404 for a missing/soft-deleted business and 403 for a non-owner follow the `StoryViewCountView` precedent.
+
+### Commands
+Run from `D:\Cavallo\scd-backend` (PowerShell):
+```
+docker compose exec web python manage.py makemigrations analytics --check --dry-run
+docker compose exec web python manage.py migrate analytics
+docker compose exec web pytest analytics/ -v
+docker compose restart celery_worker celery_beat
+docker compose exec web python manage.py shell -c "from analytics.tasks import compute_daily_stats; print(compute_daily_stats())"
+```
+
+### Tests
+- `analytics/`: **38 passed** = 3 model (defaults, unique_together, field set pinned) + 16 task (exact fixture 3 follows / 5 likes / 2 comments / 1 story view, day boundaries, no cross-business mixing, soft-deleted comment excluded, soft-deleted post still counted, zero row, per-date rows, idempotent re-run ×2, default/ISO/future date, one failing business doesn't stop others, Beat registration ×2) + 19 API (owner exact values, only tracked fields, newest first, no other-business rows, 403 other owner, 403 leaks nothing, 403 Customer, 401, 404, 404 soft-deleted, read-only 405, date_from/date_to/both/empty, 400 bad format, 400 from>to, ownership-before-validation, cursor pagination).
+- **Targeted regression** (the full suite was deliberately NOT run, see Known issues): `pytest core/ businesses/ social/tests/test_models.py stories/tests/test_tasks.py moderation/tests/test_tasks.py feed/tests/test_app_config.py -q` → **142 passed, 1 skipped**. Chosen because they cover the only surfaces P-084 touched: the `BusinessProfile` reverse relation and hard-delete cascade, `core` pagination, the Celery task tests beside the Beat edit, and `INSTALLED_APPS`.
+
+### Verification results (real machine, D:\Cavallo\scd-backend, real Docker Compose)
+- `makemigrations analytics --check --dry-run`: "No changes detected in app 'analytics'". `migrate analytics`: `0001_initial` applied OK.
+- Beat: `settings.CELERY_BEAT_SCHEDULE['compute-business-daily-stats']` = `{'task': 'analytics.compute_daily_stats', 'schedule': <crontab: 15 0 * * *>}`.
+- `celery_worker` log after restart lists `analytics.compute_daily_stats` under `[tasks]`.
+- Manual run: `compute_daily_stats()` → `{'date': '2026-09-30', 'businesses_processed': 4, 'businesses_failed': 0}`; `BusinessDailyStats.objects.count()` = 4 (one row per business, no duplication).
+
+### Known issues / notes
+- **The FULL backend `pytest -q` was NOT run in P-084** (too slow; the last recorded full-suite number is still 996 passed + 1 skipped at `a609803`, carried over from P-082's open item). Only the targeted regression above was run. Run the full suite once before relying on this code in production and record the real number.
+- **Manual curl checks against the live endpoint were NOT performed** (the commands were run with placeholder credentials and returned nothing). The behaviors they would check (200 with correct numbers, 403 other owner / Customer, 401, 404, date filter) are covered by the 19 API tests; there is no real-token, real-device check.
+- The dev DB now holds 4 `BusinessDailyStats` rows (date 2026-09-30) from the manual run.
+- `config/settings/base.py` now has a second mid-file `# noqa: E402` import (`crontab`), the same style as the existing `from datetime import timedelta  # noqa: E402`.
+- `celerybeat-schedule` (runtime file tracked in the repo) shows as modified after every run; intentionally NOT committed (flagged since P-039/P-055). Adding it to `.gitignore` is still pending.
+- Pre-existing, unrelated: `accounts/views.py` leftover text and flake8/black EOF-newline issues flagged since P-052 are untouched.
+- Total story views counts first views only (StoryView is unique per story+viewer). It is not a count of replays.
+
+### Remaining work
+None for P-084 itself. Possible future additions (each needs an explicit decision): Share/Save counts as new fields, product/profile view tracking (needs a new tracking mechanism first), an optimized single-query-per-metric rollup, an automatic backfill command.
+
+### GitHub references
+- cavallo-app `main`: `33ce514` — "P-084: analytics app - BusinessDailyStats daily rollup (Celery Beat 00:15 UTC) + owner-only daily stats endpoint" (17 files changed, 1063 insertions; pushed as `b7e7b11..33ce514`).
+- cavallo-mobile: no change in P-084. P-083's `part-083` branch / main merge status is unchanged from the P-083 entry.
+- Baselines to preserve: backend `analytics/` = 38 passed; targeted regression = 142 passed + 1 skipped; `config/urls.py` and `base.py` as of `33ce514`.
+
+### PART P-084 STATUS: COMPLETE ✅
+
+### Exact next starting point — Part P-085 (Flutter: Business Analytics Screen)
+1) Merge `part-083` into `main` on cavallo-mobile if not done yet, then run `flutter analyze` and the FULL `flutter test` (expect 907 passed) and record the real number.
+2) P-085 plugs into branch 3 of the Business Console shell: replace ONLY the `builder` of the `businessAnalytics` GoRoute in `lib/routing/app_router.dart` (currently `AnalyticsPlaceholderScreen()`). Keep the route name `businessAnalytics`, the path `/business-console/analytics`, the shell, the other three branches, the redirect gates, the AppBar inside the Analytics screen (D1) and the key `business-console-nav-analytics`.
+3) Data source: the endpoint contract above. The business id comes from the existing business profile provider (the owner's own `BusinessProfile.id`). Use the cursor envelope `{next, previous, results}`, newest date first; default page is 30 days; use `date_from`/`date_to` for ranges.
+4) The screen must show ONLY the four tracked metrics (new followers, likes received, comments received, story views). Do NOT show product views or profile views (not tracked). Treat a missing date as "no data" (not zero), and show an honest note that numbers are a daily rollup of the previous day (UTC) and never include today.
+5) P-085 must update the one assertion in `business_console_integration_test.dart` that currently expects `AnalyticsPlaceholderScreen` on the Analytics tab (fix the stale assertion, do not delete the test), and must not weaken `business_console_router_gate_test.dart`.
+6) Backend, still open: record a real full `docker compose exec web pytest -q` number (see Known issues).
