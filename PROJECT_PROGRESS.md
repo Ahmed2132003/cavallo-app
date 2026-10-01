@@ -10620,3 +10620,97 @@ flutter pub get · dart format <files by name> (NOT the whole tree: it reports ~
 1) Run the manual E2E above and replace every [CONFIRM] with the real result.
 2) Phase 14: mark COMPLETE only if P-083, P-084 and P-085 all genuinely passed validation. Until the P-085 manual E2E passes, record Phase 14 as PARTIALLY VALIDATED with that gap named.
 3) Phase 15 is the first phase touching real payment infrastructure. Several of its parts remain BLOCKED on Section 7 items 1–3 (Web Dashboard stack, object storage provider, Paymob credentials).
+
+## PART P-086 — Backend: monetization App (Plan + FeaturedSubscription Models + activate_subscription) — STATUS: COMPLETE ✅ (automated checks PASSED; manual Admin check [CONFIRM])
+
+Split into 2 steps (STEP 1: app + models + migration + model tests; STEP 2: sanctioned service + Django Admin + service/admin tests). Backend only; no Flutter change. First part of Phase 15. Payment-agnostic by design: no payment, webhook, endpoint, serializer or URL was added.
+
+### What was implemented
+- New top-level Django app **`monetization/`** (no `apps/` prefix, per repo convention).
+- `Plan(TimestampedModel)`: `name` (CharField 100), `duration_days` (PositiveIntegerField, `MinValueValidator(1)`), `price` (DecimalField 10,2, same as `Product.price`), `currency` (CharField 3, `choices=Product.CURRENCY_CHOICES` — the EXACT list from P-031: EGP/SAR/AED/JOD; pinned by a test).
+- `FeaturedSubscription(TimestampedModel)`: `business` FK → `businesses.BusinessProfile` (CASCADE, `related_name="featured_subscriptions"`), `plan` FK → `Plan` (**PROTECT**, `related_name="subscriptions"`), `starts_at` and `expires_at` (DateTimeField, `editable=False`), `is_active` (BooleanField, default True).
+- `FeaturedSubscription.save()`: on first creation only (`self._state.adding`), `starts_at = timezone.now()` and `expires_at = starts_at + timedelta(days=plan.duration_days)` from ONE `now()` call. Stored, never derived on read, never recomputed on later saves or when the plan's duration changes (same pattern as `Story.published_at/expires_at`, P-046).
+- DB constraint: partial `UniqueConstraint(fields=["business"], condition=Q(is_active=True), name="uniq_active_featured_per_biz")` — at most ONE active subscription per business, enforced by the database.
+- `monetization/services.py::activate_subscription(business, plan) -> FeaturedSubscription`, inside `transaction.atomic()`: (1) locks the business row (`BusinessProfile.all_objects.select_for_update().get(pk=...)`) to serialise concurrent activations for the same business; (2) deactivates the business's current active subscription(s) with `.update(is_active=False, updated_at=now)` — kept for history, never deleted; (3) creates and returns the new active row.
+- Django Admin: `PlanAdmin` (list/filter/search) and `FeaturedSubscriptionAdmin` = the manual-activation path (Section 4 "manual activation acceptable initially"), fully payment-independent:
+  - **Add form** shows only `business` (autocomplete) + `plan`; `save_model()` calls `activate_subscription()` instead of `obj.save()` (so adding a row supersedes the old active one) and copies the created row's state back onto the admin's instance.
+  - **Change page**: every field read-only (`is_active`, `starts_at`, `expires_at` are never hand-editable).
+  - **Action "Re-activate selected"**: calls `activate_subscription()` once per distinct (business, plan) among the selected rows (dedupe).
+  - **Action "Deactivate selected"** (addition, see deviations): `update(is_active=False, updated_at=now)`; the row is kept.
+- `"monetization"` added to `INSTALLED_APPS` in `config/settings/base.py`, right after `"analytics"`.
+
+### Files created
+- `monetization/__init__.py`, `monetization/apps.py`, `monetization/models.py`, `monetization/services.py`, `monetization/admin.py`
+- `monetization/migrations/__init__.py`, `monetization/migrations/0001_initial.py` (Create Plan, Create FeaturedSubscription, AddConstraint; depends on the latest `businesses` migration at generation time, expected `0008_businessprofile_average_rating_and_more`)
+- `monetization/tests/__init__.py`, `monetization/tests/test_models.py`, `monetization/tests/test_services.py`, `monetization/tests/test_admin.py`
+
+### Files modified
+- `config/settings/base.py` (one line in `INSTALLED_APPS`). Nothing else existing was touched.
+
+### Findings (verified against the code before editing)
+- **`BusinessProfile.is_featured` ALREADY EXISTED** (P-059 placeholder: `BooleanField(default=False)` in `businesses/models.py`, covered by `businesses/tests/test_is_featured.py`). P-086 did NOT add or change it. Wiring it to subscription state is **P-087's** job.
+- `is_featured` is consumed as a real DATABASE column by the feed (`business__is_featured`) and by `search/services.py` (it is part of the ordering key AND of the cursor tuple `(is_featured, rank/created_at, content-type rank, id)`). So P-087 must keep it a stored, indexed-friendly column kept in sync with subscription state — a Python property/computed value would break feed/search ordering and cursor pagination.
+- `TimestampedModel` lives in `core.models`. Repo files are CRLF; the new files were written CRLF.
+
+### Important implementation details / architecture decisions
+- **`activate_subscription()` is the ONLY sanctioned code path that makes a `FeaturedSubscription` active** (recorded as the Architecture Rule in the model docstring and the service docstring). Enforced by an AST-based guard test (`test_only_services_module_sets_is_active_true`): in `monetization/*.py` only `services.py` may assign `is_active = True` or pass `is_active=True` to create/update/get_or_create/update_or_create/bulk_create/`FeaturedSubscription(...)`. Read-side uses (`filter(is_active=True)`, `Q(is_active=True)`) are allowed. The guard covers the monetization package only; future parts (P-087/P-088/P-090) must keep the rule by calling the service.
+- Setting `is_active=False` is NOT restricted (P-088's expiry job and the Admin "Deactivate" action do it).
+- The model default `is_active=True` means a bare `FeaturedSubscription.objects.create(...)` is active; the DB constraint rejects a second active row for the same business with an `IntegrityError`. Application code must use the service.
+- The service is payment-agnostic: P-090's webhook handler must call `activate_subscription(business, plan)` exactly like the Admin path does.
+- No data migration seeds `Plan` rows: **no Plan exists until an admin creates one in Django Admin** (Plans admin). P-089/P-090 and any Flutter purchase UI depend on Plans existing.
+- `activate_subscription()` does NOT touch `BusinessProfile.is_featured` (pinned by `test_does_not_touch_business_is_featured`). **P-087 must update that test when it wires the flag.**
+
+### Deviations from the spec (all recorded)
+1. `starts_at` is NOT `auto_now_add=True` (the execution prompt said so). It is set in `save()` from the same `now()` as `expires_at`, so the two are exactly `duration_days` apart. `auto_now_add` could not guarantee that. `editable=False`.
+2. Added the partial UniqueConstraint (not in the spec) so "never two active subscriptions for one business" is guaranteed by the DB, not only by the service.
+3. Added `select_for_update` on the business row inside the service (concurrency safety; not in the spec).
+4. The Admin manual-activation action lives on the **FeaturedSubscription** admin (the execution prompt allowed "FeaturedSubscription (or BusinessProfile) admin"), as Add-form + "Re-activate selected" action, not on BusinessProfile.
+5. Added the "Deactivate selected" Admin action (not in the spec): `is_active` is read-only in Admin, so without it staff could not revoke Featured except by deleting.
+6. First version of the guard test did a plain text scan for `is_active=True` and failed (it matched the `Q(is_active=True)` constraint condition in `models.py` and `filter(is_active=True)` in `admin.py`, both read-side). Replaced with the AST version plus `test_guard_detects_direct_activation` so the guard cannot be vacuous. No production code changed because of this.
+
+### Commands
+Run from `D:\Cavallo\scd-backend` (PowerShell):
+```
+docker compose exec web python manage.py check
+docker compose exec web python manage.py makemigrations monetization
+docker compose exec web python manage.py makemigrations --check --dry-run
+docker compose exec web python manage.py migrate monetization
+docker compose exec web pytest monetization/ -v
+docker compose exec web pytest businesses/ analytics/ -q
+```
+
+### Tests
+- `monetization/`: **31 passed** = 11 `test_models.py` (Plan fields, currency choices equal Product's exactly, zero duration rejected by `full_clean`; `is_active` default, `expires_at` computed, `expires_at` stored and never recomputed, Plan PROTECT, DB rejects a 2nd active row, inactive history + one active allowed, different businesses each active, field set pinned) + 10 `test_services.py` (first activation; **supersession: old row `is_active=False` and kept, new active, exactly ONE active row**; 3 sequential activations → 1 active; other businesses unaffected; new plan's duration used; same-plan reactivation creates a new row; failure inside the transaction rolls back the deactivation; does not touch `is_featured`; guard-not-vacuous; only `services.py` sets `is_active=True`) + 10 `test_admin.py` (both models registered; changelists load; Add form offers only business/plan; Add POST activates through the service; Add POST supersedes an existing active row; invalid Add POST creates nothing; change page read-only; Re-activate action; Re-activate dedupes same business+plan; Deactivate keeps the row).
+- Regression: `pytest businesses/ analytics/ -q` → **83 passed** (P-086 modifies no existing code except one `INSTALLED_APPS` line).
+
+### Verification results (real machine, D:\Cavallo\scd-backend, real Docker Compose)
+- `manage.py check`: no issues. `makemigrations monetization`: `0001_initial.py` generated (Create model Plan, Create model FeaturedSubscription). `makemigrations --check --dry-run`: "No changes detected" (also re-run after STEP 2). `migrate monetization`: `0001_initial` applied OK.
+- `pytest monetization/ -v`: **31 passed** (Python 3.12.14, Django 5.2.17, pytest 8.4.2).
+- `pytest businesses/ analytics/ -q`: **83 passed**.
+- Manual check in Django Admin (create Plans, grant Featured to a business through the Add form, grant a second one and see the first turn inactive, Deactivate): **[CONFIRM]** — not reported yet; the same behaviors are covered by the 10 admin tests via the Django test client.
+
+### Known issues / notes
+- **Full backend `pytest -q` was NOT run in P-086.** Last recorded full-suite number is still 996 passed + 1 skipped at `a609803` (open since P-082). Run it once and record the real number.
+- Concurrency is protected by the business-row lock and backstopped by the DB constraint, but there is **no multi-threaded test** (tests are sequential; the rollback test proves atomicity).
+- There is no index on `FeaturedSubscription.expires_at` / `(is_active, expires_at)`. P-088 (expiry job) should decide whether to add one before sweeping by `expires_at`.
+- The dev DB may contain Plan/subscription rows created by the manual check; delete them if unwanted.
+- `celerybeat-schedule` (runtime file tracked in the repo) shows as modified; intentionally NOT committed (flagged since P-039/P-055; adding it to `.gitignore` is still pending).
+- Pre-existing, unrelated: `accounts/views.py` leftover text and flake8/black EOF-newline issues flagged since P-052 are untouched.
+- Flutter (`cavallo-mobile`) is unchanged by P-086; its status is as recorded in P-085 (974 passed; P-085 manual E2E still [CONFIRM]).
+
+### Remaining work
+None for P-086 itself, apart from the [CONFIRM] manual Admin check and the full backend suite number above.
+
+### GitHub references
+- cavallo-app `main`: `5335b86` — "P-086: monetization app - Plan + FeaturedSubscription models, activate_subscription service (single sanctioned path), Admin manual activation" (12 files changed, 879 insertions; pushed as `5f5bb30..5335b86`). https://github.com/Ahmed2132003/cavallo-app/commit/5335b86
+- cavallo-mobile: no change in P-086.
+- Baselines to preserve: `monetization/` = 31 passed; `businesses/ analytics/` = 83 passed; `INSTALLED_APPS` has `"monetization"` right after `"analytics"`; `monetization/migrations/0001_initial.py` as of `5335b86`.
+
+### PART P-086 STATUS: COMPLETE ✅ — Phase 15 STARTED (P-087, P-088, P-089, P-090 remain)
+
+### Exact next starting point — Part P-087 (wire BusinessProfile.is_featured to FeaturedSubscription state)
+1) `git pull` on `D:\Cavallo\scd-backend` so you are at `5335b86`; run `docker compose exec web pytest monetization/ businesses/ analytics/ -q` (expect 31 + 83 passed).
+2) `BusinessProfile.is_featured` already exists (P-059); do NOT add it again. Make it reflect `FeaturedSubscription.is_active` while keeping it a REAL stored column (feed `business__is_featured` and `search/services.py` ordering/cursors depend on it). The write that keeps it in sync must go through or alongside `activate_subscription()` and the P-088 expiry flip; never set `FeaturedSubscription.is_active=True` anywhere except inside `activate_subscription()` (guard test `test_only_services_module_sets_is_active_true` covers the monetization package).
+3) Update `monetization/tests/test_services.py::test_does_not_touch_business_is_featured` (it pins the P-086 behavior and will intentionally change in P-087). Keep `businesses/tests/test_is_featured.py` (P-059) green.
+4) P-088 is the expiry job (flips `is_active` off when `expires_at` passes; consider an index first); P-089/P-090 (payment flow + webhook) call `activate_subscription()` and remain BLOCKED on Section 7 item 3 (Paymob credentials) as recorded in P-085.
+5) Still open from before: the P-085 manual E2E, and a real full backend `pytest -q` number.
