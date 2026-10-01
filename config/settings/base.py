@@ -258,6 +258,14 @@ CELERY_BEAT_SCHEDULE = {
         "task": "analytics.compute_daily_stats",
         "schedule": crontab(hour=0, minute=15),
     },
+    # Part P-088. Daily Featured-subscription expiry sweep at 00:30 UTC
+    # (CELERY_TIMEZONE = "UTC"), shortly after P-084's 00:15 analytics
+    # rollup (they share no data). Daily is enough: Featured status needs
+    # no second-level precision. See monetization/tasks.py.
+    "expire-featured-subscriptions": {
+        "task": "monetization.expire_featured_subscriptions",
+        "schedule": crontab(hour=0, minute=30),
+    },
 }
 
 # ---------------------------------------------------------------------------

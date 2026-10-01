@@ -10790,3 +10790,69 @@ P-088 (expiry) does NOT need to set `is_featured=False` itself and I did NOT add
 3) There is no index on `FeaturedSubscription.expires_at` / `(is_active, expires_at)` (flagged in P-086): decide whether to add one (migration) before sweeping.
 4) Test it in integration with Feed/Search (the plan says expiry ranking revert is tested "here in integration with it"): activate, expire (set `expires_at` in the past, run the task), confirm ranking reverts and `is_featured` is False.
 5) P-089/P-090 (payment flow + webhook) call `activate_subscription()` and remain BLOCKED on Section 7 item 3 (Paymob credentials). P-110 (Flutter Featured badge) reads this real `is_featured` state; verify first that the feed/search serializers expose it.
+---
+
+## PART P-088 â€” Backend: Featured-Subscription Daily Expiry Celery Job â€” STATUS: COMPLETE âœ… (automated checks PASSED)
+
+Split into 2 steps (STEP 1: task + Beat registration; STEP 2: tests). Backend only; no Flutter change, no migration. Completes the Featured lifecycle **activate (P-086) -> rank (P-087) -> expire (P-088)**, independent of whichever mechanism triggers the original activation (manual Admin now, Paymob from P-089/P-090).
+
+### What was implemented
+- `monetization/tasks.py`: Celery task `monetization.expire_featured_subscriptions` (`@shared_task(name=..., ignore_result=True)`). It selects `FeaturedSubscription.objects.filter(is_active=True, expires_at__lte=timezone.now())` and passes that queryset to `monetization.services.deactivate_subscriptions()`. Returns `{"deactivated": <int>}` and logs the count.
+- `config/settings/base.py`: new `CELERY_BEAT_SCHEDULE["expire-featured-subscriptions"]` = `crontab(hour=0, minute=30)` (00:30 UTC; `CELERY_TIMEZONE = "UTC"`), 15 minutes after P-084's `compute-business-daily-stats` (00:15). They share no data; the ordering is only cosmetic.
+- `monetization/tests/test_expiry_task.py`: 23 tests (normal expiry, defensive correctness, idempotency, Beat registration, Feed/Search integration).
+
+### Files created
+- `monetization/tasks.py`
+- `monetization/tests/test_expiry_task.py`
+
+### Files modified
+- `config/settings/base.py` (one Beat entry added after `compute-business-daily-stats`)
+- `PROJECT_PROGRESS.md` (this section)
+
+### Important implementation details / architecture decisions
+- **Deviation from the plan text (deliberate, per P-087's handoff):** the plan describes a bulk `.update()` plus a per-business loop. Instead the task delegates to `deactivate_subscriptions()`, which in ONE transaction locks the affected business rows (pk ASC, same lock as activation), sets `is_active=False` (rows kept for history) and RECOMPUTES `is_featured` from the subscription table via `_sync_business_featured_flag`. The task never writes `is_active` or `is_featured` itself (pinned by an AST guard test). No duplicated flag logic.
+- **The "two active subscriptions" edge case cannot be constructed:** `FeaturedSubscription` has `UniqueConstraint(fields=["business"], condition=Q(is_active=True), name="uniq_active_featured_per_biz")` (P-086), so the DB rejects it. The execution prompt's literal test (a business with two ACTIVE rows) is therefore impossible by design. The defensive guarantee is covered by: (a) a test that the DB raises `IntegrityError` for a second active row; (b) a stale expired INACTIVE row next to the current valid active row does NOT un-feature the business; (c) the task goes through `_sync_business_featured_flag` (recompute, not a blind `False`); (d) the AST guard. If the constraint were ever removed, the recompute still keeps `is_featured=True` for a business with another active row.
+- **Idempotent** (Architecture Section 5, rule 8): the queryset only matches still-active rows, so a re-run or an overlapping run deactivates 0 rows.
+- **Cadence:** daily. A subscription can stay boosted for up to ~24h after `expires_at` (accepted: Featured status needs no second-level precision, unlike Story expiry in P-048). Documented in the module docstring.
+- **No index on `FeaturedSubscription(is_active, expires_at)`** (decision requested by P-086/P-087): the table is tiny (one row per purchase) and the job runs once a day, so a sequential scan is fine. No migration. Revisit only if the table grows large.
+- **Expiry boundary:** `expires_at <= now` counts as expired (tested with a frozen clock, and `now + 1s` is not expired).
+
+### Commands
+- From `D:\Cavallo\scd-backend` (Docker):
+  - `docker compose exec web pytest monetization/tests/test_expiry_task.py -q`
+  - `docker compose exec web pytest monetization/ businesses/tests/test_is_featured.py -q`
+  - `docker compose exec web pytest monetization/ feed/ search/ businesses/ analytics/ -q`
+  - `docker compose exec web python manage.py makemigrations --check --dry-run`
+  - Manual run: `docker compose exec web python manage.py shell -c "from monetization.tasks import expire_featured_subscriptions as t; print(t())"`
+
+### Tests / verification results (as reported by the developer)
+- After STEP 1: `monetization/ feed/ search/ businesses/ analytics/` = **307 passed** (174s). Task registered in the Celery registry (`True`); Beat entry = `<crontab: 30 0 * * *>`; manual run twice returned `{'deactivated': 0}` both times (dev DB had no expired rows).
+- After STEP 2: `monetization/tests/test_expiry_task.py` = **23 passed**; `monetization/ feed/ search/ businesses/ analytics/` = **330 passed**.
+- NOT reported/[CONFIRM]: `makemigrations --check --dry-run` (no migration expected), the manual real-Beat check below, and a real full backend `pytest -q` number (still open since P-082).
+
+### Manual check [CONFIRM]
+Django Admin -> Featured subscriptions -> Add (business + plan). In a Django shell set that row's `expires_at` to the past (`FeaturedSubscription.objects.filter(pk=...).update(expires_at=timezone.now() - timedelta(hours=1))`), run the manual command above: it should print `{'deactivated': 1}`, the row becomes inactive and the business's `is_featured` is False (Home Feed page 1 can lag up to 90s: P-060 cache). Optionally confirm the `beat` container logs the task at 00:30 UTC.
+
+### Known issues / things to know
+- **Expiry is up to ~24h late by design** (daily job). The ranking boost can outlive `expires_at` until the next 00:30 UTC run. If exactness is ever needed, Feed/Search would have to filter on `expires_at` live (not done; `is_featured` is a stored column on purpose, see P-087).
+- **Out of scope, flagged (not built):** notifying the business that its Featured status expired/will expire. Phase 13's notification infrastructure could support it as a future enhancement.
+- **No reconcile job:** pre-P-087 dev data (active row with `is_featured=False`, or a hand-set `is_featured=True` with no subscription) is still not repaired by this job (it only touches rows it deactivates). Repair via Admin "Re-activate selected" or `_sync_business_featured_flag` from a shell. Optional future step, not added here.
+- Never flip `FeaturedSubscription.is_active` to False by hand elsewhere; always use `deactivate_subscriptions()`.
+- `celerybeat-schedule` still shows as modified and is intentionally NOT committed (pending `.gitignore` entry, flagged since P-039/P-055). Helper scripts `p088_step1.ps1`, `p088_step2.ps1`, `p088_progress.ps1` were NOT committed.
+- Still open from earlier parts: P-085 manual E2E, flake8/black EOF-newline issues and `accounts/views.py` leftover text (flagged since P-052); `is_featured` exposure on feed/search item serializers still [CONFIRM] before P-110.
+
+### Remaining work
+None for P-088 itself, apart from the [CONFIRM] items above.
+
+### GitHub references
+- cavallo-app `main`: previous head `cf38fcb` (P-087). The P-088 commit hash is [CONFIRM: fill in after `git push`]. Suggested message: `P-088: daily Celery expiry job for FeaturedSubscription (delegates to deactivate_subscriptions), Beat 00:30 UTC, expiry/idempotency/defensive/Feed+Search integration tests`.
+- cavallo-mobile: no change in P-088.
+- Baselines to preserve: `monetization/ feed/ search/ businesses/ analytics/` = 330 passed; `monetization/tests/test_expiry_task.py` = 23 passed; `monetization.tasks.expire_featured_subscriptions` is the only expiry path.
+
+### PART P-088 STATUS: COMPLETE âœ… â€” Phase 15 continues (P-089, P-090 remain)
+
+### Exact next starting point â€” Part P-089 (Paymob payment flow)
+1) `git pull`, then `docker compose exec web pytest monetization/ feed/ search/ businesses/ analytics/ -q` (expect 330 passed).
+2) P-089/P-090 (payment flow + webhook) must call `monetization.services.activate_subscription()` for the activation and nothing else (the sanctioned path). They remain BLOCKED on Section 7 item 3 (Paymob credentials): confirm they are available before starting, or stop and ask.
+3) Expiry is already handled by P-088; payments must not add a second expiry/deactivation path.
+4) P-110 (Flutter Featured badge) reads the real `is_featured` state; verify first that the feed/search serializers expose it.
