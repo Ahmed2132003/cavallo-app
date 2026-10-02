@@ -211,12 +211,18 @@ class PostPublicSerializer(serializers.ModelSerializer):
 
     is_liked = serializers.SerializerMethodField()
     is_saved = serializers.SerializerMethodField()
+    # Part P-110: resolved through the business join (P-087 design); no
+    # is_featured column exists on Post. Views/feed use select_related.
+    is_featured = serializers.BooleanField(
+        source="business.is_featured", read_only=True
+    )
 
     class Meta:
         model = Post
         fields = (
             "id",
             "business",
+            "is_featured",
             "caption",
             "image",
             "likes_count",
@@ -260,12 +266,17 @@ class ReelPublicSerializer(serializers.ModelSerializer):
 
     is_liked = serializers.SerializerMethodField()
     is_saved = serializers.SerializerMethodField()
+    # Part P-110: same join-based resolution as PostPublicSerializer.
+    is_featured = serializers.BooleanField(
+        source="business.is_featured", read_only=True
+    )
 
     class Meta:
         model = Reel
         fields = (
             "id",
             "business",
+            "is_featured",
             "caption",
             "video",
             "thumbnail",

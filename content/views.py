@@ -121,7 +121,7 @@ class PostPublicListView(generics.ListAPIView):
     pagination_class = StandardCursorPagination
 
     def get_queryset(self):
-        queryset = Post.published_objects.all()
+        queryset = Post.published_objects.select_related("business")
         business_id = self.request.query_params.get("business_id")
         if business_id is not None:
             queryset = queryset.filter(business_id=business_id)
@@ -209,7 +209,7 @@ class ReelPublicListView(generics.ListAPIView):
     pagination_class = StandardCursorPagination
 
     def get_queryset(self):
-        queryset = Reel.published_objects.all()
+        queryset = Reel.published_objects.select_related("business")
         business_id = self.request.query_params.get("business_id")
         if business_id is not None:
             queryset = queryset.filter(business_id=business_id)

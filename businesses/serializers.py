@@ -48,6 +48,11 @@ class BusinessProfileSerializer(serializers.ModelSerializer):
     """
 
     is_verified = serializers.BooleanField(read_only=True)
+    # Part P-110: the stored flag kept in sync by monetization.services
+    # (P-087). Read-only, so a client can never write it. Public profile
+    # and Search both use this serializer, so the Flutter "Featured"
+    # badge gets its data from here.
+    is_featured = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = BusinessProfile
@@ -61,6 +66,7 @@ class BusinessProfileSerializer(serializers.ModelSerializer):
             "category",
             "phone_number",
             "is_verified",
+            "is_featured",
             "follower_count",
         ]
         read_only_fields = ["id", "follower_count"]
@@ -138,12 +144,11 @@ class BusinessProfileOwnerSerializer(BusinessProfileSerializer):
     the base serializer, so neither field can be written by a client.
     """
 
-    is_featured = serializers.BooleanField(read_only=True)
+    # is_featured is inherited from BusinessProfileSerializer since P-110.
     featured_until = serializers.SerializerMethodField()
 
     class Meta(BusinessProfileSerializer.Meta):
         fields = BusinessProfileSerializer.Meta.fields + [
-            "is_featured",
             "featured_until",
         ]
 

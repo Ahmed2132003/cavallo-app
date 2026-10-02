@@ -80,12 +80,18 @@ class ProductSerializer(serializers.ModelSerializer):
     """
 
     variants = ProductVariantSerializer(many=True, read_only=True)
+    # Part P-110: the owning business's Featured state, resolved through
+    # the join (P-087 design) -- never a column on Product.
+    is_featured = serializers.BooleanField(
+        source="business.is_featured", read_only=True
+    )
 
     class Meta:
         model = Product
         fields = [
             "id",
             "business",
+            "is_featured",
             "category",
             "name",
             "description",

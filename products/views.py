@@ -179,7 +179,7 @@ class ProductPublicListView(generics.ListAPIView):
     pagination_class = StandardCursorPagination
 
     def get_queryset(self):
-        queryset = Product.objects.filter(is_active=True)
+        queryset = Product.objects.filter(is_active=True).select_related("business")
         business_id = self.request.query_params.get("business_id")
         if business_id is not None:
             queryset = queryset.filter(business_id=business_id)

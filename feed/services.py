@@ -186,6 +186,7 @@ def fetch_following_tier(
     entries = []
     for content_type, model in _CONTENT_SOURCES:
         queryset = model.published_objects.filter(business_id__in=business_ids)
+        queryset = queryset.select_related("business")
         if after is not None:
             queryset = queryset.filter(_following_rows_after(content_type, after))
         for obj in queryset.order_by("-created_at", "-id")[:limit]:

@@ -165,7 +165,11 @@ def test_patch_response_includes_the_fields_and_ignores_writes_to_them():
     assert FeaturedSubscription.objects.count() == 0
 
 
-def test_public_profile_view_does_not_expose_featured_fields():
+def test_public_profile_view_exposes_is_featured_but_not_featured_until():
+    # Contract change in P-110: the public profile now carries the boolean
+    # is_featured (the Flutter "Featured" badge reads it). The subscription
+    # DATE (featured_until) must still never appear on the public, cached
+    # read -- that restriction from P-092 is unchanged.
     cache.clear()
     _, profile = _make_profile()
     activate_subscription(profile, _make_plan(30))
@@ -175,8 +179,8 @@ def test_public_profile_view_does_not_expose_featured_fields():
     )
 
     assert response.status_code == 200
+    assert response.json()["is_featured"] is True
     assert "featured_until" not in response.json()
-    assert "is_featured" not in response.json()
 
 
 def test_existing_me_fields_are_unchanged():
