@@ -109,4 +109,7 @@ urlpatterns = [
     path("api/v1/notifications/", include("notifications.urls")),
     # Part P-084: owner-only daily analytics rollups (read-only).
     path("api/v1/analytics/", include("analytics.urls")),
+    # Part P-090: Paymob payment webhook (unauthenticated by design;
+    # secured by signature verification, see payments/views.py).
+    path("api/v1/payments/", include("payments.urls")),
 ]
