@@ -115,3 +115,44 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
         model = CustomerProfile
         fields = ["id", "display_name", "country", "city"]
         read_only_fields = ["id"]
+
+
+class BusinessProfileOwnerSerializer(BusinessProfileSerializer):
+    """
+    Part P-092 (STEP 3). Output serializer for the OWNER-ONLY
+    /api/v1/businesses/me/ responses (GET, POST, PATCH).
+
+    Adds two read-only fields to BusinessProfileSerializer so the Web
+    Dashboard can show "Featured until [date]" without another call:
+
+    * is_featured     the stored flag (P-087), kept in sync by
+                      monetization.services only.
+    * featured_until  ``expires_at`` of the business's ACTIVE
+                      FeaturedSubscription, or null when none is active.
+                      It can lag reality by up to one run of the daily
+                      expiry job (P-088); is_featured has the same lag.
+
+    NOT used for the public profile view or Search: those keep the base
+    serializer (the public read is cached for 5 minutes and must not
+    expose subscription dates). Input validation in POST/PATCH still uses
+    the base serializer, so neither field can be written by a client.
+    """
+
+    is_featured = serializers.BooleanField(read_only=True)
+    featured_until = serializers.SerializerMethodField()
+
+    class Meta(BusinessProfileSerializer.Meta):
+        fields = BusinessProfileSerializer.Meta.fields + [
+            "is_featured",
+            "featured_until",
+        ]
+
+    def get_featured_until(self, obj):
+        expires_at = (
+            obj.featured_subscriptions.filter(is_active=True)
+            .values_list("expires_at", flat=True)
+            .first()
+        )
+        if expires_at is None:
+            return None
+        return serializers.DateTimeField().to_representation(expires_at)

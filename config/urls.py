@@ -112,4 +112,7 @@ urlpatterns = [
     # Part P-090: Paymob payment webhook (unauthenticated by design;
     # secured by signature verification, see payments/views.py).
     path("api/v1/payments/", include("payments.urls")),
+    # Part P-092: public, read-only list of purchasable Featured Plans
+    # (GET plans/). The Web Dashboard needs the prices before login.
+    path("api/v1/monetization/", include("monetization.urls")),
 ]

@@ -49,6 +49,8 @@ _EXCEPTION_CODE_MAP = {
     # already approved/rejected). Additive only: no existing code or
     # envelope field changes. See ConflictError below.
     "conflict": "CONFLICT",
+    # Part P-092: payment gateway down or unconfigured (HTTP 503).
+    "service_unavailable": "SERVICE_UNAVAILABLE",
 }
 
 # Human-readable fallback messages, used only when the exception itself

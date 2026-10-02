@@ -38,7 +38,11 @@ from core.cache import cache_get_or_set
 
 from . import services
 from .models import BusinessProfile, CustomerProfile
-from .serializers import BusinessProfileSerializer, CustomerProfileSerializer
+from .serializers import (
+    BusinessProfileOwnerSerializer,
+    BusinessProfileSerializer,
+    CustomerProfileSerializer,
+)
 
 
 def _call_service(service_fn, **kwargs):
@@ -88,7 +92,7 @@ class BusinessProfileMeView(APIView):
                 "You don't have a business profile yet. "
                 "POST to this endpoint to create one first."
             )
-        return Response(BusinessProfileSerializer(profile).data)
+        return Response(BusinessProfileOwnerSerializer(profile).data)
 
     def post(self, request):
         if self._get_own_profile_or_none(request.user) is not None:
@@ -118,7 +122,7 @@ class BusinessProfileMeView(APIView):
             profile.category = category
             profile.save(update_fields=["category"])
 
-        return Response(BusinessProfileSerializer(profile).data, status=201)
+        return Response(BusinessProfileOwnerSerializer(profile).data, status=201)
 
     def patch(self, request):
         profile = self._get_own_profile_or_none(request.user)
@@ -155,7 +159,7 @@ class BusinessProfileMeView(APIView):
         # ad hoc key string involved here either).
         cache.delete(_business_profile_cache_key(profile.id))
 
-        return Response(BusinessProfileSerializer(profile).data)
+        return Response(BusinessProfileOwnerSerializer(profile).data)
 
 
 BUSINESS_PROFILE_CACHE_TTL_SECONDS = 300  # 5 min, per architecture Section 16
