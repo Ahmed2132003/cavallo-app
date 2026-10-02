@@ -11161,3 +11161,102 @@ Invoke-Step 'regression: pytest monetization/ feed/ search/ businesses/ analytic
 Write-Host ""
 Write-Host "STEP 3 DONE. Report back: payments summary (expected 53 passed), regression summary (P-088 baseline: 330 passed), black/flake8." -ForegroundColor Green
 
+
+---
+
+## PART P-090 — Backend: Payment Webhook Handler (Paymob) — STATUS: COMPLETE ✅ (automated checks PASSED; live Paymob test PENDING Section 7 item 3)
+
+Done in 3 steps (each one third of the part), each delivered as a re-runnable PowerShell script. Backend only; no Flutter change; **no migration** (`makemigrations --check` → "No changes detected"). Repo paths are top-level (`payments/`, not `apps/payments/`).
+
+### What was implemented
+`POST /api/v1/payments/webhook/paymob/` — unauthenticated by necessity (`authentication_classes = []`, `AllowAny`, `throttle_classes = []`). DRF `APIView` is csrf-exempt; verified with a test using `APIClient(enforce_csrf_checks=True)`.
+
+Flow (`payments/views.py` → `payments/webhooks.py`):
+1. **Signature gate FIRST.** Raw `request.body` + the `hmac` **query parameter** go to `get_gateway().verify_webhook_signature()`. Failure → `HttpResponse(400)` immediately; the payload is not parsed (pinned by a test that mocks the parser and asserts `assert_not_called`).
+2. Verified payload parsed into a frozen `WebhookEvent` (`_parse_webhook_payload`). Unusable shape (no `obj`/`id`) → 400. `success`/`pending`/`is_voided`/`is_refunded` are read fail-closed (only boolean `True` or the text "true" counts).
+3. `process_webhook_event(event)` returns an `OUTCOME_*` constant; **every handled outcome → HTTP 200** so Paymob does not retry. Outcomes: `activated`, `duplicate`, `failure_recorded`, `ignored`, `unmatched`, `rejected_mismatch`. Unexpected exceptions propagate → HTTP 500 (Paymob retries).
+
+Processing rules (`payments/webhooks.py`):
+- `pending` / `is_voided` / `is_refunded` events → `ignored`, no DB writes.
+- Everything that writes runs in ONE `transaction.atomic()`; the `payments.Subscription` row is locked with `select_for_update(of=("self",))` and the `Transaction` row with `select_for_update()`; the duplicate check runs INSIDE the lock (two simultaneous deliveries cannot both activate).
+- **Duplicate = a Transaction with this `transaction_id` that is already `completed`** → 200, no-op, `activate_subscription` NOT called. A `pending` row is NOT a duplicate (P-089 creates it with `transaction_id=NULL` before any webhook exists).
+- Success (`success` true, amount_cents + currency match the Transaction): Transaction → `completed` (+ `transaction_id` filled in), payments.Subscription → `completed`, then `monetization.services.activate_subscription(business=..., plan=...)`. This is the ONLY activation path (P-086 rule).
+- Failure: Transaction → `failed` (+ `transaction_id`), payments.Subscription → `failed` only if it was still `pending`. No activation.
+- Success for a payments.Subscription already `completed` through ANOTHER transaction (double payment) → logged at ERROR, NOT activated again, outcome `ignored`.
+- Activation exception → whole atomic block rolls back, response 500 (proven: DB snapshot identical before/after).
+
+### Files created
+- `payments/views.py` — `PaymobWebhookView`, `WebhookEvent`, `_parse_webhook_payload`, `SIGNATURE_QUERY_PARAM = "hmac"`.
+- `payments/urls.py` — `webhook/paymob/`, name `paymob-webhook`.
+- `payments/webhooks.py` — `process_webhook_event()` + `OUTCOME_*` constants.
+- `payments/tests/webhook_helpers.py` — independent HMAC signer (`sign`, NOT the production verifier), `build_payload`, `post_webhook`, `make_pending_payment`, `db_snapshot`.
+- `payments/tests/test_webhook.py` — signature gate + parsing (20 tests).
+- `payments/tests/test_webhook_processing.py` — success/failure/ignored/mismatch/unmatched/rollback (11 tests).
+- `payments/tests/test_webhook_idempotency.py` — duplicates, double payment, locking, end-to-end, boundaries (15 tests).
+
+### Files modified
+- `config/urls.py` — one line: `path("api/v1/payments/", include("payments.urls"))` after the analytics include.
+
+### Important implementation details / deviations from the plan text
+- **Signature location:** Paymob delivers the HMAC in the `hmac` **query parameter** (not a header, not the body), per the P-089 research (`payments/gateways/paymob.py` docstring). The plan said "signature header"; the code follows the gateway's documented convention.
+- **Gateway access:** the view uses `get_gateway()` (setting `PAYMENT_GATEWAY`), NOT `PaymobGateway()` directly, to respect P-089's rule that calling code never imports a concrete gateway. A test swaps in `FakeGateway` through the setting only.
+- **Finding the Transaction (deviation from "filter(transaction_id=...)"):** the pending Transaction has `transaction_id = NULL`, so a lookup by `transaction_id` alone would never find it on the FIRST webhook. `_resolve_subscription_id` tries, in order: (1) Transaction with this `transaction_id`; (2) `payments.Subscription.gateway_reference == obj.order.id`; (3) `order.merchant_order_id` matching `payments-sub-<pk>` (the `special_reference` set in P-089). Then the pending NULL-id Transaction of that Subscription is taken and `transaction_id` is filled in. If none is pending (a later attempt after a failed one), a NEW Transaction row is created with amount/currency copied from the latest one.
+- **Amount/currency check (added beyond the plan):** a success whose `amount_cents`/currency do not match the Transaction is NOT activated (`rejected_mismatch`, logged at ERROR, DB untouched).
+- **Logic lives in `payments/webhooks.py`, not `payments/services.py`:** P-089's test `test_calling_code_does_not_import_a_concrete_gateway` forbids `services.py` from importing anything from `monetization`.
+- **Unmatched payload** (correctly signed but not ours): 200, untouched, logged (ERROR if it claimed success, WARNING otherwise).
+- **500 handling in tests:** the project's `core.exceptions.custom_exception_handler` (P-012) converts an unexpected error into a 500 response instead of re-raising. The rollback test therefore asserts `status_code == 500` + identical `db_snapshot()`, not `pytest.raises` (first version failed for exactly this reason; production code was correct and unchanged).
+- A STEP 1 placeholder test (`test_valid_signature_is_acknowledged_without_side_effects_yet`) was deliberately removed from `test_webhook.py` in STEP 2 because processing made it false.
+- `Invoice` rows are NOT created (not in P-090 scope; PDF/invoicing not requested).
+- No new settings, no new env vars, no migration.
+
+### The three critical cases (explicitly confirmed PASSED)
+1. **Invalid signature → 400, ZERO side effects** — verified by direct DB snapshot comparison (payments.Subscription, Transaction, FeaturedSubscription count, `BusinessProfile.is_featured`), parametrized over: wrong secret, tampered body, missing `hmac`, garbage `hmac`, empty `hmac`; plus unconfigured (empty) secret signed with the empty key, non-JSON body, and "processing never called" (`process_webhook_event` mock `assert_not_called`).
+2. **Valid signature + new pending transaction → full activation** — Transaction and payments.Subscription `completed`, `activate_subscription` spy called exactly once with the correct `business`/`plan`, real `FeaturedSubscription` row active, `BusinessProfile.is_featured` True.
+3. **Valid signature + already-completed duplicate → safe no-op** — 200, **`activate_subscription` spy `call_count == 1` after two deliveries** (and after five), DB snapshot unchanged, `expires_at` unchanged; also proven: replay after the subscription expired/deactivated does NOT re-activate; replayed failure stays `failed`; a tampered replay reusing a stolen signature is rejected 400.
+
+Extra proofs: double payment (second successful transaction id on a completed payment) does not activate again; real `FOR UPDATE` on `payments_subscription` and `payments_transaction` captured in SQL; end-to-end `initiate_subscription_payment` (Paymob HTTP mocked with `responses`) → signed webhook → replay = one activation; AST guards (no concrete gateway import in `views.py`/`webhooks.py`; the only `monetization` import is `activate_subscription`; webhook code never references `FeaturedSubscription`/`is_featured`/`is_active`).
+
+### Commands (Windows PowerShell, from `D:\Cavallo\scd-backend`, Docker stack up)
+```powershell
+docker compose exec -T web pytest payments/ -q
+docker compose exec -T web pytest payments/tests/test_webhook.py payments/tests/test_webhook_processing.py payments/tests/test_webhook_idempotency.py -v
+docker compose exec -T web pytest monetization/ -q
+docker compose exec -T web pytest -q
+docker compose exec -T web python manage.py makemigrations --check --dry-run
+docker compose exec -T web black --check payments
+docker compose exec -T web flake8 payments config/urls.py
+curl.exe -s -o NUL -w "%{http_code}" -X POST "http://localhost:8095/api/v1/payments/webhook/paymob/?hmac=deadbeef" -H "Content-Type: application/json" -d "{}"
+```
+
+### Verification results (actually run)
+- P-089 baseline before P-090: `pytest payments/` → **53 passed**.
+- STEP 1: `test_webhook.py` 21 passed (later 20 after removing the placeholder); `payments/` 74 passed; live curl with `?hmac=deadbeef` → **400**.
+- STEP 2: `test_webhook_processing.py` **11 passed** (first run 10 passed + 1 failed for the 500-handler reason above, then fixed); `payments/` **84 passed**; `monetization/` **83 passed**.
+- STEP 3: `test_webhook_idempotency.py` **15 passed**; `payments/` **99 passed**; **FULL backend suite: 1253 passed, 1 skipped (12 min 09 s)**; `manage.py check` clean; `makemigrations --check` → No changes detected; `black --check payments` clean; `flake8 payments config/urls.py` clean.
+
+### Known issues / caveats
+- **NOT verified against a live Paymob account** (Section 7 item 3, credentials still pending): the `hmac` query-param delivery, the 20-field HMAC order, the `obj.order.id` / `merchant_order_id` fields and the amount in cents all follow Paymob's documentation + mocked, correctly-signed payloads only. The first real sandbox webhook must be checked before go-live (set `PAYMOB_WEBHOOK_SECRET` to the dashboard HMAC secret, NOT the API key; set `PAYMOB_NOTIFICATION_URL` to this endpoint).
+- A correctly-signed webhook that matches no payments.Subscription is acknowledged with 200 (so Paymob stops retrying) and only logged; there is no alerting on it yet.
+- A second successful transaction on an already-completed payment (double payment) is logged at ERROR and NOT refunded or surfaced anywhere else; handling it is a manual/operational matter for now.
+- The `WebhookEvent` dataclass lives in `payments/views.py` (and `webhooks.py` imports it only under `TYPE_CHECKING`). If P-091 wants to reuse `process_webhook_event`, move it to a neutral module first.
+- The 1 skipped test in the full suite predates P-090.
+- Untracked local files NOT committed on purpose: `P090_FULL_FILES.md`, `p090_step1.ps1`, `p090_step2.ps1`, `p090_step2_fix.ps1`, `p090_step3.ps1`. `celerybeat-schedule` shows as modified locally (runtime file, not part of this part).
+
+### Remaining work
+- P-091 (reconciliation job) — the daily safety net for a webhook that NEVER arrives. Explicitly not done here.
+- Live Paymob sandbox test of this endpoint (blocked on Section 7 item 3).
+- P-092 (web dashboard purchase flow) will call `initiate_subscription_payment()` (P-089).
+
+### GitHub references
+- cavallo-app `main`: `3315389` — "P-090: Paymob payment webhook (signature gate via hmac query param, idempotent atomic processing, activation only via activate_subscription, amount/currency check, row locking, 1253 passed/1 skipped)" (8 files changed, 1142 insertions; pushed as `71ad0a1..3315389`). https://github.com/Ahmed2132003/cavallo-app/commit/3315389
+- cavallo-mobile: no change in P-090.
+
+### PART P-090 STATUS: COMPLETE ✅ — Phase 15 continues (P-091 and later remain)
+
+### Exact next starting point — Part P-091 (payment reconciliation job)
+1) `git pull`, then `docker compose exec web pytest payments/ -q` (expect **99 passed**) and optionally the full suite (expect **1253 passed, 1 skipped**).
+2) Read P-091 in `PROJECT_IMPLEMENTATION_MASTER_PLAN.docx`. It covers payments whose webhook never arrived: `payments.Subscription`/`Transaction` rows still `pending` after a grace period, checked against the gateway.
+3) Any reconciliation that finds a genuinely successful payment must activate ONLY through `monetization.services.activate_subscription()` and must keep P-090's idempotency (a Transaction already `completed` is never re-activated). Reuse the same outcome logic (`payments/webhooks.py`) instead of duplicating it. Do not add a second expiry/deactivation path (P-088 owns expiry).
+4) The reconciliation needs a gateway call (e.g. a Paymob transaction-inquiry endpoint). Add it to the `PaymentGateway` interface (`payments/gateways/base.py`) and implement it in `PaymobGateway` (P-089 pattern); the calling code must not import a concrete gateway. Research the endpoint in Paymob's docs first; it is not covered by P-089.
+5) Pending `payments.Subscription` rows created by `initiate_subscription_payment()` have `transaction_id = NULL` until a webhook arrives, and `gateway_reference` holds the Paymob order id (use it to query the gateway).
+6) P-091 remains subject to Section 7 item 3 for any live test; build against mocked responses first.
