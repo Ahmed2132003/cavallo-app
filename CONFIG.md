@@ -84,6 +84,16 @@ push notifications are simply never sent — everything else in the app works no
 | --- | --- | --- |
 | `PAYMOB_API_KEY` | Payments part (Phase 15), if/when in-app payment is added | No |
 | `PAYMOB_WEBHOOK_SECRET` | Same | No |
+| `PAYMOB_SECRET_KEY` | `payments.gateways.paymob` (Authorization: Token ...) | No |
+| `PAYMOB_PUBLIC_KEY` | `payments.gateways.paymob` (checkout redirect URL) | No |
+| `PAYMOB_INTEGRATION_ID` | `payments.gateways.paymob` (payment_methods; must match test/live keys) | No |
+| `PAYMOB_BASE_URL` / `PAYMOB_CHECKOUT_BASE_URL` | `payments.gateways.paymob` (defaults: accept.paymob.com / eg.checkout.paymob.com) | No |
+| `PAYMOB_NOTIFICATION_URL` / `PAYMOB_REDIRECTION_URL` | optional per-intention callback / redirect URLs (omitted when blank) | No |
+| `PAYMENT_GATEWAY` | `payments.gateways.get_gateway()` (dotted path of the gateway class) | No |
+
+Note: `PAYMOB_WEBHOOK_SECRET` is Paymob's dashboard **HMAC secret**, not the API key.
+Without the three Paymob credentials above, `PaymobGateway.initiate_payment()` raises
+`PaymentGatewayError("Paymob is not configured ...")` and makes no HTTP call.
 
 Blocked on: real Paymob credentials (architecture Section 7, item 3). Note the MVP as
 scoped has **no in-app payment/checkout at all** (deals happen outside the platform per

@@ -90,6 +90,7 @@ INSTALLED_APPS = [
     "devices",  # Part P-081: FCM device-token registration.
     "analytics",  # Part P-084: daily BusinessDailyStats rollup.
     "monetization",  # Part P-086: Plan + FeaturedSubscription (Featured state).
+    "payments",  # Part P-089: payment-side Subscription/Transaction/Invoice.
 ]
 
 # ---------------------------------------------------------------------------
@@ -456,6 +457,32 @@ OBJECT_STORAGE_PUBLIC_ENDPOINT_URL = (
 # with a log line (see notifications.services._get_firebase_app).
 FCM_PROJECT_ID = env("FCM_PROJECT_ID", default="")
 FCM_SERVICE_ACCOUNT_JSON_PATH = env("FCM_SERVICE_ACCOUNT_JSON_PATH", default="")
+
+# Part P-089: payments. The gateway is chosen by a dotted path so the
+# provider can be swapped without touching calling code. Paymob values
+# stay blank until real credentials exist (architecture Section 7 item 3);
+# blank means PaymobGateway.initiate_payment() raises PaymentGatewayError.
+PAYMENT_GATEWAY = env(
+    "PAYMENT_GATEWAY", default="payments.gateways.paymob.PaymobGateway"
+)
+# Legacy auth-token flow; the Intention API does not use it.
+PAYMOB_API_KEY = env("PAYMOB_API_KEY", default="")
+# Sent as "Authorization: Token <secret key>" when creating an intention.
+PAYMOB_SECRET_KEY = env("PAYMOB_SECRET_KEY", default="")
+# Goes into the unified-checkout redirect URL.
+PAYMOB_PUBLIC_KEY = env("PAYMOB_PUBLIC_KEY", default="")
+# Integration id(s) used as payment_methods (must match test/live keys).
+PAYMOB_INTEGRATION_ID = env("PAYMOB_INTEGRATION_ID", default="")
+# The dashboard's HMAC secret (NOT the API key) for webhook verification.
+PAYMOB_WEBHOOK_SECRET = env("PAYMOB_WEBHOOK_SECRET", default="")
+PAYMOB_BASE_URL = env("PAYMOB_BASE_URL", default="https://accept.paymob.com")
+PAYMOB_CHECKOUT_BASE_URL = env(
+    "PAYMOB_CHECKOUT_BASE_URL", default="https://eg.checkout.paymob.com/"
+)
+# Optional per-intention callback / redirect URLs (omitted when blank).
+PAYMOB_NOTIFICATION_URL = env("PAYMOB_NOTIFICATION_URL", default="")
+PAYMOB_REDIRECTION_URL = env("PAYMOB_REDIRECTION_URL", default="")
+PAYMOB_TIMEOUT_SECONDS = env.int("PAYMOB_TIMEOUT_SECONDS", default=15)
 
 STORAGES = {
     "default": {
