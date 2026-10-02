@@ -1,5 +1,7 @@
 """Model tests for analytics.BusinessDailyStats (Part P-084)."""
 
+from decimal import Decimal
+
 import pytest
 from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
@@ -36,6 +38,11 @@ class TestBusinessDailyStatsModel:
         assert row.total_likes_received == 0
         assert row.total_comments_received == 0
         assert row.total_story_views == 0
+        assert row.new_ratings_count == 0
+        assert row.average_rating_snapshot == 0
+        assert row.active_products_count == 0
+        assert row.published_posts_count == 0
+        assert row.published_reels_count == 0
 
     def test_unique_together_business_and_date(self):
         business = _make_business()
@@ -43,6 +50,23 @@ class TestBusinessDailyStatsModel:
         with pytest.raises(IntegrityError):
             with transaction.atomic():
                 BusinessDailyStats.objects.create(business=business, date="2026-01-01")
+
+    def test_p093_fields_store_values(self):
+        row = BusinessDailyStats.objects.create(
+            business=_make_business(),
+            date="2026-01-01",
+            new_ratings_count=3,
+            average_rating_snapshot=Decimal("4.25"),
+            active_products_count=7,
+            published_posts_count=5,
+            published_reels_count=2,
+        )
+        row.refresh_from_db()
+        assert row.new_ratings_count == 3
+        assert row.average_rating_snapshot == Decimal("4.25")
+        assert row.active_products_count == 7
+        assert row.published_posts_count == 5
+        assert row.published_reels_count == 2
 
     def test_no_fields_for_untracked_metrics(self):
         """
@@ -61,4 +85,9 @@ class TestBusinessDailyStatsModel:
             "total_likes_received",
             "total_comments_received",
             "total_story_views",
+            "new_ratings_count",
+            "average_rating_snapshot",
+            "active_products_count",
+            "published_posts_count",
+            "published_reels_count",
         }

@@ -9,6 +9,7 @@ backdated with QuerySet.update() through _base_manager (test setup only).
 import itertools
 from datetime import datetime, time, timedelta
 from datetime import timezone as dt_timezone
+from decimal import Decimal
 from unittest import mock
 
 import pytest
@@ -22,8 +23,12 @@ from django.utils import timezone
 from analytics import tasks as analytics_tasks
 from analytics.models import BusinessDailyStats
 from analytics.tasks import _default_target_date, compute_daily_stats
+from businesses.models import BusinessProfile
 from businesses.services import create_business_profile
+from categories.models import Category
 from content.models import Post, Reel
+from products.models import Product
+from ratings.models import Rating
 from social.models import Comment, Follow, Like
 from stories.models import Story, StoryView
 
@@ -331,3 +336,192 @@ class TestBeatRegistration:
         entry = settings.CELERY_BEAT_SCHEDULE["compute-business-daily-stats"]
         assert entry["task"] == "analytics.compute_daily_stats"
         assert entry["schedule"] == crontab(hour=0, minute=15)
+
+
+# ---------------------------------------------------------------------------
+# Part P-093: rating + catalog-growth metrics
+# ---------------------------------------------------------------------------
+
+
+def _rate(business, when, score=5):
+    obj = Rating.objects.create(customer=_make_user(), business=business, score=score)
+    _backdate(obj, when)
+    return obj
+
+
+def _make_published_post(business):
+    return Post.objects.create(business=business, caption="pub", status="published")
+
+
+def _make_published_reel(business):
+    reel = _make_reel(business)
+    type(reel)._base_manager.filter(pk=reel.pk).update(
+        status="published", processing_status="ready"
+    )
+    return reel
+
+
+def _make_product(business, is_active=True):
+    n = next(_seq)
+    return Product.objects.create(
+        business=business,
+        category=Category.objects.create(name=f"P093 Category {n}"),
+        name=f"P093 Product {n}",
+        description="desc",
+        price="10.00",
+        currency=Product.CURRENCY_EGP,
+        is_active=is_active,
+    )
+
+
+def _set_average_rating(business, value):
+    BusinessProfile.objects.filter(pk=business.pk).update(average_rating=value)
+
+
+def _p093(row):
+    return (
+        row.new_ratings_count,
+        row.average_rating_snapshot,
+        row.active_products_count,
+        row.published_posts_count,
+        row.published_reels_count,
+    )
+
+
+@pytest.mark.django_db
+class TestRatingAndCatalogMetrics:
+    def test_exact_values_for_known_fixture(self):
+        # 3 ratings, 5 published posts, 2 published reels, 4 active products,
+        # average rating 4.33.
+        business = _make_business()
+        noon = _at(DAY)
+        for _ in range(3):
+            _rate(business, noon)
+        for _ in range(5):
+            _make_published_post(business)
+        for _ in range(2):
+            _make_published_reel(business)
+        for _ in range(4):
+            _make_product(business)
+        _set_average_rating(business, Decimal("4.33"))
+
+        compute_daily_stats(target_date=DAY)
+
+        row = BusinessDailyStats.objects.get(business=business, date=DAY)
+        assert _p093(row) == (3, Decimal("4.33"), 4, 5, 2)
+
+    def test_new_ratings_day_boundaries_are_exact(self):
+        business = _make_business()
+        before = _at(DAY - timedelta(days=1), 23, 59, 59)  # excluded
+        start = _at(DAY, 0, 0, 0)  # included
+        end = _at(DAY, 23, 59, 59)  # included
+        after = _at(DAY + timedelta(days=1), 0, 0, 0)  # excluded
+        for when in (before, start, end, after):
+            _rate(business, when)
+
+        compute_daily_stats(target_date=DAY)
+
+        row = BusinessDailyStats.objects.get(business=business, date=DAY)
+        assert row.new_ratings_count == 2
+
+    def test_other_business_data_is_not_mixed_in(self):
+        a, b = _make_business("A"), _make_business("B")
+        noon = _at(DAY)
+        _rate(a, noon)
+        for _ in range(3):
+            _rate(b, noon)
+        _make_published_post(a)
+        for _ in range(2):
+            _make_published_post(b)
+        _make_published_reel(b)
+        _make_product(a)
+        for _ in range(2):
+            _make_product(b)
+        _set_average_rating(a, Decimal("1.50"))
+        _set_average_rating(b, Decimal("4.75"))
+
+        compute_daily_stats(target_date=DAY)
+
+        row_a = BusinessDailyStats.objects.get(business=a, date=DAY)
+        row_b = BusinessDailyStats.objects.get(business=b, date=DAY)
+        assert _p093(row_a) == (1, Decimal("1.50"), 1, 1, 0)
+        assert _p093(row_b) == (3, Decimal("4.75"), 2, 2, 1)
+
+    def test_only_published_active_and_not_deleted_catalog_is_counted(self):
+        business = _make_business()
+        _make_published_post(business)
+        _make_post(business)  # pending_review: not counted
+        gone = _make_published_post(business)
+        gone.delete()  # soft delete: not counted
+        _make_published_reel(business)
+        _make_reel(business)  # pending_review: not counted
+        _make_product(business)
+        _make_product(business, is_active=False)  # hidden: not counted
+        removed = _make_product(business)
+        removed.delete()  # soft delete: not counted
+
+        compute_daily_stats(target_date=DAY)
+
+        row = BusinessDailyStats.objects.get(business=business, date=DAY)
+        assert row.published_posts_count == 1
+        assert row.published_reels_count == 1
+        assert row.active_products_count == 1
+
+    def test_average_rating_snapshot_is_stored_not_live(self):
+        business = _make_business()
+        _set_average_rating(business, Decimal("4.00"))
+        compute_daily_stats(target_date=DAY)
+
+        # The live value changes afterwards; the stored row must not follow.
+        _set_average_rating(business, Decimal("2.00"))
+        row = BusinessDailyStats.objects.get(business=business, date=DAY)
+        assert row.average_rating_snapshot == Decimal("4.00")
+
+        # Only a re-run of the task refreshes the snapshot.
+        compute_daily_stats(target_date=DAY)
+        row.refresh_from_db()
+        assert row.average_rating_snapshot == Decimal("2.00")
+
+    def test_unrated_empty_business_gets_zero_values(self):
+        business = _make_business()
+
+        compute_daily_stats(target_date=DAY)
+
+        row = BusinessDailyStats.objects.get(business=business, date=DAY)
+        assert _p093(row) == (0, Decimal("0.00"), 0, 0, 0)
+
+
+@pytest.mark.django_db
+class TestRatingAndCatalogIdempotency:
+    def test_rerun_keeps_one_row_with_unchanged_p093_values(self):
+        business = _make_business()
+        for _ in range(3):
+            _rate(business, _at(DAY))
+        for _ in range(5):
+            _make_published_post(business)
+        _set_average_rating(business, Decimal("4.20"))
+
+        compute_daily_stats(target_date=DAY)
+        compute_daily_stats(target_date=DAY)
+
+        rows = BusinessDailyStats.objects.filter(business=business, date=DAY)
+        assert rows.count() == 1
+        assert _p093(rows.get()) == (3, Decimal("4.20"), 0, 5, 0)
+
+    def test_rerun_updates_the_row_including_new_fields(self):
+        business = _make_business()
+        _rate(business, _at(DAY))
+        _make_published_post(business)
+        compute_daily_stats(target_date=DAY)
+
+        _rate(business, _at(DAY, 18))
+        _make_published_post(business)
+        _make_product(business)
+        compute_daily_stats(target_date=DAY)
+
+        rows = BusinessDailyStats.objects.filter(business=business, date=DAY)
+        assert rows.count() == 1
+        row = rows.get()
+        assert row.new_ratings_count == 2
+        assert row.published_posts_count == 2
+        assert row.active_products_count == 1

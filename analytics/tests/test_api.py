@@ -19,6 +19,11 @@ METRIC_KEYS = {
     "total_likes_received",
     "total_comments_received",
     "total_story_views",
+    "new_ratings_count",
+    "average_rating_snapshot",
+    "active_products_count",
+    "published_posts_count",
+    "published_reels_count",
 }
 
 
@@ -93,6 +98,11 @@ class TestOwnerAccess(_AnalyticsApiBase):
                     "total_likes_received": 5,
                     "total_comments_received": 2,
                     "total_story_views": 1,
+                    "new_ratings_count": 0,
+                    "average_rating_snapshot": "0.00",
+                    "active_products_count": 0,
+                    "published_posts_count": 0,
+                    "published_reels_count": 0,
                 }
             ],
         )

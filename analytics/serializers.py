@@ -7,7 +7,8 @@ class BusinessDailyStatsSerializer(serializers.ModelSerializer):
     """
     Part P-084. Read-only wire shape of one daily rollup row.
 
-    Exactly the four metrics this system genuinely tracks, plus the date.
+    Exactly the metrics this system genuinely tracks (P-084's four plus
+    P-093's five rating / catalog-growth fields), plus the date.
     There is deliberately NO product-views / profile-views field: that
     activity is not tracked anywhere (documented gap, not a bug).
     """
@@ -20,6 +21,11 @@ class BusinessDailyStatsSerializer(serializers.ModelSerializer):
             "total_likes_received",
             "total_comments_received",
             "total_story_views",
+            "new_ratings_count",
+            "average_rating_snapshot",
+            "active_products_count",
+            "published_posts_count",
+            "published_reels_count",
         )
         read_only_fields = fields
 

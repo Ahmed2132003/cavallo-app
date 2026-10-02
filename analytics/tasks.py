@@ -21,6 +21,20 @@ What is counted (and what is deliberately NOT):
   - total_comments_received: social.Comment rows (soft-deleted comments are
     excluded by Comment.objects) on the business's Posts/Reels.
   - total_story_views: stories.StoryView rows on the business's Stories.
+  - new_ratings_count (P-093): ratings.Rating rows created on the date. A
+    customer re-rating a business UPDATES their single row (unique per
+    customer + business), so only first-time ratings are counted here,
+    not later edits.
+  - average_rating_snapshot (P-093): BusinessProfile.average_rating at the
+    moment this task reaches that business. It is a stored POINT-IN-TIME
+    SNAPSHOT (so a trend chart can show what the rating was on each past
+    day), never a live join. Timing nuance: the Beat job runs at 00:15 UTC
+    for the previous day, so the value used is the rating as of ~00:15 UTC
+    the next day. Re-running an OLD date (backfill) stores TODAY'S average,
+    not the historical one: the past cannot be reconstructed.
+  - active_products_count / published_posts_count / published_reels_count
+    (P-093): catalog totals at task-execution time (snapshots, not
+    per-day deltas). Same backfill caveat as the rating snapshot.
   - Product views / profile views are NOT tracked anywhere in this system,
     so they are NOT computed (documented gap, not a bug).
 """
@@ -36,6 +50,8 @@ from django.utils import timezone
 from analytics.models import BusinessDailyStats
 from businesses.models import BusinessProfile
 from content.models import Post, Reel
+from products.models import Product
+from ratings.models import Rating
 from social.models import Comment, Follow, Like
 from stories.models import StoryView
 
@@ -63,7 +79,11 @@ def _resolve_target_date(target_date):
 
 
 def _compute_metrics(business, target_date, post_ct, reel_ct):
-    """Return the four metric values for one business on one date."""
+    """
+    Return the nine metric values for one business on one date: P-084's
+    four engagement counts plus P-093's rating / catalog-growth fields
+    (see the module docstring for the snapshot timing nuance).
+    """
     own_content = Q(
         content_type=post_ct,
         object_id__in=Post.all_objects.filter(business=business).values("pk"),
@@ -83,6 +103,19 @@ def _compute_metrics(business, target_date, post_ct, reel_ct):
         ).count(),
         "total_story_views": StoryView.objects.filter(
             story__business=business, created_at__date=target_date
+        ).count(),
+        "new_ratings_count": Rating.objects.filter(
+            business=business, created_at__date=target_date
+        ).count(),
+        "average_rating_snapshot": business.average_rating,
+        "active_products_count": Product.objects.filter(
+            business=business, is_active=True
+        ).count(),
+        "published_posts_count": Post.published_objects.filter(
+            business=business
+        ).count(),
+        "published_reels_count": Reel.published_objects.filter(
+            business=business
         ).count(),
     }
 
