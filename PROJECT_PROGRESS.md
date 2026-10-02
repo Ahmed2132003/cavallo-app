@@ -11522,3 +11522,81 @@ Phase 16 begins with P-093 (Analytics Expansion). Before starting it, check the 
 Edits to existing sections
 In the Phase 15 backlog entry that wrongly says "P-093" for the Flutter Featured badge, replace that reference with "P-110 (see the P-110 entry; the stray P-093 reference was a planning error)".
 In the Part status index/table, add the row: P-110 | Flutter "Featured" Badge Display | Phase 15 | COMPLETE, and update the Phase 15 summary line to "COMPLETE except live Paymob verification (Section 7 item 3)".
+
+## PART P-093 — Analytics Expansion: Rating & Catalog-Growth Metrics (Backend + Flutter) — STATUS: COMPLETE ✅ (automated checks PASSED). PHASE 16 COMPLETE ✅
+
+Date: 2026-10-02. Dependencies used: P-084 (BusinessDailyStats + compute_daily_stats + owner-only daily endpoint), P-085 (Flutter analytics screen), P-109 (ratings.Rating). Executed as 4 steps across two chats; all four confirmed on the real machine.
+
+### What was implemented
+
+Backend (`cavallo-app`, `analytics/` app, repo-root layout, NOT `apps/analytics/`):
+- `BusinessDailyStats` got 5 new fields via the additive migration `analytics/migrations/0002_businessdailystats_active_products_count_and_more.py`:
+  - `new_ratings_count` (PositiveIntegerField, default 0)
+  - `average_rating_snapshot` (DecimalField max_digits=3, decimal_places=2, default 0; same precision as BusinessProfile.average_rating)
+  - `active_products_count`, `published_posts_count`, `published_reels_count` (PositiveIntegerField, default 0)
+- `analytics/tasks.py`: the existing `compute_daily_stats()` was EXTENDED, not duplicated. Metric computation moved into a helper `_compute_metrics(business, target_date, post_ct, reel_ct)` that returns all 9 values, written in the same single `update_or_create(business, date, defaults=metrics)` call (idempotent, same discipline as P-084).
+  - `new_ratings_count` = `Rating.objects.filter(business=business, created_at__date=target_date).count()`. A customer re-rating a business edits their single row (unique per customer + business), so only first-time ratings count; later edits do not.
+  - `average_rating_snapshot` = `business.average_rating` at task-execution time.
+  - `active_products_count` = `Product.objects.filter(business=business, is_active=True).count()`
+  - `published_posts_count` = `Post.published_objects.filter(business=business).count()`; `published_reels_count` = the Reel equivalent.
+- `analytics/serializers.py`: `BusinessDailyStatsSerializer` now emits 10 fields (date + 9 metrics). DRF serializes the DecimalField as a STRING (e.g. "4.50").
+- Tests extended in `analytics/tests/test_tasks.py`, `test_models.py`, `test_api.py`. `pytest analytics/` = 47 passed. The task was also run against real data on the real machine.
+
+Flutter (`cavallo-mobile`, branch `part-083`, `lib/features/business_console/`):
+- Data layer (step 3): `DailyStats` entity + `DailyStatsResponseDto` carry the 5 new fields. Parsing is STRICT: a missing, null or wrong-typed new field throws FormatException (no fake zeros). The rating accepts the DRF decimal string or a JSON number, must be finite and within 0..5.
+- `presentation/analytics_line_chart.dart`: generalised from int-only to `num Function(DailyStats)`, with optional `fixedMaxY` and `yInterval` (the rating trend pins Y to 0..5, tick 1). Existing charts are unchanged.
+- `presentation/analytics_summary.dart`: new pure helpers `summarizeRatings`, `ratedRows`, `latestCatalogSnapshot` (+ `RatingSummary`, `CatalogSnapshot`). They do not depend on row order. `AnalyticsTotals`/`sumDailyStats` were not changed.
+- `presentation/analytics_screen.dart`: two new sections under the existing charts.
+  - "Ratings": "New ratings" card (sum of returned rows), "Average rating" card (latest real snapshot, shown as an em dash when none), and an "Average rating by day" line chart with a key of `analytics-chart-rating-trend`.
+  - "Catalog size": "Active products", "Published posts", "Published reels" cards plus an "As of d/M (UTC)" note.
+  - `_TotalCard` now takes a String value.
+- New widget keys: `analytics-total-new-ratings`, `analytics-rating-latest`, `analytics-rating-empty`, `analytics-chart-rating-trend`, `analytics-catalog-as-of`, `analytics-catalog-active-products`, `analytics-catalog-published-posts`, `analytics-catalog-published-reels`.
+
+### Important implementation details / decisions
+1. `average_rating_snapshot` is a stored point-in-time snapshot, never a live join. Timing nuance: Beat runs at 00:15 UTC for the previous day, so the stored value is the rating as of about 00:15 UTC the next day. Re-running an OLD date (backfill) stores TODAY'S average and today's catalog counts, because the past cannot be reconstructed. This is documented in the tasks.py module docstring.
+2. The three catalog counts are totals at task-execution time, not per-day deltas. The Flutter screen reads them from the LATEST row only and never sums them across days.
+3. A rating snapshot of 0 means "not rated yet" (a real average is never below 1). The Flutter app never plots it, never shows it as a rating, and filters those rows out of the trend. If no returned row is rated, the screen shows a note (`analytics-rating-empty`) and a dash instead of a flat line at 0. Days before the first rating are therefore not drawn as 0.
+4. Honesty discipline from P-084 kept: NO product-views or profile-views field exists anywhere (backend or Flutter). Nothing in the system tracks them.
+5. Two existing P-085 guard tests that banned any text/key containing "product" were deliberately relaxed (`analytics_screen_test.dart`, `analytics_integration_test.dart`, and the unknown-keys check in `daily_stats_response_dto_test.dart`). They now ban "product view" / "productview" / "product-view" / "placeholder" instead, so the legitimate "Active products" card is allowed while fabricated product-views metrics are still blocked. `_untrackedLabels` (Product views, Profile views, Shares, Saves, Messages) is still asserted absent.
+6. Architecture/conventions followed: apps at the repo root, existing task extended (no second rollup), additive migration, hand-rolled fakes (no mocktail), CRLF line endings preserved in the Flutter repo.
+
+### Files created
+- Backend: `analytics/migrations/0002_businessdailystats_active_products_count_and_more.py` (plus one-shot helper scripts `p093_step1.ps1`, `p093_step2.ps1` committed at the repo root).
+- Mobile: no new Dart files (one-shot helper scripts `p093_step3.ps1` (failed parser, superseded), `p093_step3a.ps1`, `p093_step3b.ps1`, `p093_step4a.ps1`, `p093_step4b.ps1` committed at the repo root).
+
+### Files modified
+- Backend: `analytics/models.py`, `analytics/serializers.py`, `analytics/tasks.py`, `analytics/tests/test_api.py`, `analytics/tests/test_models.py`, `analytics/tests/test_tasks.py`.
+- Mobile `lib/features/business_console/`: `domain/daily_stats_entity.dart`, `data/dtos/daily_stats_response_dto.dart`, `presentation/analytics_line_chart.dart`, `presentation/analytics_summary.dart`, `presentation/analytics_screen.dart`.
+- Mobile `test/features/business_console/`: `fake_analytics_repository.dart`, `analytics_integration_test.dart`, `data/analytics_repository_test.dart`, `data/daily_stats_response_dto_test.dart`, `presentation/analytics_summary_test.dart`, `presentation/analytics_line_chart_test.dart`, `presentation/analytics_provider_test.dart`, `presentation/analytics_screen_test.dart`.
+
+### Commands
+- Backend (from D:\Cavallo\scd-backend): `docker compose exec web python manage.py migrate analytics`, then `docker compose exec web pytest analytics/`.
+- Mobile (from D:\Cavallo\social_commerce_app, branch part-083): `flutter test test/features/business_console`, then `flutter analyze`.
+
+### Tests and verification results
+- Backend: `pytest analytics/` = 47 passed (3 ratings + 5 posts fixture gives exactly new_ratings_count=3 and published_posts_count=5; re-running the same date updates the row instead of duplicating it, including the new fields).
+- Mobile: `flutter test test/features/business_console` = 109 passed (All tests passed!); `flutter analyze` = No issues found!
+- New Flutter coverage: DTO parsing of the rating (string, number, invalid) and the 5 new fields (missing/null/wrong type); chart with a pinned 0..5 axis and decimal spots; summary helpers (sums, latest snapshot, unsorted input, zero vs. unrated); screen tests (new ratings = sum, latest average, catalog from the latest row not a sum, trend plots stored snapshots, unrated shows note + dash, days before the first rating are not plotted); integration test through the real router with `knownTrendStats()` (new ratings 3, latest rating 4.50, catalog 4 products / 3 posts / 2 reels).
+- Log lines like `[HTTP] xx .../feed/home/ -> 400` printed during `flutter test` are expected noise from tests that stub the feed, not failures.
+
+### GitHub references
+- Backend `cavallo-app` (main): `b8f50e9` (steps 1 to 3).
+- Mobile `cavallo-mobile` (branch `part-083`): `b883774` (step 3, also removes the stale `p110_step4.ps1`), `8a435dd` (step 4).
+
+### Known issues / housekeeping (none block the part)
+- Strict parsing: the Flutter app now REQUIRES the 5 new fields in the daily-stats response. Pointing it at a backend that predates `b8f50e9` (migration 0002 not applied/deployed) shows the analytics error state, by design (no fake zeros).
+- The manual look at the new Ratings / Catalog size sections on the real backend was not reported back in this chat; the screen is covered by widget and router-level integration tests with mocked data. Do this quick manual check when convenient.
+- Repo hygiene: the one-shot `p093_step*.ps1` scripts are committed in both repo roots and can be deleted. `celerybeat-schedule` (a runtime file) is tracked in the backend repo and changed again in `b8f50e9`; add it to `.gitignore`.
+- Carried over, unchanged by this part: live Paymob verification is still PENDING (Section 7 item 3: P-089/P-090/P-091 mechanism-complete but untested with real credentials). Phase 16's own gate asked to decide explicitly whether to proceed with it pending; this part proceeded with it pending. Mobile work is still on branch `part-083` (not merged to a main branch).
+
+### Remaining work
+None for P-093.
+
+### Phase 16 status
+Phase 16 (Analytics Expansion) is COMPLETE with this part: P-093 was its only part, and it passed validation. This is the gate Phase 17 checks before beginning.
+
+### Exact next starting point
+Phase 17 (Cross-Feature Integration), starting with P-094: end-to-end integration pass (Auth -> Business setup -> Content -> Moderation -> Feed -> Search -> Chat), verified as a connected whole. P-095 (deep-link cross-navigation integration test) follows. Before starting, re-read this file's Section 7 open items (live Paymob and live FCM push are still unverified) so the integration pass records them honestly instead of assuming they work.
+
+### Edits to existing sections
+In the Part status index/table, add the row: `P-093 | Analytics Expansion: Rating & Catalog-Growth Metrics | Phase 16 | COMPLETE`, and set the Phase 16 summary line to "COMPLETE".
