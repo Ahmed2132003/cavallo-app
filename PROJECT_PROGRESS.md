@@ -11298,16 +11298,17 @@ docker compose exec -T web pytest payments/tests/test_reconciliation.py -v
 docker compose exec -T web python manage.py shell -c "from config.celery import app; app.loader.import_default_modules(); print('payments.reconcile_pending_transactions' in app.tasks)"
 docker compose exec -T web black --check payments
 docker compose exec -T web flake8 payments config/settings/base.py
+docker compose exec -T web pytest -q
 ```
 
 ### Tests
 - `test_gateway_status.py` (25): status mapping, order-id and merchant-reference lookup, bearer token, 404 -> None, auth/inquiry/network/JSON/missing-id/missing-key errors (no HTTP when the key is missing), abstract interface, FakeGateway.
 - `test_reconciliation.py` (21): missed webhook recovered (statuses, `FeaturedSubscription`, `is_featured`); activation called exactly once; goes through `process_webhook_event`; failed marked failed; amount mismatch rejected by the shared check; pending/voided/refunded/None untouched; within-grace never asks the gateway (`status_calls == []`); grace boundary +/- 1 min; already completed/failed not asked; second run activates nothing; one subscription with several pending rows asked once; one gateway error does not stop the batch; processing exception counted not raised; AST single-implementation guard; task registered; Beat entry daily 01:00.
 
-### Verification results (actually run)
-- STEP 1 on the real machine: 25 passed (new file), `payments/` 124 passed, black/flake8 clean.
-- STEP 2 on the real machine: task registered with Celery (True), `payments/` 124 passed, black/flake8 clean.
-- STEP 3: see the numbers reported by the STEP 3 script run (expected `payments/` 145 passed; full suite 1299 passed, 1 skipped).
+### Verification results (actually run, real machine, Docker Compose)
+- STEP 1: `test_gateway_status.py` 25 passed; `payments/` 124 passed; black/flake8 clean.
+- STEP 2: task registered with Celery (`True`); `payments/` 124 passed; black/flake8 clean.
+- STEP 3: `test_reconciliation.py` 21 passed; `payments/` **145 passed** (includes all P-089/P-090 webhook tests, unchanged); full suite **1299 passed, 1 skipped** (P-090 baseline was 1253 passed, 1 skipped); `manage.py check` clean; black --check and flake8 (`payments`, `config/settings/base.py`) clean.
 - Mutation checks done while building: setting the grace period to 0, or not skipping `pending` answers, makes the new tests fail.
 
 ### Known issues / caveats
@@ -11315,13 +11316,14 @@ docker compose exec -T web flake8 payments config/settings/base.py
 - `PAYMOB_API_KEY` (legacy API key) must be set in the environment for reconciliation; without it the gateway raises `PaymentGatewayError` and every run logs errors (nothing is changed).
 - Abandoned checkouts that never complete stay `pending` and are re-queried every day. A maximum age could be added if the volume ever matters (not built).
 - `config/settings/base.py` is not black-formatted in the repo (pre-existing); only flake8 is enforced for it.
+- The tracked `celerybeat-schedule` file changes whenever Beat runs locally; it was deliberately not included in the P-091 commit.
 
 ### Remaining work
 - P-092 (Web Dashboard API contract) and P-110 (Flutter Featured badge).
 - Live validation of reconciliation against real Paymob data (Section 7 item 3).
 
 ### GitHub references
-- Backend repo: github.com/Ahmed2132003/cavallo-app, `main`. P-090 was commit `3315389`; the P-091 commit hash is pending on Ahmed's side (record it here after the push).
+- Backend repo: github.com/Ahmed2132003/cavallo-app, `main`, **commit `e5d2a2a`** ("P-091: daily Paymob reconciliation job ...", pushed on top of `80f9e8b`). P-090 was commit `3315389`.
 - cavallo-mobile: no change in P-091.
 
 ### PART P-091 STATUS: COMPLETE ✅ — Phase 15 payment-reliability half closed (P-092, P-110 remain)
