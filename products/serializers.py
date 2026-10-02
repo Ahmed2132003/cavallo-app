@@ -42,6 +42,18 @@ from .models import Product, ProductVariant
 _ALLOWED_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"]
 _MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
 
+class _FormSafeBooleanField(serializers.BooleanField):
+    """
+    Part P-094 (finding F-3). DRF treats a MISSING BooleanField in
+    multipart/form input as False, ignoring the model default. Since product
+    creation with an image is multipart, that silently created every product
+    with is_active=False (hidden from /api/v1/products/public/).
+    Setting default_empty_html to `empty` makes an absent field count as
+    "not provided", so the model default (True) applies on create and
+    PATCH stays untouched.
+    """
+
+    default_empty_html = serializers.empty
 
 class ProductVariantSerializer(serializers.ModelSerializer):
     """Read-only nested representation of a Product's variants.
@@ -85,6 +97,7 @@ class ProductSerializer(serializers.ModelSerializer):
     is_featured = serializers.BooleanField(
         source="business.is_featured", read_only=True
     )
+    is_active = _FormSafeBooleanField(required=False)
 
     class Meta:
         model = Product
