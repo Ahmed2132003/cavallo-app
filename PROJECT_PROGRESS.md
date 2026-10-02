@@ -11430,3 +11430,95 @@ The API contract is ready for a future Web Dashboard project to consume whenever
 3) **Verify first which responses actually expose `is_featured`**: Feed and Search use it only for ranking/cursors (P-087, `feed/services.py`); no feed/search/public-profile response serializer exposes it (the Search business result reuses `BusinessProfileSerializer`, which has no `is_featured`). Only the owner-only `/businesses/me/` returns it now (this part). If the public profile / search / feed cards need the badge, a small backend addition is required first (public profile is cached 5 min, P-030; note the cache would then need invalidation on activation/expiry, or accept up to 5 min lag). Decide this before writing Flutter code.
 4) Payment-initiation UI stays out of Flutter (ADR-006): the badge is display-only.
 5) After P-110, the master plan continues with Phase 16 starting at P-093 (Analytics Expansion), per the numbering note in P-110.
+
+## PART P-110 — Flutter: "Featured" Badge Display (Read-Only, Out-of-Sequence ID)
+
+Status: COMPLETE (executed in 4 steps; backend + Flutter both pushed; automated tests and manual verification passed)
+
+Metadata: Phase 15 | Priority: Medium | Complexity: Low | Dependencies: P-045, P-061, P-062, P-065, P-087 | No dependency on the payment parts (P-089 to P-092).
+
+Why this ID exists
+
+The original backlog's Phase 15 entry referenced a nonexistent "P-093" for this deliverable, which collided with Phase 16's real P-093 (Analytics Expansion). This part carries the out-of-sequence ID P-110 (continuing from P-109) instead of cascading a renumber. The P-093 numbering confusion is now fully resolved: P-093 means Analytics Expansion only; the Flutter Featured badge is P-110.
+
+What was implemented
+
+A read-only "Featured" badge (star icon + the word "Featured") shown wherever a business or its content appears, driven by the real is_featured state from P-087. Display-only per ADR-006: no tap handler, no purchase action; Featured is bought on the future Web Dashboard only.
+
+Backend (repo cavallo-app, branch main)
+
+BusinessProfileSerializer.is_featured (read-only BooleanField) added to the base serializer and its Meta.fields. The public profile endpoint and Search business results both use this serializer. BusinessProfileOwnerSerializer now inherits the field (its duplicate declaration was removed); featured_until stays owner-only.
+PostPublicSerializer, ReelPublicSerializer, ProductSerializer: is_featured = BooleanField(source="business.is_featured", read_only=True), resolved through the business join per P-087's design. No is_featured column was added to Post, Reel or Product (the P-087 guard test still passes).
+N+1 prevention: select_related("business") added in content/views.py (public Post and Reel querysets), products/views.py (public Product queryset) and feed/services.py (Home/Discover feed queries).
+Public contract change (intentional): the cached public profile now exposes the boolean is_featured. featured_until (the subscription date) is still never exposed publicly (P-092 restriction unchanged).
+Existing test businesses/tests/test_me_featured_fields.py updated: the old test asserting is_featured was absent from the public profile was renamed test_public_profile_view_exposes_is_featured_but_not_featured_until and now asserts the new contract.
+
+Flutter (repo cavallo-mobile, branch part-083)
+
+Data/domain layer carries isFeatured (default false, parsed from is_featured) on BusinessProfile, Product, PublicPost, PublicReel (entities, DTOs, copyWith, equality, toJson, and the search/repository mapping).
+New single reusable widget lib/core/widgets/featured_badge.dart (const FeaturedBadge(), public FeaturedBadge.label = 'Featured'), colors from the active ColorScheme (tertiaryContainer / onTertiaryContainer), no callbacks.
+Badge shown conditionally on isFeatured in: public business profile (next to the verification badge), SearchResultCard (business row and product row), PostCard and ReelCard (business-name row, before the overflow menu). Post/Reel cards read post.isFeatured / reel.isFeatured from the entity, so every caller (Home feed, Discover, chat shares, profile Posts/Reels) inherits the badge with no caller changes.
+Existing test business_profile_response_dto_test.dart ("toJson matches the backend field names exactly") updated to expect 'is_featured': false.
+Files created
+
+Backend:
+
+businesses/tests/test_is_featured_public_exposure.py (17 tests)
+
+Flutter:
+
+lib/core/widgets/featured_badge.dart
+test/features/featured/is_featured_data_layer_test.dart
+test/features/featured/featured_badge_ui_test.dart (13 tests)
+Files modified
+
+Backend: businesses/serializers.py, businesses/tests/test_me_featured_fields.py, content/serializers.py, content/views.py, products/serializers.py, products/views.py, feed/services.py
+
+Flutter (lib/): features/business_profile/data/business_profile_public_repository.dart, .../business_profile_repository_impl.dart, .../dtos/business_profile_response_dto.dart, .../domain/business_profile_entity.dart, .../presentation/business_profile_public_screen.dart, features/content/data/dtos/post_public_response_dto.dart, .../reel_public_response_dto.dart, features/content/domain/public_post_entity.dart, .../public_reel_entity.dart, features/content/presentation/post_card.dart, .../reel_card.dart, features/products/data/dtos/product_response_dto.dart, features/products/domain/product_entity.dart, features/search/data/search_repository_impl.dart, features/search/presentation/search_result_card.dart Flutter (test/): features/business_profile/data/dtos/business_profile_response_dto_test.dart
+
+Architecture decisions
+One badge widget, reused everywhere (no per-screen variants).
+is_featured is never a column on Post/Reel/Product; always resolved through the owning business (single source of truth, P-087).
+Display-only (ADR-006); no payment UI in Flutter.
+Callers decide whether to render the badge (if (x.isFeatured) const FeaturedBadge()); the widget itself has no state or logic.
+The flag is read-only on every serializer, so a client can never write it.
+Commands
+
+Backend (from D:\Cavallo\scd-backend):
+
+powershell
+docker compose exec web pytest businesses/tests/test_me_featured_fields.py -q
+docker compose exec web pytest businesses/ content/ products/ feed/ search/ monetization/ -q
+docker compose exec web python manage.py makemigrations --check --dry-run
+
+Flutter (from D:\Cavallo\social_commerce_app):
+
+powershell
+flutter test test/features/featured
+flutter analyze
+flutter test
+Verification results
+Backend: test_me_featured_fields.py 9 passed; businesses/ content/ products/ feed/ search/ monetization/ 474 passed; makemigrations --check reports No changes detected (no migration needed).
+Flutter: flutter test test/features/featured all passed (24 tests: 11 data-layer + 13 UI); flutter analyze No issues found; full flutter test All tests passed (998 tests). The [HTTP] ... 400 lines in router-gate tests and the [reportError] traces are expected log noise from tests that simulate failures, not failures.
+UI tests prove badge present when isFeatured=true and absent when false for: public profile (also independent of the verified icon), search business row, search product row, PostCard, ReelCard; and that FeaturedBadge contains no tap target or button.
+Manual verification against the real backend (done by the owner): a business made Featured through the Django Admin manual-activation action (P-086, no Paymob credentials needed) showed the badge on its profile, on its search results (business and product) and on its Post/Reel cards in Feed/Discover; a non-Featured business showed no badge anywhere.
+GitHub references
+Backend cavallo-app (main): 63d94f3 (steps 1 to 3), bab09e4 (step 4, only touched celerybeat-schedule).
+Mobile cavallo-mobile (branch part-083): 66bc038 (steps 1 to 3), c0fdbd1 (step 4).
+Known issues / housekeeping (none block the part)
+Repo hygiene: the helper scripts used to apply the steps (p110_step*.ps1, p110_step2_fix.ps1, p110_step4.ps1) were committed to the Flutter repo root by git add . and are one-shot tools that can be deleted. celerybeat-schedule (a runtime file) is also tracked in the backend repo and changes on every run; consider adding it to .gitignore.
+The backend commit 63d94f3 also shows WEB_DASHBOARD_API_CONTRACT.md as deleted (239 lines). It is not part of P-110's scope. If the deletion was not intentional, restore it with git checkout 3fe2177 -- WEB_DASHBOARD_API_CONTRACT.md before the Web Dashboard work needs it, and note that the contract should also record that the public profile now exposes is_featured.
+Mobile work is still on branch part-083 (not merged to a main branch), same as earlier Flutter parts.
+Remaining work
+Live Paymob payment verification is NOT done. P-089, P-090 and P-091 remain mechanism-complete but untested against real Paymob credentials (Section 7 item 3). This is the explicit gate Phase 16 (Analytics Expansion) checks before beginning.
+Phase 15 status
+
+Phase 15 is COMPLETE for every part, with the single exception of genuine live-payment verification against real Paymob credentials (P-089 / P-090 / P-091, Section 7 item 3), which stays honestly flagged as pending. The Flutter side of Featured is fully closed out by P-110.
+
+Exact next starting point
+
+Phase 16 begins with P-093 (Analytics Expansion). Before starting it, check the Section 7 item 3 gate above (live Paymob verification) and decide explicitly whether to proceed with it still pending.
+
+Edits to existing sections
+In the Phase 15 backlog entry that wrongly says "P-093" for the Flutter Featured badge, replace that reference with "P-110 (see the P-110 entry; the stray P-093 reference was a planning error)".
+In the Part status index/table, add the row: P-110 | Flutter "Featured" Badge Display | Phase 15 | COMPLETE, and update the Phase 15 summary line to "COMPLETE except live Paymob verification (Section 7 item 3)".
