@@ -10856,3 +10856,308 @@ None for P-088 itself, apart from the [CONFIRM] items above.
 2) P-089/P-090 (payment flow + webhook) must call `monetization.services.activate_subscription()` for the activation and nothing else (the sanctioned path). They remain BLOCKED on Section 7 item 3 (Paymob credentials): confirm they are available before starting, or stop and ask.
 3) Expiry is already handled by P-088; payments must not add a second expiry/deactivation path.
 4) P-110 (Flutter Featured badge) reads the real `is_featured` state; verify first that the feed/search serializers expose it.
+
+<#
+  P-089 STEP 3/3 - payment-initiation service + tests + final verification.
+  Usage (PowerShell, Docker stack up):
+      powershell -ExecutionPolicy Bypass -File .\p089_step3.ps1
+      .\p089_step3.ps1 -Root "D:\Cavallo\scd-backend"
+  Re-runnable.
+#>
+param([string]$Root = 'D:\Cavallo\scd-backend')
+
+$ErrorActionPreference = 'Stop'
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+
+function Write-RepoFile([string]$Rel, [string]$Content) {
+    $full = Join-Path $Root $Rel
+    $dir = Split-Path $full -Parent
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $text = [regex]::Replace($Content, "`r?`n", "`r`n")
+    if (-not $text.EndsWith("`r`n")) { $text += "`r`n" }
+    [System.IO.File]::WriteAllText($full, $text, $utf8)
+    Write-Host "  wrote $Rel"
+}
+
+function Invoke-Step([string]$Title, [scriptblock]$Cmd) {
+    Write-Host ""
+    Write-Host "== $Title" -ForegroundColor Cyan
+    & $Cmd
+    if ($LASTEXITCODE -ne 0) { throw "FAILED: $Title (exit code $LASTEXITCODE)" }
+}
+
+Set-Location $Root
+foreach ($p in @('manage.py', 'payments\gateways\paymob.py', 'payments\tests\fake_gateway.py')) {
+    if (-not (Test-Path (Join-Path $Root $p))) { throw "Missing $p - is STEP 2 applied? Root: $Root" }
+}
+Write-Host "Backend root OK: $Root" -ForegroundColor Green
+
+Write-Host ""
+Write-Host "== Creating service + tests" -ForegroundColor Cyan
+Write-RepoFile 'payments\services.py' @'
+"""
+## Part P-089 (STEP 3): payment-initiation service.
+
+``initiate_subscription_payment()`` is what the future Web Dashboard
+(P-092) calls. It talks to the gateway ONLY through the PaymentGateway
+interface (payments.gateways), never to a concrete provider.
+
+NAMING: this creates a ``payments.Subscription`` (the PAYMENT record).
+It never creates or activates a ``monetization.FeaturedSubscription``;
+that happens only in P-090, after a verified webhook, through
+``monetization.services.activate_subscription()``.
+"""
+
+import logging
+
+from django.db import transaction as db_transaction
+
+from payments.gateways import get_gateway
+from payments.gateways.base import PaymentGateway, PaymentGatewayError
+from payments.models import (
+    STATUS_FAILED,
+    STATUS_PENDING,
+    Subscription,
+    Transaction,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _mark_failed(subscription: Subscription, txn: Transaction) -> None:
+    subscription.status = STATUS_FAILED
+    subscription.save(update_fields=["status", "updated_at"])
+    txn.status = STATUS_FAILED
+    txn.save(update_fields=["status", "updated_at"])
+
+
+def initiate_subscription_payment(
+    business, plan, gateway: PaymentGateway | None = None
+) -> str:
+    """
+    Start a payment for ``plan`` on behalf of ``business`` and return the
+    gateway-hosted payment URL to redirect the user to.
+
+    Creates a pending Subscription and a pending Transaction (amount and
+    currency are a snapshot of the plan at purchase time; the gateway's
+    transaction id is unknown until the webhook, so it starts as NULL).
+    The gateway call happens AFTER those rows are committed and outside any
+    DB transaction. If it fails, both rows are marked ``failed`` (kept for
+    audit) and PaymentGatewayError is re-raised.
+
+    ``gateway`` can be injected (tests); by default the configured one is
+    used (settings.PAYMENT_GATEWAY).
+    """
+    if gateway is None:
+        gateway = get_gateway()
+
+    with db_transaction.atomic():
+        subscription = Subscription.objects.create(
+            business=business, plan=plan, status=STATUS_PENDING
+        )
+        txn = Transaction.objects.create(
+            subscription=subscription,
+            transaction_id=None,
+            amount=plan.price,
+            currency=plan.currency,
+            status=STATUS_PENDING,
+        )
+
+    try:
+        result = gateway.initiate_payment(subscription)
+        payment_url = result["payment_url"]
+        gateway_reference = result["gateway_reference"]
+        if not payment_url or not gateway_reference:
+            raise KeyError("empty payment_url / gateway_reference")
+    except (KeyError, TypeError) as exc:
+        _mark_failed(subscription, txn)
+        raise PaymentGatewayError(
+            "Gateway returned an invalid initiate_payment result"
+        ) from exc
+    except PaymentGatewayError:
+        logger.warning(
+            "Payment initiation failed for payments.Subscription %s", subscription.pk
+        )
+        _mark_failed(subscription, txn)
+        raise
+
+    subscription.gateway_reference = str(gateway_reference)
+    subscription.save(update_fields=["gateway_reference", "updated_at"])
+    return payment_url
+'@
+Write-RepoFile 'payments\tests\test_services.py' @'
+"""Tests for payments.services.initiate_subscription_payment (P-089 STEP 3)."""
+
+import ast
+import json
+from decimal import Decimal
+from pathlib import Path
+
+import pytest
+import responses
+
+import payments.services as services_module
+from monetization.models import FeaturedSubscription
+from payments.gateways.base import PaymentGatewayError
+from payments.models import Subscription, Transaction
+from payments.services import initiate_subscription_payment
+from payments.tests.factories import make_business, make_plan
+from payments.tests.fake_gateway import FakeGateway
+
+pytestmark = pytest.mark.django_db
+
+INTENTION_URL = "https://accept.paymob.com/v1/intention/"
+INTENTION_RESPONSE = {
+    "id": "pi_test_0001",
+    "intention_order_id": 4778239,
+    "client_secret": "egy_csk_test_abc123",
+    "status": "intended",
+}
+
+
+@pytest.fixture
+def paymob_settings(settings):
+    settings.PAYMOB_SECRET_KEY = "egy_sk_test_secret"
+    settings.PAYMOB_PUBLIC_KEY = "egy_pk_test_public"
+    settings.PAYMOB_INTEGRATION_ID = "123456"
+    settings.PAYMOB_WEBHOOK_SECRET = "test-hmac-secret"
+    settings.PAYMOB_BASE_URL = "https://accept.paymob.com"
+    settings.PAYMOB_CHECKOUT_BASE_URL = "https://eg.checkout.paymob.com/"
+    settings.PAYMOB_NOTIFICATION_URL = ""
+    settings.PAYMOB_REDIRECTION_URL = ""
+    settings.PAYMOB_TIMEOUT_SECONDS = 5
+    return settings
+
+
+class TestWithMockedPaymob:
+    @responses.activate
+    def test_creates_pending_rows_and_returns_payment_url(self, paymob_settings):
+        responses.add(
+            responses.POST, INTENTION_URL, json=INTENTION_RESPONSE, status=201
+        )
+        business = make_business()
+        plan = make_plan(price="250.00", currency="EGP")
+
+        url = initiate_subscription_payment(business, plan)
+
+        assert url == (
+            "https://eg.checkout.paymob.com/"
+            "?publicKey=egy_pk_test_public&clientSecret=egy_csk_test_abc123"
+        )
+        sub = Subscription.objects.get()
+        assert sub.status == "pending"
+        assert sub.business == business
+        assert sub.plan == plan
+        assert sub.gateway_reference == "4778239"
+        txn = Transaction.objects.get()
+        assert txn.subscription == sub
+        assert txn.status == "pending"
+        assert txn.transaction_id is None
+        assert txn.amount == Decimal("250.00")
+        assert txn.currency == "EGP"
+        # The gateway saw this payments.Subscription's reference.
+        body = json.loads(responses.calls[0].request.body)
+        assert body["special_reference"] == f"payments-sub-{sub.pk}"
+
+    @responses.activate
+    def test_http_error_marks_rows_failed_and_reraises(self, paymob_settings):
+        responses.add(responses.POST, INTENTION_URL, json={"detail": "x"}, status=500)
+        with pytest.raises(PaymentGatewayError):
+            initiate_subscription_payment(make_business(), make_plan())
+        sub = Subscription.objects.get()
+        txn = Transaction.objects.get()
+        assert sub.status == "failed"
+        assert txn.status == "failed"
+        assert sub.gateway_reference == ""
+
+    @responses.activate
+    def test_default_unconfigured_state_fails_cleanly(self, settings):
+        settings.PAYMOB_SECRET_KEY = ""
+        settings.PAYMOB_PUBLIC_KEY = ""
+        settings.PAYMOB_INTEGRATION_ID = ""
+        with pytest.raises(PaymentGatewayError, match="not configured"):
+            initiate_subscription_payment(make_business(), make_plan())
+        assert len(responses.calls) == 0
+        assert Subscription.objects.get().status == "failed"
+
+
+class TestGatewayIsSwappable:
+    def test_injected_fake_gateway(self):
+        business = make_business()
+        plan = make_plan()
+
+        url = initiate_subscription_payment(business, plan, gateway=FakeGateway())
+
+        sub = Subscription.objects.get()
+        assert url == f"https://fake-pay.example/checkout/{sub.pk}"
+        assert sub.gateway_reference == f"fake-{sub.pk}"
+        assert sub.status == "pending"
+        assert Transaction.objects.get().status == "pending"
+
+    @responses.activate
+    def test_fake_gateway_selected_by_setting_only(self, settings):
+        # No injection, no Paymob settings: only PAYMENT_GATEWAY changes.
+        settings.PAYMENT_GATEWAY = "payments.tests.fake_gateway.FakeGateway"
+        url = initiate_subscription_payment(make_business(), make_plan())
+        assert url.startswith("https://fake-pay.example/checkout/")
+        assert len(responses.calls) == 0  # nothing Paymob-shaped happened
+
+    def test_bad_gateway_result_is_a_failure(self):
+        class BrokenGateway(FakeGateway):
+            def initiate_payment(self, subscription):
+                return {"payment_url": ""}
+
+        with pytest.raises(PaymentGatewayError):
+            initiate_subscription_payment(
+                make_business(), make_plan(), gateway=BrokenGateway()
+            )
+        assert Subscription.objects.get().status == "failed"
+        assert Transaction.objects.get().status == "failed"
+
+    def test_calling_code_does_not_import_a_concrete_gateway(self):
+        tree = ast.parse(Path(services_module.__file__).read_text(encoding="utf-8"))
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                imported.add(node.module or "")
+            elif isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+        assert "payments.gateways.paymob" not in imported
+        assert not any(name.startswith("monetization") for name in imported)
+
+
+class TestBoundaries:
+    def test_never_creates_or_activates_featured_state(self):
+        business = make_business()
+        initiate_subscription_payment(business, make_plan(), gateway=FakeGateway())
+        assert FeaturedSubscription.objects.count() == 0
+        business.refresh_from_db()
+        assert business.is_featured is False
+
+    def test_amount_is_a_snapshot_of_the_plan(self):
+        plan = make_plan(price="250.00")
+        initiate_subscription_payment(make_business(), plan, gateway=FakeGateway())
+        plan.price = Decimal("999.00")
+        plan.save()
+        assert Transaction.objects.get().amount == Decimal("250.00")
+
+    def test_each_call_creates_a_new_attempt(self):
+        business = make_business()
+        plan = make_plan()
+        initiate_subscription_payment(business, plan, gateway=FakeGateway())
+        initiate_subscription_payment(business, plan, gateway=FakeGateway())
+        assert Subscription.objects.count() == 2
+        assert Transaction.objects.count() == 2
+'@
+
+Invoke-Step 'black payments (format)' { docker compose exec -T web black payments }
+Invoke-Step 'manage.py check' { docker compose exec -T web python manage.py check }
+Invoke-Step 'makemigrations --check --dry-run' { docker compose exec -T web python manage.py makemigrations --check --dry-run }
+Invoke-Step 'pytest payments/' { docker compose exec -T web pytest payments/ -v }
+Invoke-Step 'black --check payments' { docker compose exec -T web black --check payments }
+Invoke-Step 'flake8 payments config/settings/base.py' { docker compose exec -T web flake8 payments config/settings/base.py }
+Invoke-Step 'regression: pytest monetization/ feed/ search/ businesses/ analytics/' { docker compose exec -T web pytest monetization/ feed/ search/ businesses/ analytics/ -q }
+
+Write-Host ""
+Write-Host "STEP 3 DONE. Report back: payments summary (expected 53 passed), regression summary (P-088 baseline: 330 passed), black/flake8." -ForegroundColor Green
+
