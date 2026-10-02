@@ -11260,3 +11260,76 @@ curl.exe -s -o NUL -w "%{http_code}" -X POST "http://localhost:8095/api/v1/payme
 4) The reconciliation needs a gateway call (e.g. a Paymob transaction-inquiry endpoint). Add it to the `PaymentGateway` interface (`payments/gateways/base.py`) and implement it in `PaymobGateway` (P-089 pattern); the calling code must not import a concrete gateway. Research the endpoint in Paymob's docs first; it is not covered by P-089.
 5) Pending `payments.Subscription` rows created by `initiate_subscription_payment()` have `transaction_id = NULL` until a webhook arrives, and `gateway_reference` holds the Paymob order id (use it to query the gateway).
 6) P-091 remains subject to Section 7 item 3 for any live test; build against mocked responses first.
+
+## PART P-091 — Backend: Daily Payment Reconciliation Job — STATUS: COMPLETE ✅ (automated checks PASSED; live Paymob reconciliation PENDING Section 7 item 3)
+
+Executed in 3 steps (STEP 1 gateway layer, STEP 2 task, STEP 3 Beat schedule + tests + this entry). Backend only; no Flutter change, no migration.
+
+### What was implemented
+- `PaymentGateway.check_transaction_status(subscription) -> GatewayTransactionStatus | None` (abstract, `payments/gateways/base.py`), plus the frozen dataclass `GatewayTransactionStatus` whose fields mirror `payments.views.WebhookEvent` and whose `.status` property is `completed` / `failed` / `pending` (pending also covers voided/refunded = nothing final to record).
+- `PaymobGateway.check_transaction_status()`: `POST /api/auth/tokens` (api_key -> 60-min bearer token, not cached) then `POST /api/ecommerce/orders/transaction_inquiry` with `{"order_id": <gateway_reference>}` (or `{"merchant_order_id": "payments-sub-<pk>"}` when the reference is not numeric). HTTP 404 -> `None`; any other failure -> `PaymentGatewayError`. New helper `merchant_reference(subscription)` is now also what `build_intention_body()` uses for `special_reference`.
+- `payments/tasks.py`: Celery task `payments.reconcile_pending_transactions` (`ignore_result=True`), returns `{checked, processed, skipped, errors}`.
+- Beat entry `reconcile-pending-payments`: daily at 01:00 UTC (`CELERY_BEAT_SCHEDULE` in `config/settings/base.py`), after the 00:30 Featured expiry sweep (they do not interact).
+
+### Files created
+- `payments/tasks.py`
+- `payments/tests/test_gateway_status.py` (25 tests)
+- `payments/tests/test_reconciliation.py` (21 tests)
+
+### Files modified
+- `payments/gateways/base.py` (dataclass, status constants, abstract method)
+- `payments/gateways/paymob.py` (inquiry implementation, `merchant_reference`, `_parse_transaction_status`)
+- `payments/tests/fake_gateway.py` (`FakeGateway(status_result=...)`, records `status_calls`)
+- `config/settings/base.py` (Beat entry)
+- `PROJECT_PROGRESS.md` (this entry)
+
+### Important implementation details / deviations from the plan text
+1. **Paths**: the repo has no `apps/` prefix; real paths are `payments/...`.
+2. **No new `process_confirmed_transaction()`**: P-090 had already extracted the shared logic as `payments.webhooks.process_webhook_event(event)` (idempotency, row locking, amount/currency check, status updates, `activate_subscription()`). Reconciliation converts the gateway answer to the same `WebhookEvent` and calls that SAME function, so activation still has exactly one implementation. A second function would have been weaker (no amount check). `payments/tasks.py` never imports `activate_subscription` or `monetization`, never imports a concrete gateway, and never assigns a `.status` (enforced by an AST guard test).
+3. **Signature is `check_transaction_status(subscription)`, not `(transaction_id)`**: a locally-pending `Transaction` has `transaction_id = NULL` (the webhook fills it in, and the webhook is what went missing), so the gateway is queried by the subscription's `gateway_reference` (Paymob order id) / `payments-sub-<pk>`.
+4. Selection: `Transaction.status='pending'`, `created_at <= now - RECONCILIATION_GRACE_PERIOD (1 hour)` AND `subscription.status='pending'`; one gateway call per distinct subscription.
+5. Per outcome: completed/failed -> `process_webhook_event()`; still pending / voided / refunded / no gateway transaction -> left completely untouched (not even `updated_at`); `PaymentGatewayError` or a processing exception -> logged, counted in `errors`, batch continues, retried next day.
+6. Idempotency: processed rows leave `pending` so they are not selected again; a webhook/job race yields the duplicate outcome inside `process_webhook_event()` (no second activation).
+
+### Commands (Windows PowerShell, from `D:\Cavallo\scd-backend`, Docker stack up)
+```powershell
+docker compose exec -T web pytest payments/ -q
+docker compose exec -T web pytest payments/tests/test_reconciliation.py -v
+docker compose exec -T web python manage.py shell -c "from config.celery import app; app.loader.import_default_modules(); print('payments.reconcile_pending_transactions' in app.tasks)"
+docker compose exec -T web black --check payments
+docker compose exec -T web flake8 payments config/settings/base.py
+```
+
+### Tests
+- `test_gateway_status.py` (25): status mapping, order-id and merchant-reference lookup, bearer token, 404 -> None, auth/inquiry/network/JSON/missing-id/missing-key errors (no HTTP when the key is missing), abstract interface, FakeGateway.
+- `test_reconciliation.py` (21): missed webhook recovered (statuses, `FeaturedSubscription`, `is_featured`); activation called exactly once; goes through `process_webhook_event`; failed marked failed; amount mismatch rejected by the shared check; pending/voided/refunded/None untouched; within-grace never asks the gateway (`status_calls == []`); grace boundary +/- 1 min; already completed/failed not asked; second run activates nothing; one subscription with several pending rows asked once; one gateway error does not stop the batch; processing exception counted not raised; AST single-implementation guard; task registered; Beat entry daily 01:00.
+
+### Verification results (actually run)
+- STEP 1 on the real machine: 25 passed (new file), `payments/` 124 passed, black/flake8 clean.
+- STEP 2 on the real machine: task registered with Celery (True), `payments/` 124 passed, black/flake8 clean.
+- STEP 3: see the numbers reported by the STEP 3 script run (expected `payments/` 145 passed; full suite 1299 passed, 1 skipped).
+- Mutation checks done while building: setting the grace period to 0, or not skipping `pending` answers, makes the new tests fail.
+
+### Known issues / caveats
+- **Live Paymob test PENDING Section 7 item 3**: the auth + inquiry calls follow Paymob's documentation and mocked HTTP only; never run against a real account. When credentials exist, verify (a) that `merchant_order_id` / `order_id` inquiry works for orders created through the Intention API, and (b) WHICH transaction the inquiry returns when one order has several attempts (e.g. failed card then success): the job assumes the returned one is the final state.
+- `PAYMOB_API_KEY` (legacy API key) must be set in the environment for reconciliation; without it the gateway raises `PaymentGatewayError` and every run logs errors (nothing is changed).
+- Abandoned checkouts that never complete stay `pending` and are re-queried every day. A maximum age could be added if the volume ever matters (not built).
+- `config/settings/base.py` is not black-formatted in the repo (pre-existing); only flake8 is enforced for it.
+
+### Remaining work
+- P-092 (Web Dashboard API contract) and P-110 (Flutter Featured badge).
+- Live validation of reconciliation against real Paymob data (Section 7 item 3).
+
+### GitHub references
+- Backend repo: github.com/Ahmed2132003/cavallo-app, `main`. P-090 was commit `3315389`; the P-091 commit hash is pending on Ahmed's side (record it here after the push).
+- cavallo-mobile: no change in P-091.
+
+### PART P-091 STATUS: COMPLETE ✅ — Phase 15 payment-reliability half closed (P-092, P-110 remain)
+
+The shared `process_webhook_event()` function is now the single source of truth for transaction activation, used by both the real-time webhook path (P-090) and this daily safety-net job (P-091). This closes Phase 15's payment-reliability guarantee, analogous to Chat's persistence-first design in Phase 12.
+
+### Exact next starting point — Part P-092 (Web Dashboard API contract)
+1) `git pull`, then `docker compose exec web pytest payments/ -q` (expect **145 passed**) and optionally the full suite (expect **1299 passed, 1 skipped**).
+2) Read P-092 in `PROJECT_IMPLEMENTATION_MASTER_PLAN.docx`. The dashboard initiates payments through `payments.services.initiate_subscription_payment(business, plan)` (P-089); activation only ever happens through the webhook (P-090) or the reconciliation job (P-091), both via `process_webhook_event()` -> `monetization.services.activate_subscription()`.
+3) Do not add a third activation path and do not add a second expiry/deactivation path (P-088 owns expiry).
+4) Live Paymob testing still requires Section 7 item 3 (credentials, including `PAYMOB_API_KEY` for reconciliation).

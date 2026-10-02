@@ -267,6 +267,16 @@ CELERY_BEAT_SCHEDULE = {
         "task": "monetization.expire_featured_subscriptions",
         "schedule": crontab(hour=0, minute=30),
     },
+    # Part P-091. Daily payment reconciliation at 01:00 UTC
+    # (CELERY_TIMEZONE = "UTC"): safety net for Paymob webhooks that never
+    # arrived (payments pending > 1 hour are checked against the gateway
+    # and processed through the SAME code as the webhook). Runs after the
+    # 00:30 Featured expiry sweep; they do not interact. See
+    # payments/tasks.py.
+    "reconcile-pending-payments": {
+        "task": "payments.reconcile_pending_transactions",
+        "schedule": crontab(hour=1, minute=0),
+    },
 }
 
 # ---------------------------------------------------------------------------

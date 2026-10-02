@@ -33,7 +33,11 @@ from urllib.parse import urlencode
 import requests
 from django.conf import settings
 
-from payments.gateways.base import PaymentGateway, PaymentGatewayError
+from payments.gateways.base import (
+    GatewayTransactionStatus,
+    PaymentGateway,
+    PaymentGatewayError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +96,47 @@ def _to_signed_text(value) -> str:
     return str(value)
 
 
+# Legacy Accept API (auth + transaction inquiry), used by P-091 reconciliation.
+# https://developers.paymob.com/paymob-docs/developers (Transactions API)
+AUTH_TOKEN_PATH = "/api/auth/tokens"
+TRANSACTION_INQUIRY_PATH = "/api/ecommerce/orders/transaction_inquiry"
+
+
+def merchant_reference(subscription) -> str:
+    """
+    The special_reference we send when creating the intention. It comes
+    back as merchant_order_id, and is how a payment is found again.
+    """
+    return f"payments-sub-{subscription.pk}"
+
+
+def _flag(value) -> bool:
+    """Fail closed: only a real boolean True / the text "true" counts."""
+    return value is True or (isinstance(value, str) and value.lower() == "true")
+
+
+def _parse_transaction_status(data) -> GatewayTransactionStatus:
+    if not isinstance(data, dict) or data.get("id") in (None, ""):
+        raise PaymentGatewayError("Paymob inquiry answer has no transaction id")
+    order = data.get("order")
+    if not isinstance(order, dict):
+        order = {}
+    amount_cents = data.get("amount_cents")
+    if isinstance(amount_cents, bool) or not isinstance(amount_cents, int):
+        amount_cents = None
+    return GatewayTransactionStatus(
+        transaction_id=str(data["id"]),
+        order_id="" if order.get("id") is None else str(order["id"]),
+        merchant_order_id=str(order.get("merchant_order_id") or ""),
+        success=_flag(data.get("success")),
+        pending=_flag(data.get("pending")),
+        is_voided=_flag(data.get("is_voided")),
+        is_refunded=_flag(data.get("is_refunded")),
+        amount_cents=amount_cents,
+        currency=str(data.get("currency") or ""),
+    )
+
+
 class PaymobGateway(PaymentGateway):
     def _missing_settings(self):
         return [name for name in _REQUIRED_SETTINGS if not getattr(settings, name, "")]
@@ -132,7 +177,7 @@ class PaymobGateway(PaymentGateway):
             "billing_data": self._billing_data(subscription),
             # Comes back in the callback as merchant_order_id (P-090 can
             # use it to find the payments.Subscription).
-            "special_reference": f"payments-sub-{subscription.pk}",
+            "special_reference": merchant_reference(subscription),
         }
         if settings.PAYMOB_NOTIFICATION_URL:
             body["notification_url"] = settings.PAYMOB_NOTIFICATION_URL
@@ -207,3 +252,73 @@ class PaymobGateway(PaymentGateway):
             secret.encode("utf-8"), signed.encode("utf-8"), hashlib.sha512
         ).hexdigest()
         return hmac.compare_digest(expected, str(signature).lower())
+
+    def _auth_token(self) -> str:
+        """Short-lived (60 min) token for the legacy API. Not cached: the
+        reconciliation job runs once a day."""
+        url = settings.PAYMOB_BASE_URL.rstrip("/") + AUTH_TOKEN_PATH
+        try:
+            response = requests.post(
+                url,
+                json={"api_key": settings.PAYMOB_API_KEY},
+                timeout=settings.PAYMOB_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise PaymentGatewayError(f"Paymob auth request failed: {exc}") from exc
+
+        if response.status_code not in (200, 201):
+            logger.warning("Paymob auth failed: status=%s", response.status_code)
+            raise PaymentGatewayError(
+                f"Paymob auth returned HTTP {response.status_code}"
+            )
+        try:
+            token = response.json()["token"]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise PaymentGatewayError("Paymob auth response has no token") from exc
+        if not token or not isinstance(token, str):
+            raise PaymentGatewayError("Paymob auth response has an empty token")
+        return token
+
+    def check_transaction_status(self, subscription) -> GatewayTransactionStatus | None:
+        if not getattr(settings, "PAYMOB_API_KEY", ""):
+            raise PaymentGatewayError(
+                "Paymob is not configured, missing: PAYMOB_API_KEY"
+            )
+
+        # Prefer Paymob's own order id (stored as gateway_reference by
+        # P-089); fall back to our merchant reference.
+        reference = (subscription.gateway_reference or "").strip()
+        if reference.isdigit():
+            payload = {"order_id": int(reference)}
+        else:
+            payload = {"merchant_order_id": merchant_reference(subscription)}
+
+        token = self._auth_token()
+        url = settings.PAYMOB_BASE_URL.rstrip("/") + TRANSACTION_INQUIRY_PATH
+        try:
+            response = requests.post(
+                url,
+                json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=settings.PAYMOB_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            raise PaymentGatewayError(f"Paymob inquiry request failed: {exc}") from exc
+
+        if response.status_code == 404:
+            # Paymob knows no transaction for this order (never attempted).
+            return None
+        if response.status_code != 200:
+            logger.warning(
+                "Paymob transaction inquiry failed: status=%s body=%s",
+                response.status_code,
+                response.text[:300],
+            )
+            raise PaymentGatewayError(
+                f"Paymob transaction inquiry returned HTTP {response.status_code}"
+            )
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise PaymentGatewayError("Paymob inquiry answer is not JSON") from exc
+        return _parse_transaction_status(data)
