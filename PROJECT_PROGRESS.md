@@ -11335,3 +11335,98 @@ The shared `process_webhook_event()` function is now the single source of truth 
 2) Read P-092 in `PROJECT_IMPLEMENTATION_MASTER_PLAN.docx`. The dashboard initiates payments through `payments.services.initiate_subscription_payment(business, plan)` (P-089); activation only ever happens through the webhook (P-090) or the reconciliation job (P-091), both via `process_webhook_event()` -> `monetization.services.activate_subscription()`.
 3) Do not add a third activation path and do not add a second expiry/deactivation path (P-088 owns expiry).
 4) Live Paymob testing still requires Section 7 item 3 (credentials, including `PAYMOB_API_KEY` for reconciliation).
+
+## PART P-092 — Backend: Web Dashboard Integration, API Contract & Documentation — STATUS: COMPLETE ✅ (automated checks PASSED; live Paymob purchase PENDING Section 7 item 3)
+
+Executed in 3 steps (STEP 1 public Plan list, STEP 2 payment-initiation endpoint, STEP 3 Featured status on `/businesses/me/` + the contract document). Backend only; no Flutter change, no migration. The Web Dashboard itself and its tech stack remain OUT of this plan's scope (Section 7 item 1: still undecided, a separate future project).
+
+### What was implemented
+- `GET /api/v1/monetization/plans/` — public (`AllowAny`, `authentication_classes = []`, so a stale/garbage Authorization header is ignored), read-only, unpaginated JSON array of `{id, name, duration_days, price, currency}` ordered by `duration_days` then `id`. `price` is rendered as a string (`"250.00"`). Write methods return 405.
+- `POST /api/v1/payments/initiate/` — body `{"plan_id": <int>}`, JWT-authenticated, Business accounts only. Thin API surface over `payments.services.initiate_subscription_payment(business, plan)` (P-089). Returns `201 {"payment_url": "..."}`. Errors: 401 unauthenticated; 403 `PERMISSION_DENIED` for a Customer account; 404 `NOT_FOUND` for a Business account without a BusinessProfile; 400 `VALIDATION_ERROR` with `fields.plan_id` for missing/null/non-numeric/unknown plan; 503 `SERVICE_UNAVAILABLE` (generic message, gateway error text only logged, never returned) when the gateway fails or is unconfigured; 405 for GET.
+- `GET/POST/PATCH /api/v1/businesses/me/` responses now include two read-only fields: `is_featured` (bool) and `featured_until` (ISO-8601 UTC `expires_at` of the business's ACTIVE `FeaturedSubscription`, or `null`).
+- `WEB_DASHBOARD_API_CONTRACT.md` at the repo root: stack-agnostic, zero-context contract (conventions, error envelope and code table, CORS note, end-to-end flow, login/refresh/logout/auth-me, plans, initiate, `/businesses/me/`, the asynchronous-activation polling guidance, curl session, operator prerequisites, security notes).
+
+### Files created
+- `monetization/serializers.py` (`PlanSerializer`)
+- `monetization/views.py` (`PlanListView`)
+- `monetization/urls.py` (`app_name = "monetization"`, route `plans/`, name `plan-list`)
+- `monetization/tests/test_plan_list_api.py` (12 tests)
+- `payments/serializers.py` (`PaymentInitiateSerializer`: `plan_id` -> `Plan`)
+- `payments/initiate_views.py` (`PaymentInitiateView`, `PaymentServiceUnavailable`)
+- `payments/tests/test_initiate_api.py` (16 tests)
+- `businesses/tests/test_me_featured_fields.py` (9 tests)
+- `WEB_DASHBOARD_API_CONTRACT.md`
+
+### Files modified
+- `config/urls.py` (one include: `api/v1/monetization/` -> `monetization.urls`)
+- `payments/urls.py` (added `initiate/`, name `payment-initiate`; webhook route unchanged)
+- `core/exceptions.py` (one code-map entry: `service_unavailable` -> `SERVICE_UNAVAILABLE`; additive, same precedent as `conflict` in P-038)
+- `businesses/serializers.py` (appended `BusinessProfileOwnerSerializer`)
+- `businesses/views.py` (import + the 3 `Response(...)` of `BusinessProfileMeView` GET/POST/PATCH use the owner serializer; request validation still uses `BusinessProfileSerializer`)
+- `PROJECT_PROGRESS.md` (this entry)
+
+### Important implementation details / deviations from the plan text
+1. **Paths**: the repo has no `apps/` prefix; real paths are `payments/...`, `monetization/...`. The reverse relation is `user.business_profile` (not `businessprofile`).
+2. **The initiate view is NOT in `payments/views.py`** (the plan said "views.py additions"). `payments/views.py` is the P-090 webhook module and the guard test `TestBoundaries` in `payments/tests/test_webhook_idempotency.py` forbids it from importing anything from `monetization` and from using the names `is_active` / `is_featured` / `FeaturedSubscription`. The new view therefore lives in `payments/initiate_views.py`, wired from `payments/urls.py`. Its own boundary test (`test_module_boundaries`) asserts it imports no `monetization` module, no concrete gateway, and never touches `activate_subscription` / `FeaturedSubscription` / `is_featured` / `is_active`.
+3. **`monetization` had no `views.py`/`urls.py` and was not routed**: created and wired in `config/urls.py` under `api/v1/monetization/`. The `is_active=True` AST guard (`test_only_services_module_sets_is_active_true`) still passes; the new monetization files never assign it.
+4. **`BusinessProfileSerializer` was deliberately NOT changed.** It is shared with the public profile view (cached 5 min, P-030) and with Search results (`search/serializers.py`); adding subscription dates there would have exposed them publicly. The new `BusinessProfileOwnerSerializer(BusinessProfileSerializer)` is used only for the owner-only `/me/` outputs. A test pins that the public profile response contains neither `is_featured` nor `featured_until`.
+5. **IDOR**: the buyer is always `request.user.business_profile` (P-026 `/me/` pattern). `business_id`/`business` in the body are ignored (test `test_client_cannot_choose_the_buying_business`).
+6. **No activation path added.** Initiation creates only the pending `payments.Subscription`/`Transaction` (P-089). Activation still happens only via the P-090 webhook or the P-091 reconciliation job -> `process_webhook_event()` -> `monetization.services.activate_subscription()`. Test: after a successful initiate there is no `FeaturedSubscription` and `is_featured` stays `False`.
+7. **HTTP 201** for initiate (a pending payment record is created). 503 with a dedicated `SERVICE_UNAVAILABLE` code (not 500, not 502) so the dashboard can show "try again later"; with blank Paymob credentials (current state) this is what the endpoint returns.
+8. `featured_until` reads `expires_at` of the active row. It, like `is_featured`, can lag the real expiry by up to one run of the daily expiry job (P-088, 00:30 UTC).
+9. **Renewal semantics (documented in the contract, behaviour unchanged from P-086)**: buying while already Featured is allowed; `activate_subscription()` deactivates the old active row and creates a new one from "now". Remaining days of the old plan are NOT added on.
+10. Test-only note: in `test_me_featured_fields.py` the client authenticates with a freshly loaded `User` (like a real request), because `activate_subscription()` mutates the in-memory profile cached on the setup `User` instance, which would otherwise show stale `is_featured`. Production code was not affected.
+
+### Commands (Windows PowerShell, from `D:\Cavallo\scd-backend`, Docker stack up; API on host port 8095)
+```powershell
+docker compose exec -T web pytest monetization/tests/test_plan_list_api.py -v
+docker compose exec -T web pytest payments/tests/test_initiate_api.py -v
+docker compose exec -T web pytest businesses/tests/test_me_featured_fields.py -v
+docker compose exec -T web pytest businesses/ search/ payments/ monetization/ core/ -q
+docker compose exec -T web python manage.py check
+docker compose exec -T web python manage.py makemigrations --check --dry-run
+docker compose exec -T web black --check payments
+docker compose exec -T web black --check monetization/serializers.py monetization/views.py monetization/urls.py monetization/tests/test_plan_list_api.py businesses/serializers.py businesses/views.py businesses/tests/test_me_featured_fields.py
+docker compose exec -T web flake8 payments monetization/serializers.py monetization/views.py monetization/urls.py monetization/tests/test_plan_list_api.py businesses/serializers.py businesses/views.py businesses/tests/test_me_featured_fields.py core/exceptions.py config/urls.py
+docker compose exec -T web pytest -q
+curl.exe -i http://localhost:8095/api/v1/monetization/plans/
+```
+The three step scripts used to apply this part (`p092_step1.ps1`, `p092_step2.ps1`, `p092_step3.ps1`) are re-runnable and intentionally not committed (same as the p089-p091 scripts).
+
+### Tests (37 new)
+- `monetization/tests/test_plan_list_api.py` (12): URL name -> path; anonymous 200 + empty list; exact public fields; plain array (no pagination); ordering by duration then id; garbage Authorization header ignored; authenticated read; POST/PUT/PATCH/DELETE -> 405 with `METHOD_NOT_ALLOWED` (4); single DB query.
+- `payments/tests/test_initiate_api.py` (16): URL name; anonymous 401 and no rows; success (201, `payment_url`, pending `Subscription` + `Transaction` with price/currency snapshot, `gateway_reference`); never activates Featured; service called with `(profile, plan)`; client cannot choose the business; Customer 403; Business without profile 404; bad `plan_id` (missing / null / not-a-number / unknown) -> 400 with `fields.plan_id` and no rows (4); GET 405; gateway failure -> 503, no detail leak, rows marked `failed`; unconfigured Paymob -> 503 not 500; module-boundary AST guard.
+- `businesses/tests/test_me_featured_fields.py` (9): not featured -> `false`/`null`; active subscription -> `true` + exact `expires_at`; renewal reports the new expiry; deactivation clears both; another business's subscription never reported; POST response includes fields; PATCH response includes fields and ignores client writes to them; public profile does NOT expose them; existing `/me/` fields unchanged.
+
+### Verification results (actually run, real machine, Docker Compose)
+- STEP 1: `test_plan_list_api.py` **12 passed**; `monetization/` **95 passed**; `manage.py check` clean; black/flake8 clean on the new files.
+- STEP 2: `test_initiate_api.py` **16 passed**; `payments/ core/` **207 passed, 1 skipped** (all P-089/P-090/P-091 tests incl. the webhook boundary guards unchanged); `black --check payments` (30 files) clean; flake8 clean; `makemigrations --check` -> No changes detected.
+- STEP 3: `test_me_featured_fields.py` **9 passed** (first run had 1 failure caused by the stale-instance test artifact in detail 10; fixed in the test only); regression `businesses/ search/ payments/ monetization/ core/` **388 passed, 1 skipped**; flake8 clean; `black --check` on the two modified `businesses` files clean; `manage.py check` clean; no migration.
+- Manual: `GET /api/v1/monetization/plans/` on `http://localhost:8095` returned `200 []` (no Plan exists yet); an unauthenticated/invalid-token `POST /payments/initiate/` returned the 401 `AUTHENTICATION_FAILED` envelope.
+- The FULL backend suite was not re-run after P-092 (P-091 baseline: 1299 passed, 1 skipped; the 37 new tests should make it 1336 passed, 1 skipped).
+
+### Known issues / caveats
+- **Live purchase NOT verified (Section 7 item 3)**: no real Paymob credentials, so a real `201 {"payment_url"}` has not been seen against the real gateway, and no real-JWT end-to-end manual run of initiate was done. With blank credentials the endpoint returns 503 `SERVICE_UNAVAILABLE` (tested).
+- **No Plan exists until an admin creates one** in Django Admin (no seed). The dashboard sees `[]` until then.
+- **No payment-status endpoint** (not in the plan). The contract tells the dashboard to poll `GET /businesses/me/` until `is_featured` is true; activation is asynchronous (webhook, or the daily P-091 job as safety net, i.e. up to ~1 day).
+- **Post-payment return URL** is set by the operator via `PAYMOB_REDIRECTION_URL` (not by the dashboard). Must be pointed at the dashboard's polling page; otherwise the gateway shows its own page.
+- **CORS**: staging/prod need the dashboard's origin in `CORS_ALLOWED_ORIGINS` (dev allows all).
+- **No rate limit on `POST /payments/initiate/`** (the plan said "thin"). Each call creates 2 DB rows and one gateway call. A throttle scope would be a small follow-up if abuse matters.
+- Renewal replaces rather than stacks remaining days (P-086 behaviour; documented in the contract). Changing it would be a separate decision.
+- `monetization/` is not black-formatted in the repo (10 pre-existing files, P-086..P-088); only the new `monetization` files were checked. Deliberately not reformatted (would touch earlier parts). `payments/` stays black-enforced.
+- The tracked `celerybeat-schedule` file was deliberately not committed.
+
+### GitHub references
+- Backend repo: github.com/Ahmed2132003/cavallo-app, `main`, **commit `dd734c4`** ("P-092: Web Dashboard API contract ...", pushed as `080dd95..dd734c4`, 14 files changed, 1031 insertions, 8 deletions). P-091 was `e5d2a2a`.
+- cavallo-mobile: no change in P-092.
+
+### PART P-092 STATUS: COMPLETE ✅ — Phase 15 backend work finished (only P-110, the Flutter Featured badge, remains in Phase 15)
+
+The API contract is ready for a future Web Dashboard project to consume whenever Ahmed decides its tech stack (Section 7 item 1). No further backend work should be needed at that point unless real frontend integration reveals a genuine gap.
+
+### Exact next starting point — Part P-110 (Flutter: read-only "Featured" badge; closes Phase 15)
+1) In `D:\Cavallo\scd-backend`: `git pull`, then `docker compose exec -T web pytest businesses/ search/ payments/ monetization/ core/ -q` (expect **388 passed, 1 skipped**), optionally the full suite (expect **1336 passed, 1 skipped**).
+2) Work happens in the Flutter repo `cavallo-mobile` (`D:\Cavallo\social_commerce_app`). Read P-110 in `PROJECT_IMPLEMENTATION_MASTER_PLAN.docx` (dependencies P-045, P-061, P-062, P-065, P-087).
+3) **Verify first which responses actually expose `is_featured`**: Feed and Search use it only for ranking/cursors (P-087, `feed/services.py`); no feed/search/public-profile response serializer exposes it (the Search business result reuses `BusinessProfileSerializer`, which has no `is_featured`). Only the owner-only `/businesses/me/` returns it now (this part). If the public profile / search / feed cards need the badge, a small backend addition is required first (public profile is cached 5 min, P-030; note the cache would then need invalidation on activation/expiry, or accept up to 5 min lag). Decide this before writing Flutter code.
+4) Payment-initiation UI stays out of Flutter (ADR-006): the badge is display-only.
+5) After P-110, the master plan continues with Phase 16 starting at P-093 (Analytics Expansion), per the numbering note in P-110.
