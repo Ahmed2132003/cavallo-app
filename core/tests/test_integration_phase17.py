@@ -10,10 +10,11 @@ Follow / Engage / Rating in step 2 of the script series, Chat /
 Notifications / Featured in step 3).
 
 Deliberate notes:
-- "Admin verifies the business" is done with an ORM update of
+- "Admin verifies the business" is done by saving
   User.is_business_verified because verification is a Django Admin action
-  (no public API exists for it). The manual walkthrough covers the real
-  Django Admin toggle.
+  (no public API exists for it). It uses user.save() (what Django Admin
+  does), after priming the public-profile cache, to guard finding F-2.
+  The manual walkthrough still covers the real Django Admin toggle.
 - Products are NOT moderated in this codebase (products.models.Product is
   not a moderation.Moderatable). The test records this explicitly instead
   of assuming the plan's "moderator approves all three" applies to
@@ -25,6 +26,7 @@ Deliberate notes:
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.contrib.auth.models import Group
 from django.contrib.contenttypes.models import ContentType
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -42,6 +44,18 @@ User = get_user_model()
 pytestmark = pytest.mark.django_db
 
 PASSWORD = "Str0ng!Passw0rd#94"
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache():
+    # Redis is shared across test runs and the test DB restarts ids, so a
+    # stale "business_profile:{id}" entry (P-030, 5 min TTL) from an earlier
+    # run/test could be served here. LoginRateThrottle (5/min per IP, P-018)
+    # also lives in this cache and this test logs in 3 times. Same pattern as
+    # accounts/tests/test_auth.py.
+    cache.clear()
+    yield
+    cache.clear()
 
 
 def _png(name):
@@ -123,13 +137,24 @@ class TestPhase17Steps1To4:
         assert onboarding.json()["is_verified"] is False
 
         # ---- STEP 1c: Admin verifies the business --------------------------
+        # Prime the public-profile cache FIRST (P-030 caches it for 5 min);
+        # this is exactly what happens in real life when a customer opens
+        # the profile before the Admin verifies it.
+        before = APIClient().get(f"/api/v1/businesses/{business_id}/")
+        assert before.status_code == 200
+        assert before.json()["is_verified"] is False
+
+        # Django Admin saves the User through Model.save(), so mimic that
+        # (NOT QuerySet.update(), which would skip signals/cache invalidation).
         business_user = User.objects.get(email="p094-biz@example.com")
-        User.objects.filter(pk=business_user.pk).update(is_business_verified=True)
+        business_user.is_business_verified = True
+        business_user.save()
+
         public_profile = APIClient().get(f"/api/v1/businesses/{business_id}/")
         assert public_profile.status_code == 200
         assert public_profile.json()["is_verified"] is True, (
-            "SEAM GAP: is_business_verified toggled on User but not reflected "
-            "on the public BusinessProfile representation"
+            "SEAM GAP (F-2): is_business_verified toggled on User but the "
+            "cached public BusinessProfile still shows unverified"
         )
 
         # ---- STEP 2: Product, Post, Story ----------------------------------

@@ -33,7 +33,7 @@ live Paymob verification and live FCM push delivery.
   "Products: Hide / Remove"). Post and Story are moderated.
 
 ## 3. Bugs found and fixed
-None yet.
+- F-2 (real seam bug, FIXED): the public Business Profile (GET /api/v1/businesses/{id}/) is cached 5 min (P-030) and is_verified reads through to User.is_business_verified (P-024), but toggling verification in Django Admin never invalidated that cache, so the Verified badge lagged up to 5 minutes. Fix: new businesses/signals.py (post_save on User deletes business_profile:{id}), wired in businesses/apps.py ready(). Test now primes the cache before verifying and uses user.save() (what Admin does); the test also clears the cache per test (shared Redis + 5/min login throttle).
 
 ## 4. Open follow-up items
 None yet.
