@@ -410,7 +410,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         signal to receive() to broadcast nothing -- never an error.
         """
         try:
-            message = Message.objects.get(
+            # Part P-094 (finding F-7): only the RECIPIENT may acknowledge a
+            # message (P-069 is the "recipient-side" ack flow). Excluding the
+            # sender here makes a sender's own mark_delivered/mark_read a
+            # silent no-op, so nobody can fake a read receipt or zero out the
+            # recipient's unread_count for their own messages.
+            message = Message.objects.exclude(sender_id=self.scope["user"].id).get(
                 id=message_id, conversation_id=self.conversation_id
             )
         except Message.DoesNotExist:

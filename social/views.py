@@ -53,6 +53,23 @@ def _get_business_or_404(pk):
         raise NotFound("Business not found.")
 
 
+def _invalidate_home_feed_cache(user_id):
+    """
+    Part P-094 (finding F-5). HomeFeedView caches a user's first feed page
+    for 90 s under "feed:{user_id}:page1" (P-060). Following or unfollowing
+    changes that user's feed immediately (followed content moves to the
+    top), so the cached page must be dropped here or the user would keep
+    seeing the pre-follow order for up to 90 s. Direct cache.delete(), the
+    same sanctioned invalidation pattern as businesses/signals.py (P-030).
+    Imported lazily: feed.views pulls in feed.services -> social.models.
+    """
+    from django.core.cache import cache
+
+    from feed.views import _feed_home_cache_key
+
+    cache.delete(_feed_home_cache_key(user_id))
+
+
 class FollowToggleView(APIView):
     """
     POST   /api/v1/businesses/{id}/follow/ — follow (idempotent)
@@ -90,6 +107,7 @@ class FollowToggleView(APIView):
                 target_id=business.pk,
             )
 
+        _invalidate_home_feed_cache(request.user.id)
         return Response({"following": True})
 
     def delete(self, request, pk):
@@ -107,6 +125,7 @@ class FollowToggleView(APIView):
                     following_count=F("following_count") - 1
                 )
 
+        _invalidate_home_feed_cache(request.user.id)
         return Response({"following": False})
 
 
