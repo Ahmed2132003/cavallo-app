@@ -124,3 +124,11 @@ No Section 7 item is missing a corresponding placeholder as of this part.
 See the Flutter repo's own `CONFIG.md` for `API_BASE_URL` / environment (`--dart-define`)
 conventions — kept in that repo since it's consumed by `lib/core/config/app_config.dart`
 there, not by this backend.
+
+## Certificate pinning (deferred - P-100)
+
+Certificate pinning is **deliberately deferred** for the MVP (Architecture Section 15, Could-Have).
+It is not implemented anywhere, and the backend needs no setting for it.
+The reason is that there is no real production domain or TLS certificate yet
+(master plan Section 7 item 9). Full decision, prerequisites for adding it later and
+when to revisit: see `CERTIFICATE_PINNING_DECISION.md` in this repo root.
