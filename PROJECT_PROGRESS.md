@@ -11600,3 +11600,71 @@ Phase 17 (Cross-Feature Integration), starting with P-094: end-to-end integratio
 
 ### Edits to existing sections
 In the Part status index/table, add the row: `P-093 | Analytics Expansion: Rating & Catalog-Growth Metrics | Phase 16 | COMPLETE`, and set the Phase 16 summary line to "COMPLETE".
+
+
+## PART P-094 — End-to-End Integration Pass (Auth → Business → Content → Moderation → Feed → Search → Chat → Notifications → Featured) — STATUS: COMPLETE ✅ — CLOSED (automated checks PASSED on the real docker stack; live FCM / live Paymob / on-device tap NOT verified)
+
+### What was implemented
+All 12 walkthrough steps were executed against the real HTTP API (and, for chat, the real ASGI/WebSocket stack) as automated integration tests. The full result per step is in `INTEGRATION_TEST_REPORT_PHASE17.md` (repo root). Run in 4 script steps across 2 chats: steps 1-3 (walkthrough 1-10) in the first chat, step 4 (walkthrough 11-12 + closure) in the second.
+
+Seams proven: Register → Onboard → Admin verify → Product/Post/Story → Moderator approve → Customer → Search (text + filters) + Discover → Follow → Home feed (hybrid, fresh fetch) → Like/Comment/Save/Share → Rating (average_rating, min_rating search) → Chat (text, image, shared Product card) → fetch-on-open + live WebSocket delivery with sent→delivered→read → Follow/Chat notifications in the Notification Center with resolvable deep links → Admin-activated Featured ranking in Search, Home backfill and Discover, and its reversal.
+
+### Bugs found and FIXED (real seam bugs)
+- F-2: Admin verifying a business did not invalidate the 5-min cached public profile (Verified badge lagged). Fix: `businesses/signals.py` (post_save on User deletes `business_profile:{id}`), wired in `businesses/apps.py` ready().
+- F-3: multipart `POST /api/v1/products/` (what Flutter uses for the image) created every product with `is_active=False` (DRF treats a missing BooleanField in form data as False). Fix: `_FormSafeBooleanField` in `products/serializers.py`.
+- F-5: Follow/Unfollow did not invalidate the user's cached Home feed page 1 (90 s), so the feed kept the pre-follow order. Fix: `_invalidate_home_feed_cache()` in `social/views.py`.
+- F-7: any chat participant, including the SENDER, could ack their own message, faking a read receipt and zeroing the recipient's unread_count. Fix: `chat/consumers.py` `_apply_status_transition` lookup now excludes the connected user's own messages.
+- F-9 (step 4): Admin activating/deactivating Featured left the cached public profile's `is_featured` stale for up to 5 min (the flag is written with queryset `.update()`, no signals). Fix: `monetization/services.py` `_sync_business_featured_flag` now deletes the affected `business_profile:{id}` keys via `transaction.on_commit`. Every path (activate, deactivate, Admin actions, P-088 expiry job) goes through that function, so all are covered.
+
+### Findings NOT fixed (open follow-ups)
+- F-1 (plan vs code): Products are not moderated (`products.Product` is not `Moderatable`); only Post/Story/Reel are. Matches the product deck (Admin hides/removes products). The plan's "moderator approves all three" does not apply to Products.
+- F-4 (gap, needs a decision): public `BusinessProfileSerializer` does not expose `average_rating` / `ratings_count`; a profile screen cannot show the stars from `GET /api/v1/businesses/{id}/`. Small additive change, but other tests pin that serializer's field set.
+- F-6 (observation): `follower_count` on the cached public profile (5 min) is not invalidated by Follow/Unfollow, so the count can lag up to 5 min.
+- F-8 (accepted trade-off): Home feed page 1 stays cached 90 s per user (P-060), so after Featured is activated a user who already fetched the feed can see the old backfill order for up to 90 s. Fresh users, Discover and Search update immediately.
+
+### NOT verified by this part (carry forward honestly)
+- Live FCM push delivery (Firebase not configured; the push step is skipped by design in tests). Section 7 item 4.
+- Live Paymob (Section 7 item 3).
+- Tapping a notification on a real device. The deep-link mapping was checked statically against `lib/core/deep_link_resolver.dart` and `NotificationNavigator` (business_profile → `/business/:id` with the BusinessProfile id; chat_thread → lookup in the conversation list by Conversation id), and the backend lookups the app performs were replayed in tests.
+- The Admin "verify business" toggle in step 1 is an ORM `user.save()` in the test; the Featured activation in step 12 DOES go through the real Django Admin form. A manual browser check of the verify toggle is still worth doing once.
+
+### Files created
+- Backend (`cavallo-app`): `core/tests/test_integration_phase17.py` (4 tests, steps 1-10), `core/tests/test_integration_phase17_step4.py` (2 tests, steps 11-12), `businesses/signals.py`, `INTEGRATION_TEST_REPORT_PHASE17.md`, one-shot helper scripts `p094_step1.ps1`, `p094_step2.ps1`, `p094_step3.ps1` (repo root, can be deleted).
+
+### Files modified
+- `businesses/apps.py`, `products/serializers.py`, `social/views.py`, `chat/consumers.py`, `monetization/services.py`. No migrations. No Flutter changes (cavallo-mobile untouched by this part).
+
+### Important implementation details
+1. `conftest.py`'s autouse `dispatch_delay` fixture mocks `dispatch_notification.delay`. The step-4 test takes the exact kwargs a source (Follow view, `chat.tasks.notify_offline_recipient`) passed to `.delay(...)` and runs the real `dispatch_notification(**kwargs)` body synchronously, so the whole source → Notification row → API chain is real except the Celery transport and FCM.
+2. `chat.views.notify_offline_recipient` is patched by the `offline_notify` fixture (defined in `test_integration_phase17.py`, imported by the step-4 module) to avoid publishing to the shared Redis broker.
+3. The step-4 module imports helpers and fixtures from `core/tests/test_integration_phase17.py` (`_publish_business`, `_moderator_client`, `_register_and_login`, `_forced_client`, `_results`, `_feed_post_ids`, `offline_notify`, autouse `_clear_cache`). Renaming those breaks it.
+4. Redis is shared across test runs and the login throttle is 5/min per IP, so tests clear the cache per test and use `force_authenticate` for extra users.
+5. New repo pattern: cache invalidation that follows a `.update()` (no signals) uses `transaction.on_commit` + `cache.delete_many`, not a bare in-transaction delete.
+6. CRLF line endings preserved in the backend repo.
+
+### Commands (backend, from D:\Cavallo\scd-backend)
+- `docker compose exec web pytest core/tests/test_integration_phase17.py core/tests/test_integration_phase17_step4.py -v`
+- `docker compose exec web pytest monetization notifications businesses feed search social chat products -q`
+
+### Tests and verification results (real docker stack, confirmed)
+- `pytest core/tests/test_integration_phase17.py core/tests/test_integration_phase17_step4.py -v` = 6 passed (4 from steps 1-10, 2 from steps 11-12).
+- `pytest monetization notifications businesses feed search social chat products -q` = 727 passed.
+- Before the F-9 fix, the Featured test failed with the "SEAM GAP (F-9)" assertion; after the fix it passed.
+- flake8 and black clean on the new test module. `monetization/services.py` has a pre-existing missing trailing newline (W292), untouched.
+- Earlier steps (first chat, real docker stack): integration module 4 passed, `pytest chat` 86 passed, wider suite 397 passed after step 2.
+
+### GitHub references
+- Backend `cavallo-app` (main): `0b6cc5d` (steps 1-3), `e5cf258` (step 4: notifications + Featured integration tests, F-9 fix, report update; pushed). P-094 is fully committed and pushed.
+- Mobile `cavallo-mobile`: untouched by this part.
+
+### Remaining work
+None blocking for P-094. Open follow-ups: F-4 (decision needed), F-6, F-8 (both accepted unless the product wants instant counters/boost). Repo hygiene: delete `p094_step*.ps1`; `celerybeat-schedule` is tracked and should go in `.gitignore`.
+
+### Phase 17 status
+P-094 COMPLETE. Phase 17 continues with P-095.
+
+### Exact next starting point
+P-095: deep-link cross-navigation integration test. It is the systematic continuation of walkthrough step 11: cover EVERY notification type (moderation_approved/rejected, comment_on_content, new_like, new_share, new_rating, system_announcement) and every deep-link target (post_detail, reel_detail, product_detail, business_profile, chat_thread), reusing the `dispatch_notification`-driven pattern from `core/tests/test_integration_phase17_step4.py`. Note for P-095: `new_like`, `new_share` and `new_rating` may have no source that enqueues them yet (only moderation, follow, comment and chat were found calling the dispatcher); verify in the repository before writing tests, and record any missing source as a gap rather than assuming it.
+
+### Edits to existing sections
+In the Part status index/table, add the row: `P-094 | End-to-End Integration Pass | Phase 17 | COMPLETE`. Phase 17 summary line: "IN PROGRESS (P-094 complete, P-095 next)".
