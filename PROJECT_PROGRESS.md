@@ -11742,3 +11742,110 @@ Resolve D-1/D-2 (owner-facing view for unpublished Post/Reel opened from a notif
 
 ### Edits to existing sections
 In the Part status index/table, add the row: `P-095 | Deep-Link Cross-Navigation Integration Test | Phase 17 | VERIFIED - 2 OPEN DEFECTS`. Set the Phase 17 summary line to "IN PROGRESS (P-094 complete, P-095 verified with open defects D-1, D-2 and gap G-1; gate OPEN)".
+
+
+---
+
+## PART P-096 — Backend API Test Suite Completion (Full IDOR/Permission Sweep) — STATUS: COMPLETE ✅ (full backend suite green: 1643 passed, 1 skipped, 1 xfailed)
+
+Phase 18 (Testing & Quality Hardening). Backend only (`cavallo-app`). `cavallo-mobile` untouched. No migrations. Executed as 3 steps (one third each), each a PowerShell script run from `D:\Cavallo\scd-backend`.
+
+### Gate note (read this)
+P-095 ended with Phase 17 NOT complete (open defects D-1, D-2 and gap G-1) and said Phase 18 should not start until they were fixed or explicitly accepted. P-096 was nevertheless started. This part changes nothing about D-1, D-2 or G-1: they are still exactly as P-095 recorded them. If the owner accepted them, record that decision in the Phase 17 summary line.
+
+### What was implemented
+A systematic sweep of all 16 listed apps. For every endpoint it checks the three negative-path categories, adapted where an app's shape makes one inapplicable (adaptations are stated in each test file's docstring):
+1. Unauthenticated access (no token AND garbage token) returns 401 with the P-012 envelope, and nothing changes in the DB.
+2. Wrong-owner / non-participant attempts return 403 (or 404 where the project's convention is "not yours looks like not found") and make no change. "No change" is proven by re-reading the DB, not just the status code. Spoofed `user` / `owner` / `sender` / `status` fields in the body are ignored.
+3. Wrong-role / missing-capability attempts return 403.
+
+Adaptations: `search` is public (AllowAny), so it checks anonymous == authenticated results, no inactive/soft-deleted leakage, and hostile queries never give 500. `monetization` Plan list is public and read-only. `payments` webhook has no user, so the HMAC signature is the only gate (a business owner's JWT cannot replace it; a garbage Authorization header does not break a correctly signed webhook). `reports`, `feed`, `ratings`, `devices`, `notifications`, `analytics` have no capability-gated route (stated per file). Chat WebSocket auth was NOT re-tested: `chat/test_consumers.py` (P-067) already covers close codes 4001/4003.
+
+### The one production bug found and fixed
+`core/exceptions.py` (`custom_exception_handler`): DRF generic views (`get_object()`, e.g. `ProductDetailView`, `ProductVariantDetailView`) raise Django's `Http404`, which has no `get_codes()`, so the response was HTTP 404 but with envelope `code: "ERROR"` instead of `"NOT_FOUND"` (P-012 contract broken). Fix at the root: the handler now converts Django's `Http404` to DRF `NotFound` and Django's `PermissionDenied` to DRF `PermissionDenied` before reading the code. Status codes did not change; only the envelope `code` is now correct. Regression tests: `core/tests/test_exceptions_django_errors.py` (2 tests). Found by the products sweep (`test_variant_id_of_another_product_is_404_with_envelope_and_untouched`).
+
+### Coverage summary (new tests per app)
+| Step | App | New tests | File |
+|---|---|---|---|
+| 1 | businesses | 12 | `businesses/tests/test_permission_sweep.py` |
+| 1 | products | 19 | `products/tests/test_permission_sweep.py` |
+| 1 | moderation | 14 | `moderation/tests/test_permission_sweep.py` |
+| 1 | content | 22 | `content/tests/test_permission_sweep.py` |
+| 1 | stories | 8 | `stories/tests/test_permission_sweep.py` |
+| 1 | core (bug fix regression) | 2 | `core/tests/test_exceptions_django_errors.py` |
+| 2 | social | 32 | `social/tests/test_permission_sweep.py` |
+| 2 | reports | 10 | `reports/tests/test_permission_sweep.py` |
+| 2 | ratings | 7 | `ratings/tests/test_permission_sweep.py` |
+| 2 | feed | 7 | `feed/tests/test_permission_sweep.py` |
+| 2 | search | 5 | `search/tests/test_permission_sweep.py` |
+| 3 | chat | 35 | `chat/test_permission_sweep.py` |
+| 3 | notifications | 25 | `notifications/tests/test_permission_sweep.py` |
+| 3 | devices | 21 | `devices/tests/test_permission_sweep.py` |
+| 3 | analytics | 17 | `analytics/tests/test_permission_sweep.py` |
+| 3 | monetization | 19 | `monetization/tests/test_permission_sweep.py` |
+| 3 | payments | 13 | `payments/tests/test_permission_sweep.py` |
+| | **Total** | **268** | |
+
+Bugs found and fixed: 1 (above). Open findings (not changed, pinned by characterisation tests): S-1, S-2, S-3 below.
+
+### Open findings (decisions needed; evidence for P-099)
+- **S-1 (social):** Like and Save resolve their target with `model.objects` (any non-deleted row), while Comment, Share and Report require a PUBLISHED target. A user can like or save a pending/rejected post of another business by id, bumping its `likes_count`. Pinned by `test_finding_s1_like_on_unpublished_post_is_currently_accepted` (when fixed, change it to expect 404).
+- **S-2 (ratings):** nothing forbids a business owner from rating their OWN business, which can inflate `average_rating` (used by Search's `min_rating` filter). Needs a product decision. Pinned by `test_finding_s2_owner_can_currently_rate_their_own_business`.
+- **S-3 (chat):** `ConversationStartView` builds its 400/404 bodies by hand as `{"detail": ...}`, so they do NOT carry the P-012 envelope. Statuses are right and nothing leaks. Fixing it changes what Flutter already parses, so it needs a deliberate decision. Pinned by `test_finding_s3_start_errors_use_detail_not_the_p012_envelope`.
+
+### Accepted designs (documented in code, characterised by tests, not defects)
+- **D-1 (devices):** registering an FCM token that already exists MOVES it to the caller (phone changes hands / reinstall). Pinned by `test_design_d1_...`.
+- **D-2 (chat presence):** `GET /conversations/users/{id}/presence/` is readable by any authenticated user for any existing user id; only `user_id` + `is_online` are returned. Pinned by `test_design_d2_...`. Revisit if presence must be hidden from non-contacts.
+- **Observation (businesses):** the account-type guard on `POST /businesses/me/` and `/customers/me/` answers 400 VALIDATION_ERROR, not 403. This is the P-026 contract and is pinned as is.
+
+### Files created
+Tests: the 16 `test_permission_sweep.py` files in the table above (`chat/` has it at `chat/test_permission_sweep.py`, since chat keeps tests flat in the app folder), plus `core/tests/test_exceptions_django_errors.py`.
+Shared helpers: `core/tests/sweep_helpers.py` (step 1: `assert_error_envelope`, `assert_unauthenticated`, `assert_forbidden`, `assert_not_found`) and `core/tests/sweep_factories.py` (step 2: `make_user`, `make_business`, `make_post`, `client_for`, `garbage_token_client`).
+Throwaway scripts in the backend repo root (committed, safe to delete): `p096_step1.ps1`, `p096_step1_fix.ps1`, `p096_step2.ps1`, `p096_step3.ps1`.
+
+### Files modified
+`core/exceptions.py` (the fix above). `PROJECT_PROGRESS.md` (this section). No other production code changed.
+
+### Important implementation details
+1. `assert_error_envelope` requires `fields == {}`. Validation errors (400) populate `fields`, so those tests use a local `_assert_validation_error` helper (devices) instead.
+2. Payments: webhook tests must NOT set `settings.PAYMENT_GATEWAY` to `FakeGateway` (its `verify_webhook_signature` accepts the literal `"valid"`, which would bypass the real HMAC check). Only the initiate tests use the `fake_gateway` fixture; webhook tests use the real configured gateway and `PAYMOB_WEBHOOK_SECRET = SECRET`.
+3. The sweep tests import existing test helpers: `feed.tests.helpers` (feed), `search.tests.test_api` (`_names`, `make_business`, `make_category`, `make_customer`, `make_product`), `payments.tests.factories` and `payments.tests.webhook_helpers` (payments, monetization), and the `business` fixture plus autouse throttle reset from `reports/tests/conftest.py` (reports). Renaming any of them breaks the sweep.
+4. `ConversationListView` is not paginated (plain list body); `NotificationListView` and analytics are cursor-paginated (`results`).
+5. Chat websocket tests need `@pytest.mark.django_db(transaction=True)`; the new chat sweep is HTTP-only and does not.
+6. Check order convention confirmed across apps: 401, then 404 (no such object), then 403 (not the owner), then 400 (bad input). Analytics checks ownership BEFORE query validation, and the sweep pins that.
+
+### Commands
+From `D:\Cavallo\scd-backend`:
+- New sweep files only: `docker compose exec web pytest -k permission_sweep -q`
+- Per step 3 apps: `docker compose exec web pytest chat notifications devices analytics monetization payments -q`
+- Full suite (about 16 minutes): `docker compose exec web pytest -q`
+- Lint: `docker compose exec web black --check <files>` and `docker compose exec web flake8 <files>`
+
+### Tests and verification results (real docker stack)
+- Step 1: sweep run was 74 passed + 1 failed; the failure was the `core/exceptions.py` bug, fixed in `p096_step1_fix.ps1`, then green.
+- Step 2: first run 57 passed + 4 failed (test used `Report.Status.OPEN`, which does not exist; the model has `PENDING`/`REVIEWED`; test fixed, not production). Then `pytest reports/tests/test_permission_sweep.py` = 10 passed; `pytest social reports ratings feed search -q` = 457 passed.
+- Step 3: 130 passed (new files); `pytest chat notifications devices analytics monetization payments -q` = 655 passed, 1 xfailed.
+- **FINAL: `docker compose exec web pytest -q` = 1643 passed, 1 skipped, 1 xfailed** (975 s). The xfail is P-095's strict G-1 marker. black and flake8 clean on every new file.
+
+### NOT verified by this part
+Flutter tests (that is P-097). Live FCM and live Paymob (unchanged, Section 7 items 3 and 4). The sweep is HTTP-level; it does not replace the P-099 threat-model review.
+
+### Architecture decisions
+None new. This part enforces existing rules (object-level permission checks, Section 5 rule 10; error envelope, P-012) and fixes one violation of the envelope rule at its root.
+
+### GitHub references
+`cavallo-app`, branch `main`: `d91f7de` (step 1; its message says "update part 95" but it contains the step 1 sweep files and the `core/exceptions.py` fix), `6366175` (step 2), `5d06704` (step 3). `cavallo-mobile`: no changes.
+
+### Remaining work
+1. Decide S-1, S-2 and S-3 (fix, or accept and document), then flip the corresponding characterisation tests.
+2. Repo hygiene: delete `p095_step*_audit.txt` and `p096_step*.ps1`; add `celerybeat-schedule` to `.gitignore` (tracked and shows as modified).
+3. Phase 17 gate (D-1, D-2, G-1) from P-095 is still open unless the owner decided otherwise.
+
+### Handoff to P-099
+P-099 (threat-model verification) can cite this sweep as evidence for: IDOR / object-level authorization (every listed app), webhook spoofing (payments webhook gate, `test_permission_sweep.py` and P-090 tests), privilege self-grant (businesses: `verified` / `featured` read-only; monetization: no HTTP activation route), and error-envelope consistency (the `core/exceptions.py` fix). It must also list S-1, S-2 and S-3 as OPEN findings.
+
+### Exact next starting point
+P-097 (Flutter test-suite completion), the next part of Phase 18. Before it, resolve or explicitly accept the Phase 17 gate items from P-095.
+
+### Edits to existing sections
+In the Part status index/table, add the row: `P-096 | Backend API Test Suite Completion (Full IDOR/Permission Sweep) | Phase 18 | COMPLETE (268 tests added, 1 bug fixed, 3 open findings S-1/S-2/S-3)`. Set the Phase 18 summary line to "IN PROGRESS (P-096 complete; next P-097)".
