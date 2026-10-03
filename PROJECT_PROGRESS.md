@@ -11849,3 +11849,81 @@ P-097 (Flutter test-suite completion), the next part of Phase 18. Before it, res
 
 ### Edits to existing sections
 In the Part status index/table, add the row: `P-096 | Backend API Test Suite Completion (Full IDOR/Permission Sweep) | Phase 18 | COMPLETE (268 tests added, 1 bug fixed, 3 open findings S-1/S-2/S-3)`. Set the Phase 18 summary line to "IN PROGRESS (P-096 complete; next P-097)".
+
+
+`## PART P-096 — Backend API Test Suite Completion (Full IDOR/Permission Sweep) — STATUS: COMPLETE ✅ ...` (at the end of the file, after its "### Edits to existing sections" block)
+
+---
+
+## PART P-097 — Flutter Widget Tests for Story Viewer + Feed — STATUS: COMPLETE ✅ (stories + feed folders green: 94 passed; flutter analyze clean)
+
+Phase 18 (Testing & Quality Hardening). Mobile only (`cavallo-mobile`, local folder `D:\Cavallo\social_commerce_app`). Backend untouched. No production code changed: tests only. Executed as 3 steps (one third each), each a PowerShell script run from `D:\Cavallo\social_commerce_app`.
+
+### What was implemented
+Dedicated Architecture Section 25 coverage for the two named screens, as a closing pass over the P-050 (Story viewer) and P-061 (Feed) tests. Existing test files were NOT edited: each step adds one new, self-contained test file (own fakes), so P-050/P-061 tests are untouched. Before writing, the existing tests were inspected and only the gaps were added.
+
+**Story viewer** (`story_viewer_screen_section25_test.dart`, 7 new tests). Already covered by P-050 and left alone: tap-right advance, end-of-sequence close, tap-left on the first story, fast swipe-down, one 5s auto-advance, basic fresh-session check. Added: tap-left on a LATER story goes back and records that view again; tap-left on the first story really restarts the 5s timer; auto-advance chains through several stories; auto-advance on the LAST story closes the viewer; a slow drag and an upward fling do NOT dismiss; Section 13 isolation across two sequential REAL route sessions on one shared `ProviderContainer` (session 1 ends on the last story, session 2 starts at story 1 and then advances normally).
+
+**Feed, infinite scroll + pull-to-refresh** (`home_feed_screen_section25_test.dart`, 5 new tests). P-061's scroll test used a huge fling, which cannot show WHERE `loadMore()` fires. Added: no `loadMore()` below 80% of the extent and it fires above it, with the page-1 cursor; no extra request when `nextCursor` is null; repeated scrolling while a page is in flight sends ONE request, shows the bottom spinner and keeps loaded items on screen; refresh after a `loadMore` resets the cursor (next request uses the NEW cursor, never the old one); a failed refresh shows "Could not load your feed." and Retry recovers.
+
+**Feed, hybrid-algorithm UI consumption** (`home_feed_screen_hybrid_test.dart`, 3 new tests). Fixture = a realistic mixed response: followed tier first (post 30, reel 12, post 5), then backfill with the featured business first (reel 77, post 61, post 20, reel 3). Ids are deliberately non-monotonic, posts and reels interleaved, business 1 appears twice, business 5 has no public profile. Tests: all 7 items render exactly once in exactly the backend order (checked by vertical position), with 4 `PostCard` and 3 `ReelCard`, no re-sort, no filter, no de-duplication, and a failed business-name lookup does not remove a row; a followed→backfill boundary that falls across two pages is appended in order with page 1 untouched; a refreshed response in a different order is rendered in the new order.
+
+### Files created
+- `test/features/stories/presentation/story_viewer_screen_section25_test.dart`
+- `test/features/feed/presentation/home_feed_screen_section25_test.dart`
+- `test/features/feed/presentation/home_feed_screen_hybrid_test.dart`
+
+### Files modified
+None.
+
+### Helper scripts (not committed, untracked in the repo root)
+`p097_step1.ps1`, `p097_step2.ps1`, `p097_step3.ps1`, `p097_step3_fix.ps1`. Safe to delete (see Remaining work).
+
+### Important implementation details
+1. Feed items carry NO tier marker (`FeedItem` has only type/id/businessId), so the UI has nothing to sort or filter on. The hybrid tests therefore prove "render exactly what the backend ordered", using an unsorted fixture so any re-sort by id, type or business would fail.
+2. Story tests never use `pumpAndSettle()` while a `_StoryPlayer` is mounted (its 5s `AnimationController` would run out and pop first); the auto-advance pumps use 5s + 100ms because the ticker latches its start time on the first tick after `forward()`.
+3. Hybrid tests use a 400x6000 surface so every row is laid out at once (a lazy `ListView` would hide ordering bugs). On a viewport that tall, `RefreshIndicator` needs a drag of roughly 25% of the height, so a 300px fling never triggered the refresh (the first run of hybrid test 3 failed with the repository called once instead of twice). The test now calls the same `homeFeedProvider.notifier.refresh()` the indicator calls. The real pull gesture is covered by the 400x800 tests in `home_feed_screen_section25_test.dart` and by P-061.
+4. The two-page hybrid test triggers `loadMore()` through the provider for the same reason (a 6000px surface cannot scroll); the scroll-listener trigger is covered by the infinite-scroll tests.
+5. Lesson for future preflight checks in PowerShell scripts: `-like` treats `[...]` as a wildcard class, so a marker such as `state.items[index]` never matched and a script stopped wrongly. Use `.Contains()` for literal text.
+6. The GitHub copy of `cavallo-mobile` `main` was at P-082 (`29468f1`) while the real local code was far ahead, so file contents were read from a stale clone and every script carries a preflight that stops if the local file differs.
+
+### Architecture decisions
+None new. Reinforces Section 13 (viewer timer/index state is local, never a global provider) and Section 25 (these two screens get dedicated widget-test coverage).
+
+### Commands
+From `D:\Cavallo\social_commerce_app` (PowerShell):
+- `flutter test test/features/stories/ test/features/feed/`
+- `flutter analyze`
+
+### Tests and verification results (real run on the developer machine)
+- Step 1: new file 7 passed; `flutter test test/features/stories/` = 71 passed; `flutter analyze` = No issues found.
+- Step 2: new file 5 passed; `flutter test test/features/feed/` = 20 passed; analyze clean.
+- Step 3: first run 2 passed + 1 failed (the refresh gesture issue in detail 3, a test fault, not a production bug); after the fix new file 3 passed.
+- FINAL: `flutter test test/features/stories/ test/features/feed/` = 94 passed (71 stories + 23 feed); `flutter analyze` = No issues found.
+
+### NOT verified by this part
+- The full `flutter test` suite was not run, neither on branch `part-097` nor on `main` after the merge (see GitHub references).
+- Nothing was run on a real device or emulator; all checks are widget tests with fakes.
+- The content of Architecture Section 25 itself was not re-read; coverage was matched to the list in the P-097 scope.
+
+### Findings (not fixed, out of scope)
+- F-1 (unverified, likely): `HomeFeedScreen._onScroll` calls `loadMore()` without `await` or a catch, and `loadMore()` rethrows when the next page fails (after resetting `isLoadingMore`). A failed page 2 therefore probably surfaces as an unhandled async error instead of a snackbar/retry affordance. No test was written for it because it was not in the Section 25 list. Needs a decision: catch in the screen and show a retry, or document as accepted.
+- F-2 (already documented in P-061): a manual refresh briefly replaces the list with a full-screen loading indicator, and a failed refresh replaces the list with the error view. The new tests pin the failed-refresh behaviour as it is today.
+
+### GitHub references
+`cavallo-mobile`: feature commit `e46fb6a` on branch `part-097` (3 test files, 936 insertions). Merged into `main` with a merge commit; `main` moved `29468f1..6bdb205`. IMPORTANT: that merge brought in 58 files / about 8.6k lines beyond P-097, because `main` was still at P-082 and the earlier mobile work (analytics screen and shell, featured badge, own-stories list screen, business console routing and gate tests, the notification unpublished-content test, entity/DTO changes for `is_featured`) only lived on earlier local/part branches. So `main` now contains all of that. No `cavallo-app` (backend) changes in this part.
+
+### Phase gate note
+P-095 recorded Phase 17 as NOT complete (open defects D-1, D-2, gap G-1) with Phase 18 gated on them, and P-096 repeated that. P-097 was run anyway at the owner's instruction and changes nothing about D-1, D-2 or G-1. If the owner explicitly accepted them, record that decision in the Phase 17 summary line.
+
+### Remaining work
+1. Run the full `flutter test` on `main` (not run after the 58-file merge) and record the number.
+2. Decide F-1 (and optionally add a test once decided).
+3. Decide S-1, S-2, S-3 from P-096 and the Phase 17 gate items D-1, D-2, G-1.
+4. Repo hygiene: delete `p097_step*.ps1` (and `p096_step*.ps1`, `p095_step*_audit.txt` per earlier notes) from the repo roots; add `celerybeat-schedule` to the backend `.gitignore`.
+
+### Exact next starting point
+P-098 (manual E2E smoke script), the next quality-hardening part of Phase 18. Before it, run the full `flutter test` on `main` and settle or explicitly accept the open gate items above.
+
+### Edits to existing sections
+In the Part status index/table, add the row: `P-097 | Flutter Widget Tests for Story Viewer + Feed | Phase 18 | COMPLETE (15 tests added across 3 new files, 94 passing in stories+feed, no production code changed, 2 findings F-1/F-2)`. Set the Phase 18 summary line to "IN PROGRESS (P-096 and P-097 complete; next P-098)".
