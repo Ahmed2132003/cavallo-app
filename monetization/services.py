@@ -22,6 +22,7 @@ drift out of sync. Setting is_active=False directly elsewhere is
 discouraged for the same reason.
 """
 
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
@@ -58,6 +59,20 @@ def _sync_business_featured_flag(business_ids):
     BusinessProfile.all_objects.filter(pk__in=business_ids - featured_ids).update(
         is_featured=False, updated_at=now
     )
+
+    # Part P-094 (finding F-9): the public Business Profile response is
+    # cached for 5 minutes (P-030) and exposes is_featured, but the
+    # .update() calls above fire no signals, so the cached copy kept the
+    # old flag. Drop it once the surrounding transaction has COMMITTED
+    # (a concurrent reader could otherwise re-cache the old value between
+    # the delete and the commit). Same pattern as F-2's User signal.
+    def _drop_cached_profiles():
+        # Imported lazily: businesses.views imports a lot at module load.
+        from businesses.views import _business_profile_cache_key
+
+        cache.delete_many([_business_profile_cache_key(pk) for pk in business_ids])
+
+    transaction.on_commit(_drop_cached_profiles)
 
 
 def activate_subscription(business, plan):
