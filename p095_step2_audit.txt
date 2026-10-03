@@ -1,0 +1,1297 @@
+﻿P-095 STEP 2 AUDIT - 10/03/2026 04:37:58
+
+===== [1] notifications/models.py : choices + category mapping
+--- notifications\models.py  (lines 55-145 of 159)
+55:     Notification inherits TimestampedModel only (no SoftDeleteModel):
+56:     it is per-user bookkeeping, not user-facing content, so it is
+57:     never moderated or soft-hidden.
+58:     """
+59: 
+60:     class NotificationType(models.TextChoices):
+61:         CHAT_MESSAGE = "chat_message", "Chat message"
+62:         MODERATION_APPROVED = "moderation_approved", "Moderation approved"
+63:         MODERATION_REJECTED = "moderation_rejected", "Moderation rejected"
+64:         NEW_FOLLOWER = "new_follower", "New follower"
+65:         COMMENT_ON_CONTENT = "comment_on_content", "Comment on content"
+66:         NEW_LIKE = "new_like", "New like"
+67:         NEW_SHARE = "new_share", "New share"
+68:         NEW_RATING = "new_rating", "New rating"
+69:         SYSTEM_ANNOUNCEMENT = "system_announcement", "System announcement"
+70: 
+71:     class DeepLinkType(models.TextChoices):
+72:         BUSINESS_PROFILE = "business_profile", "Business profile"
+73:         POST_DETAIL = "post_detail", "Post detail"
+74:         REEL_DETAIL = "reel_detail", "Reel detail"
+75:         PRODUCT_DETAIL = "product_detail", "Product detail"
+76:         CHAT_THREAD = "chat_thread", "Chat thread"
+77: 
+78:     recipient = models.ForeignKey(
+79:         settings.AUTH_USER_MODEL,
+80:         on_delete=models.CASCADE,
+81:         related_name="notifications",
+82:     )
+83:     notification_type = models.CharField(
+84:         max_length=32,
+85:         choices=NotificationType.choices,
+86:     )
+87:     title = models.CharField(max_length=255)
+88:     body = models.TextField()
+89:     deep_link_type = models.CharField(
+90:         max_length=32,
+91:         choices=DeepLinkType.choices,
+92:         blank=True,
+93:         default="",
+94:     )
+95:     target_id = models.PositiveIntegerField(null=True, blank=True)
+96:     is_read = models.BooleanField(default=False)
+97: 
+98:     class Meta:
+99:         ordering = ["-created_at", "-id"]
+100:         indexes = [
+101:             # Supports the notification-center list: one user's
+102:             # notifications, newest first.
+103:             models.Index(
+104:                 fields=["recipient", "-created_at"],
+105:                 name="notif_recipient_created_idx",
+106:             ),
+107:             # Supports the unread-badge count for one user.
+108:             models.Index(
+109:                 fields=["recipient", "is_read"],
+110:                 name="notif_recipient_read_idx",
+111:             ),
+112:         ]
+113: 
+114:     def __str__(self):
+115:         return (
+116:             f"notification:{self.pk} {self.notification_type} "
+117:             f"-> user:{self.recipient_id}"
+118:         )
+119: 
+120: 
+121: class NotificationPreference(TimestampedModel):
+122:     """
+123:     Per-user, category-level notification toggles (one row per user).
+124: 
+125:     Deliberately a small set of categories, NOT one flag per
+126:     Notification.NotificationType - a per-type flag list would be far
+127:     too granular for a usable settings screen.
+128: 
+129:     Category -> notification_type mapping (consumed by the dispatch
+130:     task in Part P-079, not enforced here):
+131: 
+132:     * chat_notifications_enabled -> chat_message
+133:     * moderation_notifications_enabled -> moderation_approved,
+134:       moderation_rejected
+135:     * social_notifications_enabled -> new_follower, comment_on_content,
+136:       new_like, new_share, new_rating
+137: 
+138:     system_announcement has no toggle: it is always delivered.
+139: 
+140:     Rows are created automatically by the post_save signal in
+141:     notifications/signals.py (all toggles default True), so no
+142:     user-creation code path has to remember to create one.
+143:     """
+144: 
+145:     user = models.OneToOneField(
+
+===== [2] notifications folder listing
+admin.py
+apps.py
+models.py
+serializers.py
+services.py
+signals.py
+tasks.py
+urls.py
+views.py
+__init__.py
+
+===== [3] notifications/services.py (create_notification + validation)
+--- notifications\services.py  (lines 1-185 of 185)
+1: """
+2: Notification services (Part P-072 seam, completed in Part P-078).
+3: 
+4: Two INDEPENDENT functions live here, per architecture Sections 17/18:
+5: 
+6: * create_notification(...) - the in-app half. Writes one Notification
+7:   row. Never sends a push.
+8: * send_push_notification(...) - the push half. Sends a real FCM push
+9:   to every device token the recipient has registered (Part P-081).
+10:   Never writes a Notification row.
+11: 
+12: NEITHER FUNCTION MAY CALL THE OTHER. Part P-079's Celery task is the
+13: one place that calls both together for a real event. Keeping them
+14: apart means each is testable on its own, and a future admin-only
+15: "resend push without recreating the in-app notification" tool needs
+16: no refactor.
+17: """
+18: 
+19: import logging
+20: 
+21: import firebase_admin
+22: from django.conf import settings
+23: from firebase_admin import credentials, messaging
+24: 
+25: from devices.models import DeviceToken
+26: from notifications.models import Notification
+27: 
+28: logger = logging.getLogger(__name__)
+29: 
+30: 
+31: def create_notification(
+32:     recipient,
+33:     notification_type: str,
+34:     title: str,
+35:     body: str,
+36:     deep_link_type: str | None = None,
+37:     target_id: int | None = None,
+38: ) -> Notification:
+39:     """
+40:     Persist one in-app Notification for ``recipient`` and return it.
+41: 
+42:     ``notification_type`` answers WHY the notification exists;
+43:     ``deep_link_type`` + ``target_id`` answer WHERE tapping it
+44:     navigates (see the Notification model docstring). The two are
+45:     validated independently.
+46: 
+47:     Raises ValueError (nothing is written) when:
+48: 
+49:     * ``notification_type`` is not a Notification.NotificationType value;
+50:     * ``deep_link_type`` is given but is not a Notification.DeepLinkType
+51:       value;
+52:     * ``target_id`` is given without a ``deep_link_type`` (an id with no
+53:       screen type cannot be navigated to).
+54: 
+55:     ``deep_link_type=None`` means "navigates nowhere" and is stored as
+56:     an empty string.
+57: 
+58:     This function does NOT send a push and does NOT check the
+59:     recipient's NotificationPreference; both belong to Part P-079's
+60:     dispatch task.
+61:     """
+62:     if notification_type not in Notification.NotificationType.values:
+63:         raise ValueError(f"Unknown notification_type: {notification_type!r}")
+64: 
+65:     if deep_link_type in (None, ""):
+66:         if target_id is not None:
+67:             raise ValueError("target_id requires a deep_link_type.")
+68:         deep_link_type = ""
+69:     elif deep_link_type not in Notification.DeepLinkType.values:
+70:         raise ValueError(f"Unknown deep_link_type: {deep_link_type!r}")
+71: 
+72:     return Notification.objects.create(
+73:         recipient=recipient,
+74:         notification_type=notification_type,
+75:         title=title,
+76:         body=body,
+77:         deep_link_type=deep_link_type,
+78:         target_id=target_id,
+79:     )
+80: 
+81: 
+82: def _get_firebase_app():
+83:     """
+84:     Return the initialised Firebase Admin app, or None when FCM is not
+85:     configured (or fails to initialise).
+86: 
+87:     Reads ``settings.FCM_SERVICE_ACCOUNT_JSON_PATH``. While the Firebase
+88:     project does not exist (architecture Section 7 item 4) that setting
+89:     is blank and this returns None, so pushes are skipped with a log
+90:     line instead of raising. Once the service-account key exists, only
+91:     that setting changes - no code change.
+92: 
+93:     The app is created once and reused; ``firebase_admin.get_app()``
+94:     raises ValueError when no default app exists yet.
+95:     """
+96:     try:
+97:         return firebase_admin.get_app()
+98:     except ValueError:
+99:         pass
+100: 
+101:     key_path = getattr(settings, "FCM_SERVICE_ACCOUNT_JSON_PATH", "")
+102:     if not key_path:
+103:         return None
+104: 
+105:     try:
+106:         return firebase_admin.initialize_app(credentials.Certificate(key_path))
+107:     except Exception:
+108:         logger.exception(
+109:             "send_push_notification: could not initialise Firebase from %r.",
+110:             key_path,
+111:         )
+112:         return None
+113: 
+114: 
+115: def _stringify_data(data: dict) -> dict[str, str]:
+116:     """
+117:     FCM data payloads only accept string keys AND string values.
+118: 
+119:     ``None`` values are omitted (e.g. ``target_id`` for a notification
+120:     that navigates nowhere), so the client reads a missing key - or an
+121:     empty ``deep_link_type`` - as "no deep link".
+122:     """
+123:     return {str(key): str(value) for key, value in data.items() if value is not None}
+124: 
+125: 
+126: def send_push_notification(user_id: int, title: str, body: str, data: dict) -> None:
+127:     """
+128:     Push-sending seam. Signature frozen since Part P-072 (called by
+129:     notifications.tasks.dispatch_notification) - do not change it.
+130: 
+131:     Sends one FCM message to every DeviceToken owned by ``user_id``.
+132:     Does NOT create a Notification row; see create_notification().
+133: 
+134:     Never raises for an expected condition:
+135: 
+136:     * no registered tokens -> logged and skipped (a user who has not
+137:       granted permission / not opened the app yet);
+138:     * Firebase not configured -> logged and skipped;
+139:     * one token fails (invalid / expired) -> logged, and the remaining
+140:       tokens are still tried.
+141:     """
+142:     tokens = list(
+143:         DeviceToken.objects.filter(user_id=user_id).values_list("token", flat=True)
+144:     )
+145:     if not tokens:
+146:         logger.info("send_push_notification: user %s has no device tokens.", user_id)
+147:         return
+148: 
+149:     app = _get_firebase_app()
+150:     if app is None:
+151:         logger.warning(
+152:             "send_push_notification: Firebase is not configured; skipped push "
+153:             "to user %s (%d device(s)).",
+154:             user_id,
+155:             len(tokens),
+156:         )
+157:         return
+158: 
+159:     payload = _stringify_data(data)
+160:     notification = messaging.Notification(title=title, body=body)
+161:     sent = 0
+162:     for token in tokens:
+163:         message = messaging.Message(
+164:             token=token,
+165:             notification=notification,
+166:             data=payload,
+167:             android=messaging.AndroidConfig(priority="high"),
+168:         )
+169:         try:
+170:             messaging.send(message, app=app)
+171:             sent += 1
+172:         except Exception:
+173:             # Log a token PREFIX only: the full value is credential-like.
+174:             logger.exception(
+175:                 "send_push_notification: FCM send failed for user %s (token %s...).",
+176:                 user_id,
+177:                 token[:8],
+178:             )
+179: 
+180:     logger.info(
+181:         "send_push_notification: sent %d/%d push(es) to user %s.",
+182:         sent,
+183:         len(tokens),
+184:         user_id,
+185:     )
+
+===== [4] notifications/tasks.py (dispatch + category mapping)
+--- notifications\tasks.py  (lines 1-130 of 190)
+1: """
+2: Notification dispatch orchestration (Part P-079).
+3: 
+4: dispatch_notification is the ONE place that turns "something happened
+5: that a user should hear about" into (a) an in-app Notification row and
+6: (b) a push attempt, after checking the recipient's NotificationPreference.
+7: 
+8: ARCHITECTURE RULE (new required pattern, P-079): no other code may call
+9: notifications.services.create_notification() or
+10: notifications.services.send_push_notification() directly for a real
+11: event. Every source calls dispatch_notification.delay(...). Otherwise
+12: the preference check would have to be re-implemented (and could be
+13: forgotten) per source.
+14: 
+15: Preference suppression is all-or-nothing: if the recipient disabled the
+16: relevant category, NO Notification row is written and NO push is
+17: attempted. Suppressing only the push while still filling the in-app
+18: notification center would be a confusing half-measure.
+19: 
+20: ----------------------------------------------------------------------
+21: notification_type -> NotificationPreference field (the P-078 contract)
+22: ----------------------------------------------------------------------
+23: chat_message          -> chat_notifications_enabled
+24: moderation_approved   -> moderation_notifications_enabled
+25: moderation_rejected   -> moderation_notifications_enabled
+26: new_follower          -> social_notifications_enabled
+27: comment_on_content    -> social_notifications_enabled
+28: new_like              -> social_notifications_enabled
+29: new_share             -> social_notifications_enabled
+30: new_rating            -> social_notifications_enabled
+31: system_announcement   -> (no toggle: always delivered)
+32: 
+33: ----------------------------------------------------------------------
+34: IDEMPOTENCY - honest statement (Section 5 rule 8)
+35: ----------------------------------------------------------------------
+36: This task is NOT fully idempotent. "Create a new row" cannot be made
+37: idempotent without a dedup key, and none was built (deliberately: not
+38: over-engineered for the MVP). What IS done instead:
+39: 
+40: * Call sites enqueue this task exactly once per genuine event.
+41: * The task has no autoretry / retry configuration.
+42: * acks_late is left at Celery's default (False), so a worker crash
+43:   mid-task loses the notification rather than running it twice.
+44: * The push step is best-effort: if it raises, the error is logged and
+45:   swallowed AFTER the in-app row is written, so a push failure never
+46:   causes a Celery retry that would duplicate the row.
+47: 
+48: Accepted residual risk: a rare Celery double-execution (for example a
+49: broker redelivery) can create one duplicate Notification row and one
+50: duplicate push. That is a low-frequency, low-severity outcome for the
+51: MVP. If it ever matters, add a dedup key (event id) on Notification.
+52: """
+53: 
+54: import logging
+55: 
+56: from celery import shared_task
+57: from django.contrib.auth import get_user_model
+58: 
+59: from notifications.models import Notification, NotificationPreference
+60: from notifications.services import create_notification, send_push_notification
+61: 
+62: logger = logging.getLogger(__name__)
+63: 
+64: User = get_user_model()
+65: 
+66: # A notification_type that is NOT in this dict has no toggle and is
+67: # always delivered (today only system_announcement).
+68: NOTIFICATION_TYPE_TO_PREFERENCE_FIELD = {
+69:     Notification.NotificationType.CHAT_MESSAGE.value: "chat_notifications_enabled",
+70:     Notification.NotificationType.MODERATION_APPROVED.value: (
+71:         "moderation_notifications_enabled"
+72:     ),
+73:     Notification.NotificationType.MODERATION_REJECTED.value: (
+74:         "moderation_notifications_enabled"
+75:     ),
+76:     Notification.NotificationType.NEW_FOLLOWER.value: "social_notifications_enabled",
+77:     Notification.NotificationType.COMMENT_ON_CONTENT.value: (
+78:         "social_notifications_enabled"
+79:     ),
+80:     Notification.NotificationType.NEW_LIKE.value: "social_notifications_enabled",
+81:     Notification.NotificationType.NEW_SHARE.value: "social_notifications_enabled",
+82:     Notification.NotificationType.NEW_RATING.value: "social_notifications_enabled",
+83: }
+84: 
+85: 
+86: def _is_category_enabled(recipient_id, preference_field):
+87:     """
+88:     True unless the recipient explicitly disabled ``preference_field``.
+89: 
+90:     A missing NotificationPreference row is treated as "all enabled"
+91:     (the model defaults). The post_save signal and the 0002 backfill
+92:     make a missing row unexpected, but a missing row must never turn
+93:     into a crash or a silent block.
+94:     """
+95:     value = (
+96:         NotificationPreference.objects.filter(user_id=recipient_id)
+97:         .values_list(preference_field, flat=True)
+98:         .first()
+99:     )
+100:     return True if value is None else value
+101: 
+102: 
+103: @shared_task(name="notifications.dispatch_notification", ignore_result=True)
+104: def dispatch_notification(
+105:     recipient_id,
+106:     notification_type,
+107:     title,
+108:     body,
+109:     deep_link_type=None,
+110:     target_id=None,
+111: ):
+112:     recipient = User.objects.filter(pk=recipient_id).first()
+113:     if recipient is None:
+114:         logger.warning(
+115:             "dispatch_notification: recipient user id=%s does not exist; "
+116:             "nothing created, nothing sent (notification_type=%s).",
+117:             recipient_id,
+118:             notification_type,
+119:         )
+120:         return
+121: 
+122:     preference_field = NOTIFICATION_TYPE_TO_PREFERENCE_FIELD.get(notification_type)
+123:     if preference_field is not None and not _is_category_enabled(
+124:         recipient_id, preference_field
+125:     ):
+126:         logger.info(
+127:             "dispatch_notification: suppressed %s for user %s (%s is disabled).",
+128:             notification_type,
+129:             recipient_id,
+130:             preference_field,
+
+===== [5] moderation/services.py (moderation_approved / rejected)
+--- moderation\services.py  (lines 60-230 of 231)
+60:     specific case (e.g. the API layer mapping it to a 409 Conflict) or
+61:     the general validation error. It is raised instead of silently
+62:     re-processing or silently doing nothing, so a double submit (e.g. a
+63:     double-tap in a UI) can never create two audit-log entries for one
+64:     decision.
+65:     """
+66: 
+67: 
+68: def _lock_pending_queue_item(queue_item):
+69:     """
+70:     Re-read the queue row with a row lock and confirm it is still pending.
+71: 
+72:     MUST be called inside ``transaction.atomic()``: select_for_update()
+73:     only holds its lock for the life of the surrounding transaction.
+74: 
+75:     The status is checked on the freshly locked row, NOT on the
+76:     ``queue_item`` object the caller passed in. That object may be stale
+77:     (loaded before another request decided the same item), and trusting
+78:     it would let two concurrent requests both see "pending".
+79:     """
+80:     locked = ModerationQueue.objects.select_for_update().get(pk=queue_item.pk)
+81: 
+82:     if locked.status != ModerationQueue.Status.PENDING:
+83:         raise AlreadyDecidedError(
+84:             f"Moderation queue item {locked.pk} has already been "
+85:             f"decided (status: {locked.status}); it cannot be processed again."
+86:         )
+87: 
+88:     return locked
+89: 
+90: 
+91: def _get_moderatable_content(locked_queue_item):
+92:     """
+93:     Resolve the queue row's generic FK and confirm it is a live
+94:     Moderatable object. Raises ValidationError otherwise (for example,
+95:     the referenced object was hard-deleted).
+96:     """
+97:     content = locked_queue_item.content_object
+98: 
+99:     if content is None:
+100:         raise ValidationError(
+101:             f"Moderation queue item {locked_queue_item.pk} references a "
+102:             f"content object that no longer exists."
+103:         )
+104:     if not isinstance(content, Moderatable):
+105:         raise ValidationError(
+106:             f"Moderation queue item {locked_queue_item.pk} references an "
+107:             f"object that is not Moderatable."
+108:         )
+109: 
+110:     return content
+111: 
+112: 
+113: def _notify_content_owner(content, approved, reason=""):
+114:     """
+115:     Tell the content's business owner about the moderation decision
+116:     (Part P-079). Best-effort: never raises.
+117: 
+118:     Content without a ``business`` (for example P-036's throwaway
+119:     DummyContent) has nobody to notify, so nothing is sent.
+120:     """
+121:     try:
+122:         business = getattr(content, "business", None)
+123:         owner_id = getattr(business, "user_id", None)
+124:         if owner_id is None:
+125:             return
+126: 
+127:         model_name = content._meta.model_name
+128:         deep_link_type = _CONTENT_DEEP_LINKS.get(model_name)
+129:         if deep_link_type:
+130:             target_id = content.pk
+131:         else:
+132:             deep_link_type = "business_profile"
+133:             target_id = business.pk
+134: 
+135:         if approved:
+136:             notification_type = "moderation_approved"
+137:             title = f"Your {model_name} was approved"
+138:             body = f"Your {model_name} is now published."
+139:         else:
+140:             notification_type = "moderation_rejected"
+141:             title = f"Your {model_name} was rejected"
+142:             body = f"Reason: {reason}"
+143: 
+144:         enqueue_notification(
+145:             recipient_id=owner_id,
+146:             notification_type=notification_type,
+147:             title=title,
+148:             body=body,
+149:             deep_link_type=deep_link_type,
+150:             target_id=target_id,
+151:         )
+152:     except Exception:
+153:         logger.exception(
+154:             "Moderation notification could not be prepared for %r; the "
+155:             "moderation decision is unaffected.",
+156:             content,
+157:         )
+158: 
+159: 
+160: def approve(queue_item, reviewer):
+161:     """
+162:     Approve a pending queue item: the content object becomes
+163:     "published". Returns the created ModerationLog row.
+164: 
+165:     Raises AlreadyDecidedError if the item is not pending; in that case
+166:     nothing is changed and no log row is created.
+167:     """
+168:     with transaction.atomic():
+169:         locked = _lock_pending_queue_item(queue_item)
+170:         content = _get_moderatable_content(locked)
+171: 
+172:         locked.status = ModerationQueue.Status.APPROVED
+173:         locked.save()
+174: 
+175:         content.status = Moderatable.Status.PUBLISHED
+176:         content.save()
+177: 
+178:         log = ModerationLog.objects.create(
+179:             queue_item=locked,
+180:             reviewer=reviewer,
+181:             action=ModerationLog.Action.APPROVED,
+182:             reason="",
+183:         )
+184: 
+185:     # Only reached if the transaction committed: keep the caller's
+186:     # in-memory object in sync with the database.
+187:     queue_item.status = locked.status
+188: 
+189:     _notify_content_owner(content, approved=True)
+190:     return log
+191: 
+192: 
+193: def reject(queue_item, reviewer, reason):
+194:     """
+195:     Reject a pending queue item: the content object becomes "rejected".
+196:     Returns the created ModerationLog row.
+197: 
+198:     ``reason`` is required and must not be blank: a rejection without a
+199:     reason is useless to the business owner who receives it. The check
+200:     happens BEFORE any database access, so an invalid call touches
+201:     nothing.
+202: 
+203:     Raises ValidationError for a blank reason, and AlreadyDecidedError
+204:     if the item is not pending; in both cases nothing is changed, no log
+205:     row is created and no notification is sent.
+206:     """
+207:     cleaned_reason = (reason or "").strip()
+208:     if not cleaned_reason:
+209:         raise ValidationError("A rejection reason is required.")
+210: 
+211:     with transaction.atomic():
+212:         locked = _lock_pending_queue_item(queue_item)
+213:         content = _get_moderatable_content(locked)
+214: 
+215:         locked.status = ModerationQueue.Status.REJECTED
+216:         locked.save()
+217: 
+218:         content.status = Moderatable.Status.REJECTED
+219:         content.save()
+220: 
+221:         log = ModerationLog.objects.create(
+222:             queue_item=locked,
+223:             reviewer=reviewer,
+224:             action=ModerationLog.Action.REJECTED,
+225:             reason=cleaned_reason,
+226:         )
+227: 
+228:     queue_item.status = locked.status
+229: 
+230:     _notify_content_owner(content, approved=False, reason=cleaned_reason)
+
+===== [6] social/views.py : follow notification
+--- social\views.py  (lines 70-135 of 566)
+70:     cache.delete(_feed_home_cache_key(user_id))
+71: 
+72: 
+73: class FollowToggleView(APIView):
+74:     """
+75:     POST   /api/v1/businesses/{id}/follow/ — follow (idempotent)
+76:     DELETE /api/v1/businesses/{id}/follow/ — unfollow (idempotent)
+77:     """
+78: 
+79:     permission_classes = [IsAuthenticated]
+80: 
+81:     def post(self, request, pk):
+82:         business = _get_business_or_404(pk)
+83: 
+84:         with transaction.atomic():
+85:             _follow, created = Follow.objects.get_or_create(
+86:                 follower=request.user, business=business
+87:             )
+88:             if created:
+89:                 BusinessProfile.objects.filter(pk=business.pk).update(
+90:                     follower_count=F("follower_count") + 1
+91:                 )
+92:                 User.objects.filter(pk=request.user.pk).update(
+93:                     following_count=F("following_count") + 1
+94:                 )
+95: 
+96:         # Part P-079: notify the followed business's owner, only for a
+97:         # genuinely new follow (never on an idempotent repeat) and never
+98:         # for someone following their own business. Runs after the
+99:         # transaction.atomic() block has committed.
+100:         if created and business.user_id != request.user.id:
+101:             enqueue_notification(
+102:                 recipient_id=business.user_id,
+103:                 notification_type="new_follower",
+104:                 title="New follower",
+105:                 body="Someone started following your business.",
+106:                 deep_link_type="business_profile",
+107:                 target_id=business.pk,
+108:             )
+109: 
+110:         _invalidate_home_feed_cache(request.user.id)
+111:         return Response({"following": True})
+112: 
+113:     def delete(self, request, pk):
+114:         business = _get_business_or_404(pk)
+115: 
+116:         with transaction.atomic():
+117:             deleted_count, _ = Follow.objects.filter(
+118:                 follower=request.user, business=business
+119:             ).delete()
+120:             if deleted_count:
+121:                 BusinessProfile.objects.filter(
+122:                     pk=business.pk, follower_count__gt=0
+123:                 ).update(follower_count=F("follower_count") - 1)
+124:                 User.objects.filter(pk=request.user.pk, following_count__gt=0).update(
+125:                     following_count=F("following_count") - 1
+126:                 )
+127: 
+128:         _invalidate_home_feed_cache(request.user.id)
+129:         return Response({"following": False})
+130: 
+131: 
+132: from django.apps import apps
+133: from django.contrib.contenttypes.models import ContentType
+134: from rest_framework.exceptions import ValidationError
+135: 
+
+===== [7] social/views.py : comment notification
+--- social\views.py  (lines 370-450 of 566)
+370: 
+371:     DELIBERATELY NO MODERATION: the comment is live the instant this
+372:     view returns. Nothing here touches apps/moderation — Comment is the
+373:     one confirmed, documented exception to the Moderatable pattern (see
+374:     social/models.py's Comment docstring). Moderation is reactive only
+375:     (Report + auto-hide threshold, Part P-057 / social/services.py).
+376: 
+377:     comments_count uses the same pattern as P-052/P-053: an atomic
+378:     `.filter(pk=...).update(comments_count=F("comments_count") + 1)`
+379:     inside the same transaction.atomic() as the insert.
+380:     """
+381: 
+382:     permission_classes = [IsAuthenticated]
+383: 
+384:     def post(self, request):
+385:         serializer = CommentCreateSerializer(data=request.data)
+386:         serializer.is_valid(raise_exception=True)
+387:         data = serializer.validated_data
+388: 
+389:         content_type, model, obj = _resolve_comment_target(
+390:             data["content_type"], data["object_id"]
+391:         )
+392: 
+393:         with transaction.atomic():
+394:             comment = Comment.objects.create(
+395:                 user=request.user,
+396:                 content_type=content_type,
+397:                 object_id=obj.pk,
+398:                 text=data["text"],
+399:             )
+400:             model.objects.filter(pk=obj.pk).update(
+401:                 comments_count=F("comments_count") + 1
+402:             )
+403: 
+404:         # Part P-079: notify the content's owner (never for a comment on
+405:         # your own content). Runs after the transaction.atomic() block
+406:         # has committed; a failure here never affects the 201.
+407:         try:
+408:             owner_id = obj.business.user_id
+409:         except Exception:
+410:             owner_id = None
+411:         if owner_id is not None and owner_id != request.user.id:
+412:             enqueue_notification(
+413:                 recipient_id=owner_id,
+414:                 notification_type="comment_on_content",
+415:                 title="New comment",
+416:                 body=data["text"][:100],
+417:                 deep_link_type={"post": "post_detail", "reel": "reel_detail"}[
+418:                     data["content_type"]
+419:                 ],
+420:                 target_id=obj.pk,
+421:             )
+422: 
+423:         return Response(CommentSerializer(comment).data, status=201)
+424: 
+425: 
+426: # Reuses P-019's capability factory (same check the moderation API uses)
+427: # to decide whether a viewer may see hidden comments. Imported from
+428: # core.permissions, NOT from apps/moderation — Comment stays fully
+429: # decoupled from the moderation app.
+430: _CanModerateContent = HasCapability("can_moderate_content")
+431: 
+432: 
+433: class CommentListView(ListAPIView):
+434:     """
+435:     GET /api/v1/comments/?content_type=post|reel&object_id=<id> — public,
+436:     cursor-paginated (newest first) list of a Post/Reel's comments
+437:     (Part P-055).
+438: 
+439:     Visibility of auto-hidden comments (is_hidden=True):
+440:       - anonymous / unrelated authenticated user -> NOT included
+441:       - the comment's own author                 -> included
+442:       - holder of can_moderate_content           -> included
+443:     Soft-deleted comments are never included for anyone
+444:     (Comment.objects excludes them).
+445:     """
+446: 
+447:     permission_classes = [AllowAny]
+448:     serializer_class = CommentSerializer
+449:     pagination_class = StandardCursorPagination
+450: 
+
+===== [8] chat/tasks.py : chat notification
+--- chat\tasks.py  (lines 55-99 of 99)
+55:     return _SHARED_PUSH_BODIES.get(shared_content_type_label(message), "")
+56: 
+57: 
+58: @shared_task(name="chat.notify_offline_recipient", ignore_result=True)
+59: def notify_offline_recipient(message_id):
+60:     message = (
+61:         Message.objects.filter(pk=message_id)
+62:         .select_related("conversation", "sender")
+63:         .first()
+64:     )
+65:     if message is None:
+66:         # Race: message deleted/never existed by the time the task ran.
+67:         # Best-effort by design - log and stop, no exception to retry.
+68:         logger.warning(
+69:             "notify_offline_recipient: Message id=%s no longer exists; "
+70:             "skipping notification dispatch.",
+71:             message_id,
+72:         )
+73:         return
+74: 
+75:     recipient_participant = (
+76:         ConversationParticipant.objects.filter(conversation_id=message.conversation_id)
+77:         .exclude(user_id=message.sender_id)
+78:         .select_related("user")
+79:         .first()
+80:     )
+81:     if recipient_participant is None:
+82:         logger.warning(
+83:             "notify_offline_recipient: no other participant found for "
+84:             "conversation_id=%s (message_id=%s); skipping notification dispatch.",
+85:             message.conversation_id,
+86:             message_id,
+87:         )
+88:         return
+89: 
+90:     recipient = recipient_participant.user
+91: 
+92:     dispatch_notification.delay(
+93:         recipient_id=recipient.id,
+94:         notification_type="chat_message",
+95:         title="New message",
+96:         body=_push_body(message),
+97:         deep_link_type="chat_thread",
+98:         target_id=message.conversation_id,
+99:     )
+
+===== [9] ALL notification creation sites in non-test code
+chat\tasks.py:10: notifications.tasks.dispatch_notification, which checks the recipient's
+chat\tasks.py:16: dispatch_notification.
+chat\tasks.py:19: only enqueues dispatch_notification once. Re-running it for the same
+chat\tasks.py:33: from notifications.tasks import dispatch_notification
+chat\tasks.py:58: @shared_task(name="chat.notify_offline_recipient", ignore_result=True)
+chat\tasks.py:59: def notify_offline_recipient(message_id):
+chat\tasks.py:69: "notify_offline_recipient: Message id=%s no longer exists; "
+chat\tasks.py:83: "notify_offline_recipient: no other participant found for "
+chat\tasks.py:92: dispatch_notification.delay(
+chat\tasks.py:94: notification_type="chat_message",
+chat\tasks.py:97: deep_link_type="chat_thread",
+chat\tasks.py:98: target_id=message.conversation_id,
+chat\tests.py:208: with patch("chat.views.notify_offline_recipient.delay") as mock_delay:
+chat\tests.py:216: def test_send_message_does_not_dispatch_notification_when_recipient_online():
+chat\tests.py:235: with patch("chat.views.notify_offline_recipient.delay") as mock_delay:
+chat\views.py:26: from chat.tasks import notify_offline_recipient
+chat\views.py:201: مكان تالت. لو مش متصل، بنعمل notify_offline_recipient.delay(message.id)
+chat\views.py:264: notify_offline_recipient.delay(message.id)
+moderation\services.py:28: create_notification/send_push_notification from here). The notification
+moderation\services.py:45: # model_name -> deep_link_type (target_id = the content's own id).
+moderation\services.py:113: def _notify_content_owner(content, approved, reason=""):
+moderation\services.py:128: deep_link_type = _CONTENT_DEEP_LINKS.get(model_name)
+moderation\services.py:130: target_id = content.pk
+moderation\services.py:132: deep_link_type = "business_profile"
+moderation\services.py:133: target_id = business.pk
+moderation\services.py:136: notification_type = "moderation_approved"
+moderation\services.py:140: notification_type = "moderation_rejected"
+moderation\services.py:146: notification_type=notification_type,
+moderation\services.py:149: deep_link_type=deep_link_type,
+moderation\services.py:150: target_id=target_id,
+moderation\services.py:189: _notify_content_owner(content, approved=True)
+moderation\services.py:230: _notify_content_owner(content, approved=False, reason=cleaned_reason)
+notifications\models.py:10: The in-app half (this module + notifications.services.create_notification)
+notifications\models.py:83: notification_type = models.CharField(
+notifications\models.py:89: deep_link_type = models.CharField(
+notifications\models.py:95: target_id = models.PositiveIntegerField(null=True, blank=True)
+notifications\services.py:6: * create_notification(...) - the in-app half. Writes one Notification
+notifications\services.py:31: def create_notification(
+notifications\services.py:55: ``deep_link_type=None`` means "navigates nowhere" and is stored as
+notifications\services.py:68: deep_link_type = ""
+notifications\services.py:74: notification_type=notification_type,
+notifications\services.py:77: deep_link_type=deep_link_type,
+notifications\services.py:78: target_id=target_id,
+notifications\services.py:129: notifications.tasks.dispatch_notification) - do not change it.
+notifications\services.py:132: Does NOT create a Notification row; see create_notification().
+notifications\signals.py:22: def create_notification_preference_for_new_user(
+notifications\tasks.py:4: dispatch_notification is the ONE place that turns "something happened
+notifications\tasks.py:9: notifications.services.create_notification() or
+notifications\tasks.py:11: event. Every source calls dispatch_notification.delay(...). Otherwise
+notifications\tasks.py:60: from notifications.services import create_notification, send_push_notification
+notifications\tasks.py:103: @shared_task(name="notifications.dispatch_notification", ignore_result=True)
+notifications\tasks.py:104: def dispatch_notification(
+notifications\tasks.py:109: deep_link_type=None,
+notifications\tasks.py:110: target_id=None,
+notifications\tasks.py:115: "dispatch_notification: recipient user id=%s does not exist; "
+notifications\tasks.py:116: "nothing created, nothing sent (notification_type=%s).",
+notifications\tasks.py:127: "dispatch_notification: suppressed %s for user %s (%s is disabled).",
+notifications\tasks.py:137: notification = create_notification(
+notifications\tasks.py:142: deep_link_type=deep_link_type,
+notifications\tasks.py:143: target_id=target_id,
+notifications\tasks.py:162: "dispatch_notification: push failed for notification id=%s "
+notifications\tasks.py:171: Best-effort enqueue of dispatch_notification (Part P-079).
+notifications\tasks.py:174: instead of dispatch_notification.delay directly, so a broker outage
+notifications\tasks.py:182: dispatch_notification.delay(**kwargs)
+notifications\tasks.py:185: "enqueue_notification: could not enqueue dispatch_notification "
+notifications\tasks.py:186: "(notification_type=%s, recipient_id=%s); the triggering action "
+social\views.py:103: notification_type="new_follower",
+social\views.py:106: deep_link_type="business_profile",
+social\views.py:107: target_id=business.pk,
+social\views.py:414: notification_type="comment_on_content",
+social\views.py:417: deep_link_type={"post": "post_detail", "reel": "reel_detail"}[
+social\views.py:420: target_id=obj.pk,
+
+===== [10] LIKE flow (where likes are created)
+analytics\tasks.py:98: "total_likes_received": Like.objects.filter(
+content\serializers.py:10: def _get_is_liked(obj, context):
+content\serializers.py:24: return Like.objects.filter(
+content\serializers.py:238: def get_is_liked(self, obj):
+content\serializers.py:294: def get_is_liked(self, obj):
+social\models.py:43: class Like(TimestampedModel):
+social\views.py:147: def _resolve_like_target(content_type_str, object_id):
+social\views.py:167: class LikeToggleView(APIView):
+social\views.py:191: _like, created = Like.objects.get_or_create(
+social\views.py:211: deleted_count, _ = Like.objects.filter(
+
+===== [11] notifications/tests/test_sources.py : test names
+--- notifications\tests\test_sources.py  (lines 1-40 of 433)
+1: """
+2: Integration tests for the four notification sources (Part P-079):
+3: moderation decisions, follow, comment, and chat's offline fallback.
+4: 
+5: Each source is triggered for real; dispatch_delay (the autouse root
+6: conftest fixture) captures what it enqueued. The "contract" tests then
+7: feed the captured kwargs into the REAL dispatch_notification task body,
+8: proving (a) the source's notification_type / deep_link fields are
+9: accepted by create_notification's validation and (b) a disabled
+10: preference category suppresses BOTH the in-app row and the push.
+11: 
+12: Lives in the notifications app so the moderation/social packages keep
+13: their "never import each other's models" isolation intact.
+14: """
+15: 
+16: from types import SimpleNamespace
+17: from unittest.mock import patch
+18: from uuid import uuid4
+19: 
+20: import pytest
+21: from django.contrib.auth import get_user_model
+22: from django.contrib.contenttypes.models import ContentType
+23: from django.core.exceptions import ValidationError
+24: from django.core.files.uploadedfile import SimpleUploadedFile
+25: from django.urls import reverse
+26: from rest_framework.test import APIClient
+27: 
+28: from businesses.models import BusinessProfile
+29: from chat.models import Conversation, ConversationParticipant, Message
+30: from chat.tasks import notify_offline_recipient
+31: from content.models import Post, Reel
+32: from moderation import services
+33: from moderation.models import Moderatable, ModerationQueue
+34: from moderation.tests.testapp.models import DummyContent
+35: from notifications.models import Notification, NotificationPreference
+36: from notifications.tasks import dispatch_notification
+37: 
+38: User = get_user_model()
+39: 
+40: pytestmark = pytest.mark.django_db
+130: class TestModerationSource:
+131: def test_approve_post_notifies_owner(self, dispatch_delay):
+145: def test_reject_post_notifies_owner_with_reason(self, dispatch_delay):
+159: def test_approve_reel_uses_reel_detail(self, dispatch_delay):
+173: def test_content_without_detail_screen_links_to_business_profile(
+194: def test_second_decision_does_not_notify_again(self, dispatch_delay):
+205: def test_blank_reject_reason_does_not_notify(self, dispatch_delay):
+213: def test_content_without_business_sends_nothing(self, dispatch_delay):
+221: def test_broker_failure_does_not_break_the_decision(self, dispatch_delay):
+238: class TestFollowSource:
+239: def test_follow_notifies_business_owner(self, dispatch_delay):
+255: def test_repeat_follow_does_not_notify_again(self, dispatch_delay):
+264: def test_following_your_own_business_does_not_notify(self, dispatch_delay):
+272: def test_unfollow_does_not_notify(self, dispatch_delay):
+287: def test_broker_failure_does_not_break_follow(self, dispatch_delay):
+301: class TestCommentSource:
+302: def test_comment_on_post_notifies_owner(self, dispatch_delay):
+317: def test_comment_on_reel_uses_reel_detail(self, dispatch_delay):
+326: def test_long_comment_body_is_truncated_to_100_chars(self, dispatch_delay):
+333: def test_comment_on_own_content_does_not_notify(self, dispatch_delay):
+341: def test_broker_failure_does_not_break_comment(self, dispatch_delay):
+353: class TestSourcesAgainstRealTask:
+354: def test_moderation_notification_is_accepted_and_suppressible(self, dispatch_delay):
+373: def test_follow_notification_is_accepted_and_suppressible(self, dispatch_delay):
+389: def test_comment_notification_is_accepted_and_suppressible(self, dispatch_delay):
+405: def test_chat_offline_notification_is_accepted_and_suppressible(
+
+===== [12] MOBILE: notification_navigator.dart (full)
+--- lib\features\notifications\presentation\notification_navigator.dart  (lines 1-119 of 119)
+1: import 'dart:async';
+2: 
+3: import 'package:flutter_riverpod/flutter_riverpod.dart';
+4: import 'package:go_router/go_router.dart';
+5: 
+6: import '../../../core/deep_link_resolver.dart';
+7: import '../../../core/push/fcm_service.dart';
+8: import '../../../routing/app_router.dart';
+9: import '../../../routing/route_names.dart';
+10: import '../../chat/data/conversation_repository.dart';
+11: import '../../chat/domain/conversation.dart';
+12: import '../domain/app_notification.dart';
+13: 
+14: /// Part P-082 (STEP 3): the ONE place where a tapped notification becomes
+15: /// navigation. Every source goes through [open]:
+16: ///
+17: /// * a row in the notification center (via [openNotification]),
+18: /// * an in-app foreground banner (via [openPush]),
+19: /// * a background / terminated-state push tap (via [openPush]).
+20: ///
+21: /// The route itself always comes from P-080's `resolveDeepLink` — this
+22: /// class never builds a path by hand.
+23: ///
+24: /// ### The `chat_thread` special case
+25: /// `resolveDeepLink('chat_thread', 101)` answers `/chat/101`, but the
+26: /// router's P-074 redirect guard sends any `/chat/<id>` whose `extra` is
+27: /// not a [Conversation] to the chat list. So for chat notifications the
+28: /// [Conversation] is looked up first (the backend has no
+29: /// conversation-detail endpoint; the list endpoint returns every
+30: /// conversation in one plain array, same lookup as
+31: /// `ConversationRepository.startConversationWithBusiness`) and handed
+32: /// over as `extra`. If it cannot be found or the request fails, the user
+33: /// lands on the chat list instead of a broken screen.
+34: ///
+35: /// ### push vs go
+36: /// Real destinations use `push`, so Back returns to where the user was
+37: /// (for example the notification center). The `/home` fallback and the
+38: /// chat-list fallback use `go`: they are "somewhere sensible", not a
+39: /// destination worth a back stack.
+40: class NotificationNavigator {
+41:   NotificationNavigator({
+42:     required GoRouter router,
+43:     required ConversationRepository conversationRepository,
+44:   }) : _router = router,
+45:        _conversationRepository = conversationRepository;
+46: 
+47:   final GoRouter _router;
+48:   final ConversationRepository _conversationRepository;
+49: 
+50:   /// Navigates to what [deepLinkType] + [targetId] point at. Never throws.
+51:   ///
+52:   /// A blank [deepLinkType] means "this notification navigates nowhere"
+53:   /// (backend contract, P-078): nothing happens.
+54:   Future<void> open({
+55:     required String deepLinkType,
+56:     required int? targetId,
+57:   }) async {
+58:     if (deepLinkType.trim().isEmpty) return;
+59: 
+60:     final route = resolveDeepLink(deepLinkType, targetId);
+61: 
+62:     // Unknown type, or missing / invalid id.
+63:     if (route == deepLinkFallbackRoute) {
+64:       _router.go(route);
+65:       return;
+66:     }
+67: 
+68:     if (deepLinkType == DeepLinkTypes.chatThread) {
+69:       // `route != fallback` guarantees a valid, positive targetId.
+70:       final conversation = await _findConversation(targetId!);
+71:       if (conversation == null) {
+72:         _router.go(RouteNames.chatListPath);
+73:         return;
+74:       }
+75:       unawaited(_router.push<void>(route, extra: conversation));
+76:       return;
+77:     }
+78: 
+79:     unawaited(_router.push<void>(route));
+80:   }
+81: 
+82:   /// A row of the in-app notification center.
+83:   Future<void> openNotification(AppNotification notification) {
+84:     return open(
+85:       deepLinkType: notification.deepLinkType,
+86:       targetId: notification.targetId,
+87:     );
+88:   }
+89: 
+90:   /// A push message tapped in the foreground banner, or a background /
+91:   /// terminated-state tap (P-081's [PushDeepLink]).
+92:   Future<void> openPush(PushDeepLink link) {
+93:     return open(deepLinkType: link.type, targetId: link.targetId);
+94:   }
+95: 
+96:   Future<Conversation?> _findConversation(int conversationId) async {
+97:     try {
+98:       final page = await _conversationRepository.listConversations();
+99:       for (final conversation in page.results) {
+100:         if (conversation.id == conversationId) return conversation;
+101:       }
+102:       return null;
+103:     } catch (_) {
+104:       // Any failure (network, auth, parsing) degrades to the chat list.
+105:       return null;
+106:     }
+107:   }
+108: }
+109: 
+110: /// Reads the router and the conversation repository lazily, at first use.
+111: /// Safe to read from outside the widget tree's router subtree (the app
+112: /// root's banner / tap handlers), because [appRouterProvider] is a single
+113: /// persistent [GoRouter].
+114: final notificationNavigatorProvider = Provider<NotificationNavigator>((ref) {
+115:   return NotificationNavigator(
+116:     router: ref.watch(appRouterProvider),
+117:     conversationRepository: ref.watch(conversationRepositoryProvider),
+118:   );
+119: });
+
+===== [13] MOBILE: route_names.dart (paths)
+1: /// Part P-007 scope: centralized route name/path constants for the app's
+4: /// No feature should hardcode a path string or route name directly —
+6: /// `context.pushNamed(...)`) so a path can change in exactly one place
+9: /// ### Part P-028C1 addition — [businessOnboarding] / [businessOnboardingPath]
+19: /// Path chosen: `/business-onboarding` — kebab-case, consistent with
+20: /// this file's only other multi-word path ([businessConsolePath],
+26: /// ### Part P-028C2 addition — [businessProfileEdit] / [businessProfileEditPath]
+42: /// existing [businessConsolePath] segment rather than a new top-level
+44: /// once Phase 14 gives them a real navigational home; nesting the path
+46: /// paths themselves.
+48: /// [productForm] deliberately has NO `:id` path parameter, unlike
+50: /// own [productFormPath] doc for why.
+55: /// paths sit under one `/moderation` prefix on purpose: the router's
+66: /// exactly like [productListPath] / [contentListPath]. They are the
+69: /// constant keeps its name and path.
+108: /// endpoint), so there is deliberately no id to put in the path.
+117: /// See [productFormPath]'s own doc for why this takes no `:id`.
+122: /// `is_moderator` or `is_staff` — see [moderationPath].
+126: /// (`ModerationReviewScreen`). See [moderationReviewPath] for how the
+150: /// own upload flow. Not nested under [contentListPath]: Stories has
+154: /// segment rather than joining [contentListPath]'s.
+171: /// `StoryRingWidget` (this part). Uses [idParam], same convention as
+172: /// [businessProfilePath]/[productDetailPath]/[postDetailPath]/
+173: /// [reelDetailPath] — this router always names its path segment `id`
+175: /// id, exactly like [businessProfilePath]). Its natural entry point
+193: // --- Route paths (used inside GoRoute(path: ...)) ---
+194: static const String splashPath = '/';
+195: static const String loginPath = '/login';
+196: static const String registerPath = '/register';
+197: static const String homePath = '/home';
+198: static const String discoverPath = '/discover';
+199: static const String searchPath = '/search';
+200: static const String businessProfilePath = '/business/:id';
+201: static const String productDetailPath = '/product/:id';
+202: static const String chatListPath = '/chat';
+203: static const String chatThreadPath = '/chat/:id';
+204: static const String notificationsPath = '/notifications';
+205: static const String notificationPreferencesPath =
+207: static const String businessConsolePath = '/business-console';
+210: static const String businessOnboardingPath = '/business-onboarding';
+215: /// [businessProfilePath] (`/business/:id`): that route is the public
+217: /// `edit` indistinguishable from an id path-parameter value to
+219: /// still kebab-case, consistent with [businessConsolePath] and
+220: /// [businessOnboardingPath].
+221: static const String businessProfileEditPath = '/business-profile/edit';
+224: static const String productListPath = '/business-console/products';
+228: /// No `:id` segment: unlike [productDetailPath] (the PUBLIC,
+231: /// only from [productListPath]'s own screen, which already holds the
+240: static const String productFormPath = '/business-console/products/form';
+246: /// [homePath] no matter how they got here (`context.go`, a deep link,
+247: /// a restored location). The gate covers this path and everything
+249: static const String moderationPath = '/moderation';
+253: /// No `:id` segment, for the same reason as [productFormPath]: the
+258: /// sends it back to [moderationPath] rather than building a broken
+260: static const String moderationReviewPath = '/moderation/review';
+262: /// Part P-044 — see [contentList]. Nested under [businessConsolePath],
+263: /// same convention as [productListPath].
+264: static const String contentListPath = '/business-console/content';
+267: /// reasoning as [productFormPath] minus the edit-mode `extra:`
+269: static const String postFormPath = '/business-console/content/post';
+271: /// Part P-044 — see [reelForm]. Same shape as [postFormPath].
+272: static const String reelFormPath = '/business-console/content/reel';
+274: /// Part P-051 — see [storyForm]. Own segment under [businessConsolePath]
+275: /// rather than under [contentListPath] — see [storyForm]'s own doc for
+277: static const String storyFormPath = '/business-console/stories/create';
+279: /// Part P-045 — see [postDetail]. Uses [idParam], same convention as
+280: /// [productDetailPath]/[businessProfilePath]/[chatThreadPath].
+281: static const String postDetailPath = '/post/:id';
+283: /// Part P-045 — see [reelDetail]. Same shape as [postDetailPath].
+284: static const String reelDetailPath = '/reel/:id';
+287: static const String storyViewerPath = '/stories/:id';
+289: /// Part P-083 — see [storyList]. Sibling of [storyFormPath]
+291: /// [storyFormPath] is its own top-level route, not a child of this one.
+292: static const String storyListPath = '/business-console/stories';
+295: static const String businessAnalyticsPath = '/business-console/analytics';
+297: /// Path-parameter key shared by [businessProfilePath], [productDetailPath],
+298: /// [chatThreadPath], [postDetailPath], [reelDetailPath] and
+299: /// [storyViewerPath].
+300: static const String idParam = 'id';
+
+===== [14] MOBILE: router entries for post/reel/business/product/chat
+lib\routing\app_router.dart:56: ///   `businessProfile`, `productDetail`, `chatList`, `chatThread`,
+lib\routing\app_router.dart:58: ///   P-028C1), `businessProfileEdit` (Part P-028C2), and — since Part
+lib\routing\app_router.dart:75: ///   [businessProfileProvider] resolves to `AsyncData(null)` (a backend
+lib\routing\app_router.dart:80: ///   [businessProfileProvider] — see [_SessionRefreshListenable] below
+lib\routing\app_router.dart:83: ///   users must skip the BusinessProfile existence check entirely").
+lib\routing\app_router.dart:84: /// * While [businessProfileProvider] is still [AsyncLoading] (the very
+lib\routing\app_router.dart:87: ///   yet", per `BusinessProfileNotifier`'s own docstring), this gate
+lib\routing\app_router.dart:91: ///   [businessProfileProvider] settles.
+lib\routing\app_router.dart:113: /// [RouteNames.businessProfileEditPath] →
+lib\routing\app_router.dart:114: /// `BusinessProfileEditScreen`. The `redirect` callback, the
+lib\routing\app_router.dart:142: /// gate clause of its own, for the same reason [RouteNames.businessProfileEditPath]
+lib\routing\app_router.dart:212: /// Adds [RouteNames.postDetailPath] (`/post/:id`) → `PostDetailScreen`
+lib\routing\app_router.dart:213: /// and [RouteNames.reelDetailPath] (`/reel/:id`) → `ReelDetailScreen`,
+lib\routing\app_router.dart:214: /// placed right after [RouteNames.productDetailPath] since all three are
+lib\routing\app_router.dart:216: /// id" screen. Both read `state.pathParameters[RouteNames.idParam]`,
+lib\routing\app_router.dart:217: /// identically to `productDetail`'s builder immediately above them.
+lib\routing\app_router.dart:220: /// `productDetail` doesn't: both are ordinary protected routes, already
+lib\routing\app_router.dart:226: /// (unlike `productDetail`, which replaced an existing P-007 placeholder
+lib\routing\app_router.dart:255: /// [sessionProvider] (and, since Part P-028C1, [businessProfileProvider])
+lib\routing\app_router.dart:343: final businessProfile = ref.read(businessProfileProvider);
+lib\routing\app_router.dart:344: final noBusinessProfileYet = switch (businessProfile) {
+lib\routing\app_router.dart:349: // re-runs this callback once `businessProfileProvider` settles
+lib\routing\app_router.dart:353: if (noBusinessProfileYet &&
+lib\routing\app_router.dart:389: // --- Part P-074 STEP 3: chatThread needs its Conversation handed
+lib\routing\app_router.dart:394: if (_isChatThreadLocation(location) && state.extra is! Conversation) {
+lib\routing\app_router.dart:437: // the public `businessProfile` (`/business/:id`) route further
+lib\routing\app_router.dart:439: path: RouteNames.businessProfileEditPath,
+lib\routing\app_router.dart:440: name: RouteNames.businessProfileEdit,
+lib\routing\app_router.dart:441: builder: (context, state) => const BusinessProfileEditScreen(),
+lib\routing\app_router.dart:461: // from businessProfileEdit ("my own profile"), see that
+lib\routing\app_router.dart:463: path: RouteNames.businessProfilePath,
+lib\routing\app_router.dart:464: name: RouteNames.businessProfile,
+lib\routing\app_router.dart:466: final id = state.pathParameters[RouteNames.idParam]!;
+lib\routing\app_router.dart:467: return BusinessProfilePublicScreen(businessId: id);
+lib\routing\app_router.dart:471: path: RouteNames.productDetailPath,
+lib\routing\app_router.dart:472: name: RouteNames.productDetail,
+lib\routing\app_router.dart:474: final id = state.pathParameters[RouteNames.idParam]!;
+lib\routing\app_router.dart:475: return ProductDetailScreen(productId: id);
+lib\routing\app_router.dart:482: // (unlike productDetail's route above). No gate clause of its
+lib\routing\app_router.dart:483: // own — an ordinary protected route, same as productDetail.
+lib\routing\app_router.dart:484: path: RouteNames.postDetailPath,
+lib\routing\app_router.dart:485: name: RouteNames.postDetail,
+lib\routing\app_router.dart:487: final id = state.pathParameters[RouteNames.idParam]!;
+lib\routing\app_router.dart:488: return PostDetailScreen(postId: id);
+lib\routing\app_router.dart:492: // Part P-045. Same reasoning as postDetail immediately above.
+lib\routing\app_router.dart:493: path: RouteNames.reelDetailPath,
+lib\routing\app_router.dart:494: name: RouteNames.reelDetail,
+lib\routing\app_router.dart:496: final id = state.pathParameters[RouteNames.idParam]!;
+lib\routing\app_router.dart:497: return ReelDetailScreen(reelId: id);
+lib\routing\app_router.dart:502: // postDetail/reelDetail immediately above — no gate clause of
+lib\routing\app_router.dart:514: final id = state.pathParameters[RouteNames.idParam]!;
+lib\routing\app_router.dart:527: path: RouteNames.chatThreadPath,
+lib\routing\app_router.dart:528: name: RouteNames.chatThread,
+lib\routing\app_router.dart:533: return ChatThreadScreen(conversation: state.extra! as Conversation);
+lib\routing\app_router.dart:705: /// `chatThread` route resolves to (`location` is always the matched,
+lib\routing\app_router.dart:708: /// an exact-match against `RouteNames.chatThreadPath`).
+lib\routing\app_router.dart:709: bool _isChatThreadLocation(String location) {
+lib\routing\app_router.dart:719: /// [businessProfileProvider] — to `GoRouter`'s `refreshListenable`: the
+lib\routing\app_router.dart:728: /// ### Part P-028C1 addition — conditional, lazy subscription to [businessProfileProvider]
+lib\routing\app_router.dart:730: /// [businessProfileProvider] is an [AsyncNotifierProvider] whose `build()`
+lib\routing\app_router.dart:739: /// spec: "Customer-type users must skip the BusinessProfile existence
+lib\routing\app_router.dart:742: /// So this class only calls `ref.listen(businessProfileProvider, ...)`
+lib\routing\app_router.dart:744: /// signed-in [AccountType.business] user (via [_maybeSubscribeToBusinessProfile],
+lib\routing\app_router.dart:747: /// an already-subscribed [businessProfileProvider] on its very next run).
+lib\routing\app_router.dart:749: /// all, so [businessProfileProvider] is never even built for one —
+lib\routing\app_router.dart:767: _maybeSubscribeToBusinessProfile(next);
+lib\routing\app_router.dart:780: /// Guards against calling `ref.listen(businessProfileProvider, ...)`
+lib\routing\app_router.dart:782: bool _businessProfileSubscribed = false;
+lib\routing\app_router.dart:784: void _maybeSubscribeToBusinessProfile(AsyncValue<Object?> session) {
+lib\routing\app_router.dart:785: if (_businessProfileSubscribed) {
+lib\routing\app_router.dart:793: _businessProfileSubscribed = true;
+lib\routing\app_router.dart:795: businessProfileProvider,
+lib\routing\route_names.dart:12: /// has no businessOnboarding/businessProfileEdit entries yet — P-028C
+lib\routing\route_names.dart:15: /// P-028C scope. The edit-screen route (`businessProfileEdit`) is
+lib\routing\route_names.dart:26: /// ### Part P-028C2 addition — [businessProfileEdit] / [businessProfileEditPath]
+lib\routing\route_names.dart:29: /// actually builds the screen behind it (`BusinessProfileEditScreen`).
+lib\routing\route_names.dart:49: /// [productDetail]/[businessProfile]/[chatThread] — see this class's
+lib\routing\route_names.dart:80: static const String businessProfile = 'businessProfile';
+lib\routing\route_names.dart:81: static const String productDetail = 'productDetail';
+lib\routing\route_names.dart:83: static const String chatThread = 'chatThread';
+lib\routing\route_names.dart:93: /// user with no `BusinessProfile` yet is routed into by
+lib\routing\route_names.dart:98: /// screen (`BusinessProfileEditScreen`) — the entry P-028B's handoff
+lib\routing\route_names.dart:100: /// businessProfileEdit entries yet") and P-028C1 deliberately left
+lib\routing\route_names.dart:104: /// Distinct from [businessProfile], which is the PUBLIC, customer-
+lib\routing\route_names.dart:109: static const String businessProfileEdit = 'businessProfileEdit';
+lib\routing\route_names.dart:113: /// — resolved from `request.user`" reasoning as [businessProfileEdit].
+lib\routing\route_names.dart:157: /// Part P-045: the public, by-id Post detail screen (`PostDetailScreen`).
+lib\routing\route_names.dart:160: /// change, not a placeholder replacement like [productDetail]'s route
+lib\routing\route_names.dart:162: /// route, same as [productDetail].
+lib\routing\route_names.dart:163: static const String postDetail = 'postDetail';
+lib\routing\route_names.dart:165: /// Part P-045: the public, by-id Reel detail screen (`ReelDetailScreen`).
+lib\routing\route_names.dart:166: /// Same reasoning as [postDetail].
+lib\routing\route_names.dart:167: static const String reelDetail = 'reelDetail';
+lib\routing\route_names.dart:171: /// `StoryRingWidget` (this part). Uses [idParam], same convention as
+lib\routing\route_names.dart:172: /// [businessProfilePath]/[productDetailPath]/[postDetailPath]/
+lib\routing\route_names.dart:173: /// [reelDetailPath] — this router always names its path segment `id`
+lib\routing\route_names.dart:175: /// id, exactly like [businessProfilePath]). Its natural entry point
+lib\routing\route_names.dart:178: /// `StoryRingWidget` is placed, same precedent as [postDetail]/
+lib\routing\route_names.dart:179: /// [reelDetail] being reachable before Phase 10's Feed existed.
+lib\routing\route_names.dart:200: static const String businessProfilePath = '/business/:id';
+lib\routing\route_names.dart:201: static const String productDetailPath = '/product/:id';
+lib\routing\route_names.dart:203: static const String chatThreadPath = '/chat/:id';
+lib\routing\route_names.dart:212: /// Part P-028C2 — see [businessProfileEdit].
+lib\routing\route_names.dart:215: /// [businessProfilePath] (`/business/:id`): that route is the public
+lib\routing\route_names.dart:221: static const String businessProfileEditPath = '/business-profile/edit';
+lib\routing\route_names.dart:228: /// No `:id` segment: unlike [productDetailPath] (the PUBLIC,
+lib\routing\route_names.dart:279: /// Part P-045 — see [postDetail]. Uses [idParam], same convention as
+lib\routing\route_names.dart:280: /// [productDetailPath]/[businessProfilePath]/[chatThreadPath].
+lib\routing\route_names.dart:281: static const String postDetailPath = '/post/:id';
+lib\routing\route_names.dart:283: /// Part P-045 — see [reelDetail]. Same shape as [postDetailPath].
+lib\routing\route_names.dart:284: static const String reelDetailPath = '/reel/:id';
+lib\routing\route_names.dart:297: /// Path-parameter key shared by [businessProfilePath], [productDetailPath],
+lib\routing\route_names.dart:298: /// [chatThreadPath], [postDetailPath], [reelDetailPath] and
+lib\routing\route_names.dart:300: static const String idParam = 'id';
+
+===== [15] MOBILE: notification_center_screen.dart tap handling
+5: import 'package:go_router/go_router.dart';
+10: import '../../../routing/route_names.dart';
+13: import 'notification_navigator.dart';
+25: ///   [NotificationNavigator.openNotification], the single navigation
+27: ///   never builds a route itself.
+76: void _onTapNotification(AppNotification notification) {
+77: final navigator = ref.read(notificationNavigatorProvider);
+78: if (!notification.isRead) {
+85: unawaited(navigator.openNotification(notification));
+102: context.pushNamed<void>(RouteNames.notificationPreferences),
+111: onTap: _onTapNotification,
+127: required this.onTap,
+132: final ValueChanged<AppNotification> onTap;
+180: onTap: () => onTap(notification),
+192: required this.onTap,
+196: final VoidCallback onTap;
+201: final unread = !notification.isRead;
+209: onTap: onTap,

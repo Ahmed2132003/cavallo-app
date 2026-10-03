@@ -1,0 +1,1132 @@
+﻿P-095 STEP 4 AUDIT - 10/03/2026 04:47:20
+
+===== [1] root conftest.py (dispatch_delay fixture)
+--- conftest.py  (lines 1-29 of 29)
+1: """
+2: Project-wide pytest fixtures (Part P-079).
+3: 
+4: pytest runs against config.settings.test, which inherits dev's real
+5: Redis broker and does NOT enable Celery eager mode. Without this
+6: fixture, any test that triggers a notification source (moderation
+7: decision, follow, comment, chat offline fallback) would publish a real
+8: dispatch_notification message to Redis, and the running docker worker
+9: could execute it against the dev database.
+10: 
+11: The autouse fixture below replaces dispatch_notification.delay with a
+12: mock for EVERY test. Tests that want to assert a source dispatched a
+13: notification request the fixture by name (dispatch_delay) and assert on
+14: it. Tests that exercise the task body call
+15: notifications.tasks.dispatch_notification(...) directly, which this
+16: patch does not affect.
+17: """
+18: 
+19: from unittest import mock
+20: 
+21: import pytest
+22: 
+23: 
+24: @pytest.fixture(autouse=True)
+25: def dispatch_delay():
+26:     from notifications.tasks import dispatch_notification
+27: 
+28:     with mock.patch.object(dispatch_notification, "delay") as mocked_delay:
+29:         yield mocked_delay
+
+===== [2] notifications/tests/test_sources.py (helpers + moderation/comment tests)
+--- notifications\tests\test_sources.py  (lines 40-200 of 433)
+40: pytestmark = pytest.mark.django_db
+41: 
+42: 
+43: # ---------------------------------------------------------------- helpers
+44: 
+45: 
+46: def _make_user(prefix, account_type="customer"):
+47:     unique = uuid4().hex[:10]
+48:     return User.objects.create_user(
+49:         username=f"{prefix}-{unique}",
+50:         email=f"{prefix}-{unique}@example.com",
+51:         password="testpass123",
+52:         account_type=account_type,
+53:     )
+54: 
+55: 
+56: def _make_business(name="Acme Trading"):
+57:     return BusinessProfile.objects.create(
+58:         user=_make_user("owner", "business"),
+59:         business_name=name,
+60:         business_type=BusinessProfile.BUSINESS_TYPE_TRADER,
+61:         country="Egypt",
+62:         city="Cairo",
+63:     )
+64: 
+65: 
+66: def _publish(obj):
+67:     fields = {"status": Moderatable.Status.PUBLISHED}
+68:     if isinstance(obj, Reel):
+69:         fields["processing_status"] = Reel.ProcessingStatus.READY
+70:     type(obj).objects.filter(pk=obj.pk).update(**fields)
+71:     obj.refresh_from_db()
+72:     return obj
+73: 
+74: 
+75: def _make_post(business=None, published=False):
+76:     post = Post.objects.create(business=business or _make_business(), caption="Cap")
+77:     return _publish(post) if published else post
+78: 
+79: 
+80: def _make_reel(business=None, published=False):
+81:     reel = Reel.objects.create(
+82:         business=business or _make_business(),
+83:         caption="Reel cap",
+84:         video=SimpleUploadedFile(
+85:             "raw.mp4",
+86:             b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom",
+87:             content_type="video/mp4",
+88:         ),
+89:     )
+90:     return _publish(reel) if published else reel
+91: 
+92: 
+93: def _queue_item_for(content):
+94:     item, _ = ModerationQueue.objects.get_or_create(
+95:         content_type=ContentType.objects.get_for_model(content),
+96:         object_id=content.pk,
+97:     )
+98:     return item
+99: 
+100: 
+101: def _run_task_with(call, **preferences):
+102:     """Run the REAL dispatch_notification body with a captured call."""
+103:     recipient = User.objects.get(pk=call.kwargs["recipient_id"])
+104:     if preferences:
+105:         NotificationPreference.objects.filter(user=recipient).update(**preferences)
+106:     with patch("notifications.tasks.send_push_notification") as mock_push:
+107:         dispatch_notification(**call.kwargs)
+108:     return recipient, mock_push
+109: 
+110: 
+111: def _follow(user, business):
+112:     client = APIClient()
+113:     client.force_authenticate(user=user)
+114:     return client.post(reverse("social:business-follow", kwargs={"pk": business.pk}))
+115: 
+116: 
+117: def _comment(user, content_type, obj, text="Nice one"):
+118:     client = APIClient()
+119:     client.force_authenticate(user=user)
+120:     return client.post(
+121:         reverse("comments:collection"),
+122:         {"content_type": content_type, "object_id": obj.pk, "text": text},
+123:         format="json",
+124:     )
+125: 
+126: 
+127: # ------------------------------------------------------------- moderation
+128: 
+129: 
+130: class TestModerationSource:
+131:     def test_approve_post_notifies_owner(self, dispatch_delay):
+132:         post = _make_post()
+133: 
+134:         services.approve(_queue_item_for(post), _make_user("mod"))
+135: 
+136:         dispatch_delay.assert_called_once_with(
+137:             recipient_id=post.business.user_id,
+138:             notification_type="moderation_approved",
+139:             title="Your post was approved",
+140:             body="Your post is now published.",
+141:             deep_link_type="post_detail",
+142:             target_id=post.pk,
+143:         )
+144: 
+145:     def test_reject_post_notifies_owner_with_reason(self, dispatch_delay):
+146:         post = _make_post()
+147: 
+148:         services.reject(_queue_item_for(post), _make_user("mod"), "  Blurry image ")
+149: 
+150:         dispatch_delay.assert_called_once_with(
+151:             recipient_id=post.business.user_id,
+152:             notification_type="moderation_rejected",
+153:             title="Your post was rejected",
+154:             body="Reason: Blurry image",
+155:             deep_link_type="post_detail",
+156:             target_id=post.pk,
+157:         )
+158: 
+159:     def test_approve_reel_uses_reel_detail(self, dispatch_delay):
+160:         reel = _make_reel()
+161: 
+162:         services.approve(_queue_item_for(reel), _make_user("mod"))
+163: 
+164:         dispatch_delay.assert_called_once_with(
+165:             recipient_id=reel.business.user_id,
+166:             notification_type="moderation_approved",
+167:             title="Your reel was approved",
+168:             body="Your reel is now published.",
+169:             deep_link_type="reel_detail",
+170:             target_id=reel.pk,
+171:         )
+172: 
+173:     def test_content_without_detail_screen_links_to_business_profile(
+174:         self, dispatch_delay
+175:     ):
+176:         # Story has no detail screen in the P-078 contract.
+177:         story_like = SimpleNamespace(
+178:             _meta=SimpleNamespace(model_name="story"),
+179:             pk=5,
+180:             business=SimpleNamespace(pk=9, user_id=77),
+181:         )
+182: 
+183:         services._notify_content_owner(story_like, approved=True)
+184: 
+185:         dispatch_delay.assert_called_once_with(
+186:             recipient_id=77,
+187:             notification_type="moderation_approved",
+188:             title="Your story was approved",
+189:             body="Your story is now published.",
+190:             deep_link_type="business_profile",
+191:             target_id=9,
+192:         )
+193: 
+194:     def test_second_decision_does_not_notify_again(self, dispatch_delay):
+195:         post = _make_post()
+196:         item = _queue_item_for(post)
+197:         reviewer = _make_user("mod")
+198:         services.approve(item, reviewer)
+199: 
+200:         with pytest.raises(services.AlreadyDecidedError):
+--- notifications\tests\test_sources.py  (lines 300-433 of 433)
+300: 
+301: class TestCommentSource:
+302:     def test_comment_on_post_notifies_owner(self, dispatch_delay):
+303:         post = _make_post(published=True)
+304: 
+305:         response = _comment(_make_user("commenter"), "post", post, text="Great post")
+306: 
+307:         assert response.status_code == 201
+308:         dispatch_delay.assert_called_once_with(
+309:             recipient_id=post.business.user_id,
+310:             notification_type="comment_on_content",
+311:             title="New comment",
+312:             body="Great post",
+313:             deep_link_type="post_detail",
+314:             target_id=post.pk,
+315:         )
+316: 
+317:     def test_comment_on_reel_uses_reel_detail(self, dispatch_delay):
+318:         reel = _make_reel(published=True)
+319: 
+320:         response = _comment(_make_user("commenter"), "reel", reel)
+321: 
+322:         assert response.status_code == 201
+323:         assert dispatch_delay.call_args.kwargs["deep_link_type"] == "reel_detail"
+324:         assert dispatch_delay.call_args.kwargs["target_id"] == reel.pk
+325: 
+326:     def test_long_comment_body_is_truncated_to_100_chars(self, dispatch_delay):
+327:         post = _make_post(published=True)
+328: 
+329:         _comment(_make_user("commenter"), "post", post, text="x" * 300)
+330: 
+331:         assert dispatch_delay.call_args.kwargs["body"] == "x" * 100
+332: 
+333:     def test_comment_on_own_content_does_not_notify(self, dispatch_delay):
+334:         post = _make_post(published=True)
+335: 
+336:         response = _comment(post.business.user, "post", post)
+337: 
+338:         assert response.status_code == 201
+339:         dispatch_delay.assert_not_called()
+340: 
+341:     def test_broker_failure_does_not_break_comment(self, dispatch_delay):
+342:         dispatch_delay.side_effect = RuntimeError("redis down")
+343:         post = _make_post(published=True)
+344: 
+345:         response = _comment(_make_user("commenter"), "post", post)
+346: 
+347:         assert response.status_code == 201
+348: 
+349: 
+350: # --------------------------------------- source -> real task contract tests
+351: 
+352: 
+353: class TestSourcesAgainstRealTask:
+354:     def test_moderation_notification_is_accepted_and_suppressible(self, dispatch_delay):
+355:         post = _make_post()
+356:         services.approve(_queue_item_for(post), _make_user("mod"))
+357:         call = dispatch_delay.call_args
+358: 
+359:         recipient, mock_push = _run_task_with(call)
+360:         assert Notification.objects.filter(
+361:             recipient=recipient,
+362:             notification_type="moderation_approved",
+363:             deep_link_type="post_detail",
+364:             target_id=post.pk,
+365:         ).exists()
+366:         mock_push.assert_called_once()
+367: 
+368:         Notification.objects.all().delete()
+369:         _, mock_push = _run_task_with(call, moderation_notifications_enabled=False)
+370:         assert Notification.objects.filter(recipient=recipient).count() == 0
+371:         mock_push.assert_not_called()
+372: 
+373:     def test_follow_notification_is_accepted_and_suppressible(self, dispatch_delay):
+374:         business = _make_business()
+375:         _follow(_make_user("follower"), business)
+376:         call = dispatch_delay.call_args
+377: 
+378:         recipient, mock_push = _run_task_with(call)
+379:         assert Notification.objects.filter(
+380:             recipient=recipient, notification_type="new_follower"
+381:         ).exists()
+382:         mock_push.assert_called_once()
+383: 
+384:         Notification.objects.all().delete()
+385:         _, mock_push = _run_task_with(call, social_notifications_enabled=False)
+386:         assert Notification.objects.filter(recipient=recipient).count() == 0
+387:         mock_push.assert_not_called()
+388: 
+389:     def test_comment_notification_is_accepted_and_suppressible(self, dispatch_delay):
+390:         post = _make_post(published=True)
+391:         _comment(_make_user("commenter"), "post", post)
+392:         call = dispatch_delay.call_args
+393: 
+394:         recipient, mock_push = _run_task_with(call)
+395:         assert Notification.objects.filter(
+396:             recipient=recipient, notification_type="comment_on_content"
+397:         ).exists()
+398:         mock_push.assert_called_once()
+399: 
+400:         Notification.objects.all().delete()
+401:         _, mock_push = _run_task_with(call, social_notifications_enabled=False)
+402:         assert Notification.objects.filter(recipient=recipient).count() == 0
+403:         mock_push.assert_not_called()
+404: 
+405:     def test_chat_offline_notification_is_accepted_and_suppressible(
+406:         self, dispatch_delay
+407:     ):
+408:         sender = _make_user("chat_sender")
+409:         recipient_user = _make_user("chat_recipient")
+410:         conversation = Conversation.objects.create()
+411:         ConversationParticipant.objects.create(conversation=conversation, user=sender)
+412:         ConversationParticipant.objects.create(
+413:             conversation=conversation, user=recipient_user
+414:         )
+415:         message = Message.objects.create(
+416:             conversation=conversation, sender=sender, text="hi there"
+417:         )
+418:         notify_offline_recipient(message.id)
+419:         call = dispatch_delay.call_args
+420: 
+421:         recipient, mock_push = _run_task_with(call)
+422:         assert Notification.objects.filter(
+423:             recipient=recipient,
+424:             notification_type="chat_message",
+425:             deep_link_type="chat_thread",
+426:             target_id=conversation.pk,
+427:         ).exists()
+428:         mock_push.assert_called_once()
+429: 
+430:         Notification.objects.all().delete()
+431:         _, mock_push = _run_task_with(call, chat_notifications_enabled=False)
+432:         assert Notification.objects.filter(recipient=recipient).count() == 0
+433:         mock_push.assert_not_called()
+
+===== [3] core/tests/test_integration_phase17_step4.py (P-094 pattern, full)
+--- core\tests\test_integration_phase17_step4.py  (lines 1-260 of 346)
+1: """
+2: Part P-094 (Phase 17) - end-to-end integration test, walkthrough steps 11-12.
+3: 
+4: Step 11  Follow + Chat produce REAL notifications for the Business, they show
+5:          up in the Notification Center API, and the (deep_link_type, target_id)
+6:          pair each one carries resolves to a real screen for the recipient.
+7: Step 12  An Admin activates Featured through the REAL Django Admin form; the
+8:          business then ranks ahead of an otherwise-equivalent business in
+9:          Search, in the Home feed's backfill tier and in Discover, the public
+10:          profile reflects the flag at once, and the Admin "Deactivate" action
+11:          reverts everything.
+12: 
+13: Deliberate notes:
+14: - conftest.py's autouse `dispatch_delay` fixture mocks
+15:   dispatch_notification.delay (no real Redis publish). To still prove the
+16:   WHOLE seam, these tests take the exact kwargs the source (Follow view /
+17:   chat offline task) handed to `.delay(...)` and run the real task body
+18:   `dispatch_notification(**kwargs)` synchronously, exactly what a Celery
+19:   worker would do. Firebase is not configured here, so the push half is
+20:   skipped by design (live FCM delivery stays an open item from Section 7).
+21: - Flutter's NotificationNavigator resolves "business_profile" to
+22:   /business/:id (GET /api/v1/businesses/{id}/) and "chat_thread" by looking
+23:   the id up in the conversation list (GET /api/v1/conversations/). The
+24:   deep-link assertions below replay those two backend lookups.
+25: - Search/Feed/Discover are asserted over HTTP. Home feed page 1 is cached
+26:   for 90 s per user (P-060, accepted staleness), so a user who already
+27:   fetched the feed is not used as the post-activation observer; see
+28:   finding F-8 in INTEGRATION_TEST_REPORT_PHASE17.md.
+29: """
+30: 
+31: from decimal import Decimal
+32: 
+33: import pytest
+34: from django.contrib.auth import get_user_model
+35: from django.urls import reverse
+36: from rest_framework.test import APIClient
+37: 
+38: from categories.models import Category
+39: from core.tests.test_integration_phase17 import (  # noqa: F401  (fixtures + helpers)
+40:     _clear_cache,
+41:     _feed_post_ids,
+42:     _forced_client,
+43:     _moderator_client,
+44:     _publish_business,
+45:     _register_and_login,
+46:     _results,
+47:     offline_notify,
+48: )
+49: from monetization.models import FeaturedSubscription, Plan
+50: from notifications.models import Notification
+51: from notifications.tasks import dispatch_notification
+52: 
+53: User = get_user_model()
+54: 
+55: pytestmark = pytest.mark.django_db
+56: 
+57: 
+58: def _run_dispatch(dispatch_delay):
+59:     """Run the real dispatch_notification body with the kwargs the source
+60:     enqueued (what a Celery worker would do), then reset the mock."""
+61:     assert dispatch_delay.call_count == 1, dispatch_delay.call_args_list
+62:     kwargs = dispatch_delay.call_args.kwargs
+63:     dispatch_notification(**kwargs)
+64:     dispatch_delay.reset_mock()
+65:     return kwargs
+66: 
+67: 
+68: def _register_customer(email):
+69:     client = _register_and_login(email, "customer")
+70:     profile = client.post(
+71:         "/api/v1/customers/me/",
+72:         {"display_name": "S4 Customer", "country": "Egypt", "city": "Giza"},
+73:         format="json",
+74:     )
+75:     assert profile.status_code in (200, 201), profile.content
+76:     return client
+77: 
+78: 
+79: class TestPhase17Step11Notifications:
+80:     def test_follow_and_chat_notify_business_and_deep_link(
+81:         self, offline_notify, dispatch_delay  # noqa: F811
+82:     ):
+83:         from chat.tasks import notify_offline_recipient as offline_task
+84: 
+85:         category = Category.objects.create(name="Fashion")
+86:         b1 = _publish_business(
+87:             "p094-s4-biz@example.com",
+88:             name="Zephyr Atelier",
+89:             city="Cairo",
+90:             phone="+201001234567",
+91:             product_name="Zephyr Jacket",
+92:             price="199.50",
+93:             caption="Zephyr new arrivals",
+94:             category=category,
+95:             moderator=_moderator_client(),
+96:         )
+97:         business = b1["client"]
+98:         business_user = User.objects.get(email="p094-s4-biz@example.com")
+99:         customer = _register_customer("p094-s4-customer@example.com")
+100: 
+101:         # Moderation of the Post (step 3) is itself a notification source
+102:         # (P-079); those calls happened inside _publish_business and were
+103:         # mocked. Start this step from a clean slate.
+104:         dispatch_delay.reset_mock()
+105:         assert _results(business.get("/api/v1/notifications/")) == []
+106: 
+107:         # ---- STEP 11a: Follow -> new_follower notification ------------------
+108:         followed = customer.post(f"/api/v1/businesses/{b1['business_id']}/follow/")
+109:         assert followed.status_code == 200, followed.content
+110:         kwargs = _run_dispatch(dispatch_delay)
+111:         assert kwargs["recipient_id"] == business_user.id
+112:         assert kwargs["notification_type"] == "new_follower"
+113:         assert kwargs["deep_link_type"] == "business_profile"
+114:         assert kwargs["target_id"] == b1["business_id"]
+115: 
+116:         # An idempotent repeat must NOT notify again.
+117:         customer.post(f"/api/v1/businesses/{b1['business_id']}/follow/")
+118:         assert dispatch_delay.call_count == 0
+119: 
+120:         listing = _results(business.get("/api/v1/notifications/"))
+121:         assert len(listing) == 1
+122:         follow_notif = listing[0]
+123:         assert follow_notif["notification_type"] == "new_follower"
+124:         assert follow_notif["deep_link_type"] == "business_profile"
+125:         assert follow_notif["target_id"] == b1["business_id"]
+126:         assert follow_notif["is_read"] is False
+127: 
+128:         # Deep link: /business/:id -> the public profile of THAT business.
+129:         profile = business.get(f"/api/v1/businesses/{follow_notif['target_id']}/")
+130:         assert profile.status_code == 200, profile.content
+131:         assert profile.json()["business_name"] == "Zephyr Atelier"
+132: 
+133:         # The customer did not receive the business's notification.
+134:         assert _results(customer.get("/api/v1/notifications/")) == []
+135: 
+136:         # ---- STEP 11b: Chat (recipient offline) -> chat_message --------------
+137:         start = customer.post(
+138:             "/api/v1/conversations/start/",
+139:             {"business_id": b1["business_id"]},
+140:             format="json",
+141:         )
+142:         assert start.status_code == 201, start.content
+143:         conversation_id = start.json()["id"]
+144: 
+145:         sent = customer.post(
+146:             f"/api/v1/conversations/{conversation_id}/messages/",
+147:             {"text": "Is the jacket available?"},
+148:             format="json",
+149:         )
+150:         assert sent.status_code == 201, sent.content
+151:         message_id = sent.json()["id"]
+152:         # The view decided the recipient is offline and queued the task.
+153:         offline_notify.delay.assert_called_once_with(message_id)
+154: 
+155:         # Run the real offline task, then the real dispatch it enqueues.
+156:         offline_task(message_id)
+157:         kwargs = _run_dispatch(dispatch_delay)
+158:         assert kwargs["recipient_id"] == business_user.id
+159:         assert kwargs["notification_type"] == "chat_message"
+160:         assert kwargs["deep_link_type"] == "chat_thread"
+161:         assert kwargs["target_id"] == conversation_id
+162:         assert kwargs["body"] == "Is the jacket available?"
+163: 
+164:         listing = _results(business.get("/api/v1/notifications/"))
+165:         assert [n["notification_type"] for n in listing] == [
+166:             "chat_message",
+167:             "new_follower",
+168:         ]  # newest first
+169:         chat_notif = listing[0]
+170:         assert chat_notif["deep_link_type"] == "chat_thread"
+171:         assert chat_notif["target_id"] == conversation_id
+172: 
+173:         # Deep link: Flutter finds the conversation in the caller's list.
+174:         conversations = _results(business.get("/api/v1/conversations/"))
+175:         assert chat_notif["target_id"] in [c["id"] for c in conversations]
+176:         # And the thread itself is readable by the recipient.
+177:         thread = business.get(
+178:             f"/api/v1/conversations/{chat_notif['target_id']}/messages/"
+179:         )
+180:         assert thread.status_code == 200, thread.content
+181: 
+182:         # The SENDER gets no notification for their own message.
+183:         assert _results(customer.get("/api/v1/notifications/")) == []
+184: 
+185:         # ---- Mark read: only own, idempotent, never un-readable ---------------
+186:         marked = business.patch(f"/api/v1/notifications/{chat_notif['id']}/read/")
+187:         assert marked.status_code == 200
+188:         assert marked.json()["is_read"] is True
+189:         assert (
+190:             business.patch(f"/api/v1/notifications/{chat_notif['id']}/read/").json()[
+191:                 "is_read"
+192:             ]
+193:             is True
+194:         )
+195:         assert (
+196:             customer.patch(
+197:                 f"/api/v1/notifications/{chat_notif['id']}/read/"
+198:             ).status_code
+199:             == 404
+200:         )
+201:         unread = [
+202:             n
+203:             for n in _results(business.get("/api/v1/notifications/"))
+204:             if not n["is_read"]
+205:         ]
+206:         assert [n["notification_type"] for n in unread] == ["new_follower"]
+207: 
+208:         # ---- Preference seam (P-078 -> P-079): muted category = no row --------
+209:         muted = business.patch(
+210:             "/api/v1/notifications/preferences/",
+211:             {"chat_notifications_enabled": False},
+212:             format="json",
+213:         )
+214:         assert muted.status_code == 200, muted.content
+215: 
+216:         before = Notification.objects.filter(recipient=business_user).count()
+217:         second = customer.post(
+218:             f"/api/v1/conversations/{conversation_id}/messages/",
+219:             {"text": "Hello?"},
+220:             format="json",
+221:         )
+222:         assert second.status_code == 201, second.content
+223:         offline_notify.reset_mock()
+224:         offline_task(second.json()["id"])
+225:         _run_dispatch(dispatch_delay)
+226:         assert Notification.objects.filter(recipient=business_user).count() == before
+227: 
+228: 
+229: def _business_order(response):
+230:     assert response.status_code == 200, response.content
+231:     return [
+232:         item["id"]
+233:         for item in response.json()["items"]
+234:         if item["result_type"] == "business"
+235:     ]
+236: 
+237: 
+238: class TestPhase17Step12Featured:
+239:     def test_admin_activates_featured_and_ranking_follows(
+240:         self, admin_client, django_capture_on_commit_callbacks
+241:     ):
+242:         category = Category.objects.create(name="Fashion")
+243:         moderator = _moderator_client()
+244:         # Same searchable token ("Zephyr") on both, so they are otherwise
+245:         # equivalent for the text query. b2 is created second, so its Post
+246:         # is the NEWER one (backfill order is newest-first).
+247:         b1 = _publish_business(
+248:             "p094-s4-f1@example.com",
+249:             name="Zephyr Atelier One",
+250:             city="Cairo",
+251:             phone="+201001234567",
+252:             product_name="Zephyr Jacket",
+253:             price="199.50",
+254:             caption="Zephyr first",
+255:             category=category,
+256:             moderator=moderator,
+257:         )
+258:         b2 = _publish_business(
+259:             "p094-s4-f2@example.com",
+260:             name="Zephyr Atelier Two",
+
+===== [4] core/tests/test_integration_phase17.py (shared fixtures, head)
+--- core\tests\test_integration_phase17.py  (lines 1-140 of 858)
+1: """
+2: Part P-094 (Phase 17) - end-to-end integration test, walkthrough steps 1-4.
+3: 
+4: Drives the REAL HTTP API through several phase boundaries in one
+5: sequential test (Auth -> Business onboarding -> Admin verify -> Product /
+6: Post / Story creation -> Moderator approval -> Customer registration),
+7: asserting on the seams between phases rather than on any single phase's
+8: own behaviour. Later P-094 steps extend this same module (Search / Feed /
+9: Follow / Engage / Rating in step 2 of the script series, Chat /
+10: Notifications / Featured in step 3).
+11: 
+12: Deliberate notes:
+13: - "Admin verifies the business" is done by saving
+14:   User.is_business_verified because verification is a Django Admin action
+15:   (no public API exists for it). It uses user.save() (what Django Admin
+16:   does), after priming the public-profile cache, to guard finding F-2.
+17:   The manual walkthrough still covers the real Django Admin toggle.
+18: - Products are NOT moderated in this codebase (products.models.Product is
+19:   not a moderation.Moderatable). The test records this explicitly instead
+20:   of assuming the plan's "moderator approves all three" applies to
+21:   Products; see INTEGRATION_TEST_REPORT_PHASE17.md finding F-1.
+22: - conftest.py's autouse dispatch_delay fixture already mocks
+23:   notifications.tasks.dispatch_notification.delay, so nothing here
+24:   publishes to the real Redis broker.
+25: """
+26: 
+27: import json
+28: from decimal import Decimal
+29: from unittest import mock
+30: 
+31: import pytest
+32: from django.contrib.auth import get_user_model
+33: from django.core.cache import cache
+34: from django.contrib.auth.models import Group
+35: from django.contrib.contenttypes.models import ContentType
+36: from django.core.files.uploadedfile import SimpleUploadedFile
+37: from rest_framework.test import APIClient
+38: from asgiref.sync import sync_to_async
+39: from channels.db import database_sync_to_async
+40: from channels.testing import WebsocketCommunicator
+41: from rest_framework_simplejwt.tokens import AccessToken
+42: 
+43: from chat.consumers import presence_cache_key
+44: from chat.models import Message
+45: from config.asgi import application
+46: 
+47: from businesses.models import BusinessProfile
+48: from categories.models import Category
+49: from content.models import Post
+50: from core.tests.test_media import _VALID_PNG_BYTES
+51: from moderation.models import Moderatable, ModerationQueue
+52: from products.models import Product
+53: from stories.models import Story
+54: 
+55: User = get_user_model()
+56: 
+57: pytestmark = pytest.mark.django_db
+58: 
+59: PASSWORD = "Str0ng!Passw0rd#94"
+60: 
+61: 
+62: @pytest.fixture(autouse=True)
+63: def _clear_cache():
+64:     # Redis is shared across test runs and the test DB restarts ids, so a
+65:     # stale "business_profile:{id}" entry (P-030, 5 min TTL) from an earlier
+66:     # run/test could be served here. LoginRateThrottle (5/min per IP, P-018)
+67:     # also lives in this cache and this test logs in 3 times. Same pattern as
+68:     # accounts/tests/test_auth.py.
+69:     cache.clear()
+70:     yield
+71:     cache.clear()
+72: 
+73: 
+74: def _png(name):
+75:     return SimpleUploadedFile(name, _VALID_PNG_BYTES, content_type="image/png")
+76: 
+77: 
+78: def _results(response):
+79:     data = response.json()
+80:     if isinstance(data, dict) and "results" in data:
+81:         return data["results"]
+82:     return data
+83: 
+84: 
+85: def _ids(response):
+86:     return [item["id"] for item in _results(response)]
+87: 
+88: 
+89: def _login(email):
+90:     client = APIClient()
+91:     response = client.post(
+92:         "/api/v1/auth/login/",
+93:         {"email": email, "password": PASSWORD},
+94:         format="json",
+95:     )
+96:     assert response.status_code == 200, response.content
+97:     client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.json()['access']}")
+98:     return client
+99: 
+100: 
+101: def _register_and_login(email, account_type):
+102:     response = APIClient().post(
+103:         "/api/v1/auth/register/",
+104:         {
+105:             "email": email,
+106:             "password": PASSWORD,
+107:             "password_confirm": PASSWORD,
+108:             "account_type": account_type,
+109:         },
+110:         format="json",
+111:     )
+112:     assert response.status_code == 201, response.content
+113:     assert response.json()["account_type"] == account_type
+114:     return _login(email)
+115: 
+116: 
+117: def _queue_item_for(obj):
+118:     return ModerationQueue.objects.get(
+119:         content_type=ContentType.objects.get_for_model(obj.__class__),
+120:         object_id=obj.pk,
+121:     )
+122: 
+123: 
+124: class TestPhase17Steps1To4:
+125:     def test_register_onboard_verify_publish_moderate_register_customer(self):
+126:         category = Category.objects.create(name="Fashion")
+127: 
+128:         # ---- STEP 1a: register a Business account --------------------------
+129:         business_client = _register_and_login("p094-biz@example.com", "business")
+130:         me = business_client.get("/api/v1/auth/me/")
+131:         assert me.status_code == 200
+132:         assert me.json()["account_type"] == "business"
+133: 
+134:         # ---- STEP 1b: onboarding (P-028) -----------------------------------
+135:         onboarding = business_client.post(
+136:             "/api/v1/businesses/me/",
+137:             {
+138:                 "business_name": "P094 Atelier",
+139:                 "business_type": "trader",
+140:                 "country": "Egypt",
+
+===== [5] content/views.py (helpers _get_post_or_404 / _get_reel_or_404)
+--- content\views.py  (lines 1-62 of 216)
+1: from rest_framework import generics, permissions
+2: from rest_framework.exceptions import NotFound, PermissionDenied
+3: 
+4: from content.models import Post, Reel
+5: from content.serializers import (
+6:     PostPublicSerializer,
+7:     PostSerializer,
+8:     ReelPublicSerializer,
+9:     ReelSerializer,
+10: )
+11: from content.tasks import transcode_reel
+12: from core.pagination import StandardCursorPagination
+13: 
+14: 
+15: def _get_post_or_404(pk):
+16:     """
+17:     DRF NotFound explicitly, not django.shortcuts.get_object_or_404 —
+18:     per the P-038 rule, so the error envelope's code is NOT_FOUND, not
+19:     the generic ERROR fallback.
+20:     """
+21:     post = Post.objects.filter(pk=pk).first()
+22:     if post is None:
+23:         raise NotFound("Post not found.")
+24:     return post
+25: 
+26: 
+27: def _get_reel_or_404(pk):
+28:     reel = Reel.objects.filter(pk=pk).first()
+29:     if reel is None:
+30:         raise NotFound("Reel not found.")
+31:     return reel
+32: 
+33: 
+34: class PostListCreateView(generics.ListCreateAPIView):
+35:     """
+36:     GET: the authenticated business's own posts only, resolved from
+37:     request.user.business_profile (P-032's exact pattern — the real
+38:     attribute has the underscore).
+39:     POST: always attributes the new Post via serializer.save(business=...)
+40:     in perform_create(). A "business" key in the request body is never
+41:     honored (already dropped by the serializer's read_only_fields, this
+42:     is the second layer of the same guarantee).
+43:     """
+44: 
+45:     serializer_class = PostSerializer
+46:     permission_classes = [permissions.IsAuthenticated]
+47:     pagination_class = StandardCursorPagination
+48: 
+49:     def get_queryset(self):
+50:         business = getattr(self.request.user, "business_profile", None)
+51:         if business is None:
+52:             return Post.objects.none()
+53:         return Post.objects.filter(business=business)
+54: 
+55:     def perform_create(self, serializer):
+56:         business = getattr(self.request.user, "business_profile", None)
+57:         if business is None:
+58:             raise PermissionDenied(
+59:                 "Only an authenticated business account can create posts."
+60:             )
+61:         serializer.save(business=business)
+62: 
+
+===== [6] content/models.py (Post / Reel fields + managers)
+8: class PublishedManager(models.Manager):
+14: - status == Moderatable.Status.PUBLISHED
+17: though `.objects` (SoftDeleteModel's own manager) already excludes
+20: future subclass happens to keep as `.objects`.
+22: Added as an EXTRA manager (`published_objects`), never as the
+23: default `.objects` — internal code (moderation queue, the owner's
+35: status=Moderatable.Status.PUBLISHED,
+41: class Post(Moderatable, TimestampedModel, SoftDeleteModel):
+46: `status` is inherited from `Moderatable` and MUST NOT be set directly
+54: business = models.ForeignKey(
+59: published_objects = PublishedManager()
+60: caption = models.TextField()
+61: image = models.FileField(upload_to="posts/", null=True, blank=True)
+81: class ReelPublishedManager(PublishedManager):
+84: processing_status == Reel.ProcessingStatus.READY.
+102: processing_status=Reel.ProcessingStatus.READY,
+107: class Reel(Moderatable, TimestampedModel, SoftDeleteModel):
+118: - `status` (inherited from Moderatable): pending_review / published
+121: - `processing_status` (defined here): uploaded / processing / ready
+137: itself, explicitly, once — and only once — `processing_status`
+142: class ProcessingStatus(models.TextChoices):
+153: business = models.ForeignKey(
+158: caption = models.TextField()
+166: video = models.FileField(upload_to="reels/videos/")
+170: thumbnail = models.FileField(upload_to="reels/thumbnails/", null=True, blank=True)
+172: processing_status = models.CharField(
+174: choices=ProcessingStatus.choices,
+175: default=ProcessingStatus.UPLOADED,
+177: published_objects = ReelPublishedManager()
+
+===== [7] notifications API (list endpoint + serializer)
+--- notifications\views.py  (lines 1-107 of 107)
+1: """
+2: Views for Part P-082 - notification-center REST API.
+3: 
+4: GET   /api/v1/notifications/                 own notifications, cursor-paginated
+5: PATCH /api/v1/notifications/{id}/read/       mark ONE OWN notification read
+6: GET   /api/v1/notifications/preferences/     own preference toggles
+7: PATCH /api/v1/notifications/preferences/     update own preference toggles
+8: 
+9: IDOR discipline (architecture Section 5 rule 10, same as P-026 onward):
+10: 
+11: * The list and the mark-read lookup are both scoped with
+12:   ``recipient=request.user``. A notification that belongs to somebody
+13:   else is indistinguishable from one that does not exist: both answer
+14:   404 (explicit DRF NotFound, so the standard {"error": {...}} envelope
+15:   applies). Nothing about another user's notification ever leaks.
+16: * The preferences endpoints have no id in the URL at all. They always
+17:   operate on request.user's own NotificationPreference row.
+18: 
+19: Nothing here creates a Notification or sends a push. Only
+20: notifications/tasks.py may do that (P-079 architecture rule).
+21: """
+22: 
+23: from rest_framework import generics
+24: from rest_framework.exceptions import NotFound
+25: from rest_framework.permissions import IsAuthenticated
+26: from rest_framework.response import Response
+27: from rest_framework.views import APIView
+28: 
+29: from core.pagination import StandardCursorPagination
+30: from notifications.models import Notification, NotificationPreference
+31: from notifications.serializers import (
+32:     NotificationPreferenceSerializer,
+33:     NotificationSerializer,
+34: )
+35: 
+36: 
+37: class NotificationListView(generics.ListAPIView):
+38:     """GET /api/v1/notifications/ - the caller's own notifications, newest first."""
+39: 
+40:     serializer_class = NotificationSerializer
+41:     permission_classes = [IsAuthenticated]
+42:     pagination_class = StandardCursorPagination
+43: 
+44:     def get_queryset(self):
+45:         # StandardCursorPagination orders by "-created_at" itself, which
+46:         # matches the notif_recipient_created_idx index (recipient,
+47:         # -created_at).
+48:         return Notification.objects.filter(recipient=self.request.user)
+49: 
+50: 
+51: class NotificationMarkReadView(APIView):
+52:     """
+53:     PATCH /api/v1/notifications/{id}/read/ - mark one own notification read.
+54: 
+55:     Idempotent: marking an already-read notification is a no-op that
+56:     still answers 200 with the notification. The request body is ignored
+57:     entirely (the endpoint's meaning is fixed: "this is now read"), so a
+58:     client cannot un-read a notification or change any other field.
+59:     """
+60: 
+61:     permission_classes = [IsAuthenticated]
+62: 
+63:     def patch(self, request, pk):
+64:         notification = Notification.objects.filter(
+65:             pk=pk, recipient=request.user
+66:         ).first()
+67:         if notification is None:
+68:             raise NotFound("Notification not found.")
+69: 
+70:         if not notification.is_read:
+71:             notification.is_read = True
+72:             notification.save(update_fields=["is_read", "updated_at"])
+73: 
+74:         return Response(NotificationSerializer(notification).data)
+75: 
+76: 
+77: def _get_own_preferences(user):
+78:     # get_or_create: the post_save signal and the 0002 backfill make a
+79:     # missing row unexpected, but a missing row must never become a 500.
+80:     # It is created with the model defaults (everything enabled), which
+81:     # is also how P-079 treats a missing row.
+82:     preferences, _created = NotificationPreference.objects.get_or_create(user=user)
+83:     return preferences
+84: 
+85: 
+86: class NotificationPreferenceView(APIView):
+87:     """
+88:     GET   /api/v1/notifications/preferences/ - the caller's three toggles.
+89:     PATCH /api/v1/notifications/preferences/ - partial update of them.
+90: 
+91:     No id in the URL: the row is always request.user's own.
+92:     """
+93: 
+94:     permission_classes = [IsAuthenticated]
+95: 
+96:     def get(self, request):
+97:         preferences = _get_own_preferences(request.user)
+98:         return Response(NotificationPreferenceSerializer(preferences).data)
+99: 
+100:     def patch(self, request):
+101:         preferences = _get_own_preferences(request.user)
+102:         serializer = NotificationPreferenceSerializer(
+103:             preferences, data=request.data, partial=True
+104:         )
+105:         serializer.is_valid(raise_exception=True)
+106:         serializer.save()
+107:         return Response(serializer.data)
+--- notifications\serializers.py  (lines 1-44 of 44)
+1: """
+2: Serializers for Part P-082 - notification-center REST API.
+3: 
+4: NotificationSerializer is read-only on purpose: the only write a client
+5: may make to a Notification is "mark as read", and that goes through a
+6: dedicated endpoint (NotificationMarkReadView), never through a generic
+7: update. ``recipient`` is deliberately NOT exposed: every list is already
+8: scoped to request.user, so echoing the id would add nothing.
+9: 
+10: NotificationPreferenceSerializer exposes exactly the three P-078
+11: category toggles. ``user`` / ``id`` are not declared fields, so a forged
+12: value for either in a PATCH body is silently dropped during validation
+13: (same IDOR-by-construction rule as businesses/me/, P-026).
+14: """
+15: 
+16: from rest_framework import serializers
+17: 
+18: from notifications.models import Notification, NotificationPreference
+19: 
+20: 
+21: class NotificationSerializer(serializers.ModelSerializer):
+22:     class Meta:
+23:         model = Notification
+24:         fields = [
+25:             "id",
+26:             "notification_type",
+27:             "title",
+28:             "body",
+29:             "deep_link_type",
+30:             "target_id",
+31:             "is_read",
+32:             "created_at",
+33:         ]
+34:         read_only_fields = fields
+35: 
+36: 
+37: class NotificationPreferenceSerializer(serializers.ModelSerializer):
+38:     class Meta:
+39:         model = NotificationPreference
+40:         fields = [
+41:             "chat_notifications_enabled",
+42:             "moderation_notifications_enabled",
+43:             "social_notifications_enabled",
+44:         ]
+--- notifications\urls.py  (lines 1-21 of 21)
+1: """
+2: URL routes for Part P-082's notification-center endpoints.
+3: 
+4: Mounted under /api/v1/notifications/ by config/urls.py.
+5: """
+6: 
+7: from django.urls import path
+8: 
+9: from notifications.views import (
+10:     NotificationListView,
+11:     NotificationMarkReadView,
+12:     NotificationPreferenceView,
+13: )
+14: 
+15: app_name = "notifications"
+16: 
+17: urlpatterns = [
+18:     path("", NotificationListView.as_view(), name="list"),
+19:     path("preferences/", NotificationPreferenceView.as_view(), name="preferences"),
+20:     path("<int:pk>/read/", NotificationMarkReadView.as_view(), name="mark-read"),
+21: ]
+
+===== [8] moderation queue creation (how content enters the queue)
+21: class ModerationQueue(TimestampedModel):
+40: class Status(models.TextChoices):
+45: class Priority(models.TextChoices):
+71: class Meta:
+78: # creation signal below.
+86: def __str__(self):
+90: class Moderatable(models.Model):
+112: a post_save signal receiver (moderation/signals.py), not a save()
+116: By default (``True``), the signal in moderation/signals.py creates
+118: subclass is saved (see that module's docstring). This is correct
+126: that needs this sets the class attribute:
+128: class Reel(Moderatable, ...):
+132: ``ModerationQueue.objects.create(...)`` itself, explicitly, once the
+136: This is deliberately a class attribute on the mixin (checked via
+138: signal), NOT a change to the signal's ``isinstance`` check for a
+141: sender-less signal was built to avoid (see signals.py). The default
+144: only a subclass that explicitly opts out is affected.
+147: By default (``ModerationQueue.Priority.NORMAL``), the signal in
+148: moderation/signals.py creates the auto-enqueued ModerationQueue row
+150: existed. A concrete subclass whose content has a short lifetime and
+151: must be reviewed urgently sets the class attribute:
+153: class Story(Moderatable, ...):
+162: in the signal, NOT a change to the signal's generic isinstance
+167: class Status(models.TextChoices):
+178: # See the class docstring's "DEFERRED-ENQUEUE HOOK" section (P-042).
+180: # or migration; it is read only by moderation/signals.py via getattr().
+184: # above: a plain class attribute, read via getattr() in
+185: # moderation/signals.py, NOT a model field and NOT a change to this
+186: # module's isinstance-only, content-type-agnostic signal logic.
+194: # Story (Phase 8, P-046) is the first concrete subclass to override
+201: class Meta:
+205: def get_moderation_preview(self):
+234: class ModerationLog(TimestampedModel):
+258: class Action(models.TextChoices):
+278: class Meta:
+284: def __str__(self):
+--- moderation\signals.py  (lines 1-68 of 68)
+1: from django.contrib.contenttypes.models import ContentType
+2: from django.db.models.signals import post_save
+3: from django.dispatch import receiver
+4: 
+5: from moderation.models import Moderatable, ModerationQueue
+6: 
+7: 
+8: @receiver(post_save)
+9: def enqueue_new_moderatable_content(sender, instance, created, **kwargs):
+10:     """
+11:     Creates exactly one ModerationQueue row the first time any
+12:     Moderatable-mixin model instance is saved — UNLESS that instance's
+13:     class opts out via ``auto_enqueue_on_create = False`` (Part P-042's
+14:     deferred-enqueue hook; see Moderatable's docstring for the full
+15:     rationale). Instances that opt out are responsible for creating
+16:     their own ModerationQueue row explicitly once they reach a
+17:     reviewable state (e.g. Reel, once transcoding finishes).
+18: 
+19:     Deliberately connected WITHOUT a ``sender=`` argument (i.e. to every
+20:     model's post_save, filtered here via ``isinstance``) rather than
+21:     wired per-model. This is the whole point of building this as a
+22:     mixin + generic signal instead of a save() override: Phase 7's
+23:     Post/Reel and Phase 8's Story models get moderation enqueueing for
+24:     free just by inheriting Moderatable — nobody building those models
+25:     later needs to remember to add a matching signal registration, and
+26:     there is exactly one code path to audit for the Section 28
+27:     "moderation bypass" risk instead of one per content type. Reel's
+28:     P-042 exception is handled via the ``auto_enqueue_on_create`` class
+29:     attribute (checked below with ``getattr``), NOT by adding an
+30:     ``isinstance(instance, Reel)`` check here — this module must never
+31:     import or know about a specific content type.
+32: 
+33:     The `isinstance` check is cheap (a single Python-side type check on
+34:     every model save in the project, not a DB query) and correct: it
+35:     matches any current or future subclass of Moderatable regardless of
+36:     which concrete app defines it, without moderation/ needing to import
+37:     or know about Post/Reel/Story at all.
+38: 
+39:     ``created`` (from Django's own post_save signal, which distinguishes
+40:     INSERT from UPDATE) is what enforces "enqueue on first creation
+41:     only, not on every edit" — re-review-on-edit policy is explicitly
+42:     out of scope for this part (see models.py's Moderatable docstring
+43:     and this part's spec) and is NOT silently implemented here.
+44: 
+45:     Part P-046 adds a second, independent getattr() hook here —
+46:     ``moderation_priority`` — read the same way as
+47:     ``auto_enqueue_on_create`` above, to let a Moderatable subclass
+48:     (Story) request ``priority="fast_path"`` on its auto-created queue
+49:     row instead of the default ``"normal"``. See Moderatable's own
+50:     docstring in models.py for the full rationale.
+51:     """
+52: 
+53:     if not created:
+54:         return
+55:     if not isinstance(instance, Moderatable):
+56:         return
+57:     if not getattr(instance, "auto_enqueue_on_create", True):
+58:         return
+59: 
+60:     priority = getattr(
+61:         instance, "moderation_priority", ModerationQueue.Priority.NORMAL
+62:     )
+63: 
+64:     ModerationQueue.objects.create(
+65:         content_type=ContentType.objects.get_for_model(instance),
+66:         object_id=instance.pk,
+67:         priority=priority,
+68:     )
+
+===== [9] pytest config
+--- pytest.ini  (lines 1-11 of 11)
+1: [pytest]
+2: # --ds (via addopts) is used instead of the plain DJANGO_SETTINGS_MODULE
+3: # ini option deliberately: pytest-django's precedence is
+4: # --ds > DJANGO_SETTINGS_MODULE env var > DJANGO_SETTINGS_MODULE ini
+5: # option. docker-compose.yml (Part P-010) sets DJANGO_SETTINGS_MODULE as
+6: # a real environment variable inside the container for manage.py's sake
+7: # (config.settings.dev), which would otherwise silently outrank a plain
+8: # ini setting here and make pytest run against dev's INSTALLED_APPS
+9: # instead of test's. --ds is the one thing that outranks that env var.
+10: addopts = --ds=config.settings.test
+11: python_files = tests.py test_*.py *_tests.py

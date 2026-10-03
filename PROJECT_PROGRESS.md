@@ -11668,3 +11668,77 @@ P-095: deep-link cross-navigation integration test. It is the systematic continu
 
 ### Edits to existing sections
 In the Part status index/table, add the row: `P-094 | End-to-End Integration Pass | Phase 17 | COMPLETE`. Phase 17 summary line: "IN PROGRESS (P-094 complete, P-095 next)".
+
+## PART P-095 - Deep-Link Cross-Navigation Integration Test - STATUS: VERIFIED, NOT PASSED - 2 OPEN DEFECTS (D-1, D-2) + 1 GAP (G-1). Phase 17 is NOT complete.
+
+### What was implemented
+A verification sweep of every notification_type that P-094 did not cover. Each event was triggered for real; the kwargs the source handed to `dispatch_notification.delay(...)` were run through the REAL `dispatch_notification` body (the P-094 pattern); the stored row was read back through the real `GET /api/v1/notifications/`; and the screen the deep link opens was checked by replaying the exact GET the Flutter detail screen issues. On the Flutter side the real `NotificationNavigator`, `resolveDeepLink`, detail screens and public repositories were exercised over a fake Dio. No new notification type or deep-link target was added (out of scope by design).
+
+Result per type (full table in `INTEGRATION_TEST_REPORT_PHASE17.md`, section P-095):
+- moderation_approved (Post): PASS in the backend. moderation_approved (Reel): deep link correct, but DEFECT D-2.
+- moderation_rejected: deep link correct, but DEFECT D-1 (owner lands on "not found", never sees the reason).
+- comment_on_content (Post and Reel): PASS in the backend (right deep_link_type, right target_id, exact item served; owner is notified, commenter is not).
+- new_follower, chat_message: PASS (covered by P-094).
+- new_like, new_share, new_rating, system_announcement: GAP G-1, no source ever sends them.
+- `product_detail` target: no source sends it either; covered only by P-080 resolver unit tests.
+
+### Defects and gap found (all OPEN, none fixed inside P-095)
+- D-1 (Flutter): a rejected Post/Reel opens "not found" for its owner. The notification deep-links to `/post/:id` / `/reel/:id`, the PUBLIC detail screens; `PostPublicRepositoryImpl.fetchPublicPost` / `ReelPublicRepositoryImpl.fetchPublicReel` return null when `status != "published"`. The backend serves the item and `rejection_reason` correctly, and the owner-side `Post`/`Reel` entities carry `rejectionReason` (P-044), but no owner-facing view is reachable from the notification. Breaks the P-095 criterion "showing the rejection reason where applicable".
+- D-2 (Flutter, timing-dependent): an approved Reel with `processing_status != "ready"` also opens "not found", because moderation approval does not touch `processing_status`. Same root cause and fix area as D-1.
+- G-1 (backend, decision needed): `new_like`, `new_share`, `new_rating`, `system_announcement` are NotificationType choices with no source (`LikeToggleView` creates the Like and the counter, then returns). Adding a source is new scope.
+- O-1 (observation): `StorySerializer` has no `rejection_reason`, so a rejected Story has no reason to show even after D-1 is fixed. A Story's moderation notification deep-links to `business_profile` by design (the P-078 contract has no story detail screen).
+- Why D-1 was not "fixed" by blanking the deep link in the backend: that would hide the symptom, not the defect. A real fix needs an owner-facing detail view (or an owner-aware public screen), which is a screen/architecture decision.
+
+### Files created
+- Backend (`cavallo-app`): `notifications/tests/test_deep_link_sweep.py` (6 tests + 1 strict xfail).
+- Mobile (`cavallo-mobile`): `test/features/notifications/presentation/notification_unpublished_content_test.dart` (3 tests).
+- Throwaway audit outputs in the backend repo root (do NOT commit, can be deleted): `p095_step1_audit.txt` ... `p095_step6_audit.txt`.
+
+### Files modified
+- Backend: `INTEGRATION_TEST_REPORT_PHASE17.md` (section P-095 filled in, replacing the TBD skeleton), `PROJECT_PROGRESS.md` (this section). No application code changed in either repo. No migrations.
+- Unrelated and untouched by this part: `celerybeat-schedule` shows as modified (it is tracked and should go in `.gitignore`); `p093_*.ps1` show as deleted in the mobile working tree.
+
+### Important implementation details
+1. The sweep test imports helpers from `notifications/tests/test_sources.py` (`_make_user`, `_make_post`, `_make_reel`, `_queue_item_for`, `_comment`) and `_results` from `core/tests/test_integration_phase17.py`. Renaming any of them breaks it.
+2. `conftest.py`'s autouse `dispatch_delay` fixture mocks `dispatch_notification.delay`; the sweep's `_deliver()` takes the exact kwargs the source enqueued and runs the real task body with `send_push_notification` patched (FCM is not configured).
+3. G-1 is pinned by `test_like_on_reel_notifies_owner_and_links_to_that_reel`, marked `xfail(strict=True)`: the day a like source is added it fails with XPASS and forces the marker's removal.
+4. `test_every_notification_type_is_classified` fails if a NotificationType is added without being either covered (this sweep or P-094) or listed as a documented gap.
+5. The Flutter test is a CHARACTERIZATION test of D-1/D-2 on purpose. When the defects are fixed, flip its assertions to expect the content and the rejection reason instead of the "not found" text.
+6. Moderation's `_CONTENT_DEEP_LINKS` only maps `post` -> `post_detail` and `reel` -> `reel_detail`; anything else (Story) falls back to `business_profile` + the business id.
+
+### Commands
+- Backend, from `D:\Cavallo\scd-backend`: `docker compose exec web pytest notifications/tests/test_deep_link_sweep.py -v`
+- Backend, whole app: `docker compose exec web pytest notifications/tests -q`
+- Backend lint: `docker compose exec web flake8 notifications/tests/test_deep_link_sweep.py` and `docker compose exec web black --check notifications/tests/test_deep_link_sweep.py`
+- Mobile, from `D:\Cavallo\social_commerce_app`: `flutter test test/features/notifications/presentation/notification_unpublished_content_test.dart`
+- Mobile, whole feature: `flutter test test/features/notifications`
+
+### Tests and verification results (confirmed on the real docker stack and local Flutter)
+- `pytest notifications/tests/test_deep_link_sweep.py -v` = 6 passed, 1 xfailed.
+- `pytest notifications/tests -q` = 114 passed, 1 xfailed.
+- `pytest core/tests/test_integration_phase17.py core/tests/test_integration_phase17_step4.py -q` = 6 passed (P-094 unaffected).
+- flake8 and black clean on the new backend test (a W292 missing-newline finding was fixed by running black).
+- `flutter test` on the new Flutter test = 3 passed; `flutter analyze` on it = no issues; `flutter test test/features/notifications` = 72 passed.
+- NOT run: the full Flutter suite, the full backend suite.
+
+### NOT verified by this part (carry forward honestly)
+- Tapping each notification on a real device (verification used the real navigator, screens and repositories in widget tests over a fake Dio).
+- Live FCM push delivery (Firebase not configured; unchanged from P-094; Section 7 item 4). Live Paymob (Section 7 item 3).
+
+### GitHub references
+Not committed yet at the time of writing. Add the commit hashes for `cavallo-app` (backend) and `cavallo-mobile` once pushed.
+
+### Remaining work
+1. Decide and implement the owner-facing view for D-1 and D-2 (candidate approach: reuse the owner-side `Post`/`Reel` entities that already carry `rejectionReason`, reachable from the notification; it needs a product/architecture decision before any code). Then flip the Flutter characterization test.
+2. Decide G-1: build the missing notification sources or remove the unused types from the contract (then update the classification sets in the guard test).
+3. Optional: expose a `rejection_reason` for Stories (O-1).
+4. Repo hygiene: delete `p095_step*_audit.txt`; `celerybeat-schedule` should go in `.gitignore`.
+
+### Phase 17 status
+P-094 COMPLETE. P-095 verified but NOT passed. Phase 17 is NOT marked COMPLETE. Gate for Phase 18 (Testing & Quality Hardening): do not start until D-1 and D-2 are fixed (or explicitly accepted by the owner) and G-1 has a decision.
+
+### Exact next starting point
+Resolve D-1/D-2 (owner-facing view for unpublished Post/Reel opened from a notification) and the G-1 decision, then re-run `test_deep_link_sweep.py` and the Flutter characterization test (flipped), and only then mark Phase 17 COMPLETE and begin Phase 18.
+
+### Edits to existing sections
+In the Part status index/table, add the row: `P-095 | Deep-Link Cross-Navigation Integration Test | Phase 17 | VERIFIED - 2 OPEN DEFECTS`. Set the Phase 17 summary line to "IN PROGRESS (P-094 complete, P-095 verified with open defects D-1, D-2 and gap G-1; gate OPEN)".

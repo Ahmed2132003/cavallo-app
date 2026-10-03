@@ -1,0 +1,967 @@
+﻿P-095 STEP 6 AUDIT - 10/03/2026 04:58:49
+
+===== [1] notification_navigator_test.dart (full pattern)
+--- test\features\notifications\presentation\notification_navigator_test.dart  (lines 1-288 of 288)
+1: import 'package:dio/dio.dart';
+2: import 'package:flutter/material.dart';
+3: import 'package:flutter_test/flutter_test.dart';
+4: import 'package:go_router/go_router.dart';
+5: import 'package:social_commerce_app/core/network/paginated_response.dart';
+6: import 'package:social_commerce_app/core/push/fcm_service.dart';
+7: import 'package:social_commerce_app/features/chat/data/conversation_repository.dart';
+8: import 'package:social_commerce_app/features/chat/domain/conversation.dart';
+9: import 'package:social_commerce_app/features/notifications/domain/app_notification.dart';
+10: import 'package:social_commerce_app/features/notifications/presentation/notification_navigator.dart';
+11: 
+12: class _FakeConversationRepository extends ConversationRepository {
+13:   _FakeConversationRepository({
+14:     this.conversations = const <Conversation>[],
+15:     this.shouldThrow = false,
+16:   }) : super(Dio());
+17: 
+18:   final List<Conversation> conversations;
+19:   final bool shouldThrow;
+20:   int listCalls = 0;
+21: 
+22:   @override
+23:   Future<PaginatedResponse<Conversation>> listConversations({
+24:     String? cursor,
+25:   }) async {
+26:     listCalls++;
+27:     if (shouldThrow) throw Exception('boom');
+28:     return PaginatedResponse<Conversation>(
+29:       results: conversations,
+30:       next: null,
+31:       previous: null,
+32:     );
+33:   }
+34: }
+35: 
+36: Conversation _conversation(int id) {
+37:   return Conversation(
+38:     id: id,
+39:     otherParticipant: null,
+40:     lastMessage: null,
+41:     unreadCount: 0,
+42:     createdAt: DateTime(2026, 9, 30),
+43:   );
+44: }
+45: 
+46: class _Setup {
+47:   _Setup({
+48:     required this.router,
+49:     required this.navigator,
+50:     required this.repository,
+51:     required this.threadExtras,
+52:   });
+53: 
+54:   final GoRouter router;
+55:   final NotificationNavigator navigator;
+56:   final _FakeConversationRepository repository;
+57: 
+58:   /// Every `extra` the `/chat/:id` stub route was built with.
+59:   final List<Object?> threadExtras;
+60: }
+61: 
+62: /// Starts on `/notifications` (so `push` has something to go back to)
+63: /// with a stub route for every destination the resolver can answer.
+64: Future<_Setup> _pump(
+65:   WidgetTester tester, {
+66:   List<Conversation> conversations = const <Conversation>[],
+67:   bool repositoryThrows = false,
+68: }) async {
+69:   final threadExtras = <Object?>[];
+70:   final router = GoRouter(
+71:     initialLocation: '/notifications',
+72:     routes: <RouteBase>[
+73:       GoRoute(
+74:         path: '/notifications',
+75:         builder: (context, state) => const Text('screen: notifications'),
+76:       ),
+77:       GoRoute(
+78:         path: '/home',
+79:         builder: (context, state) => const Text('screen: home'),
+80:       ),
+81:       GoRoute(
+82:         path: '/business/:id',
+83:         builder:
+84:             (context, state) =>
+85:                 Text('screen: business ${state.pathParameters['id']}'),
+86:       ),
+87:       GoRoute(
+88:         path: '/post/:id',
+89:         builder:
+90:             (context, state) =>
+91:                 Text('screen: post ${state.pathParameters['id']}'),
+92:       ),
+93:       GoRoute(
+94:         path: '/reel/:id',
+95:         builder:
+96:             (context, state) =>
+97:                 Text('screen: reel ${state.pathParameters['id']}'),
+98:       ),
+99:       GoRoute(
+100:         path: '/product/:id',
+101:         builder:
+102:             (context, state) =>
+103:                 Text('screen: product ${state.pathParameters['id']}'),
+104:       ),
+105:       GoRoute(
+106:         path: '/chat',
+107:         builder: (context, state) => const Text('screen: chat list'),
+108:       ),
+109:       GoRoute(
+110:         path: '/chat/:id',
+111:         builder: (context, state) {
+112:           threadExtras.add(state.extra);
+113:           return Text('screen: chat thread ${state.pathParameters['id']}');
+114:         },
+115:       ),
+116:     ],
+117:   );
+118:   addTearDown(router.dispose);
+119: 
+120:   final repository = _FakeConversationRepository(
+121:     conversations: conversations,
+122:     shouldThrow: repositoryThrows,
+123:   );
+124:   final navigator = NotificationNavigator(
+125:     router: router,
+126:     conversationRepository: repository,
+127:   );
+128: 
+129:   await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+130:   await tester.pumpAndSettle();
+131:   expect(find.text('screen: notifications'), findsOneWidget);
+132: 
+133:   return _Setup(
+134:     router: router,
+135:     navigator: navigator,
+136:     repository: repository,
+137:     threadExtras: threadExtras,
+138:   );
+139: }
+140: 
+141: void main() {
+142:   group('the four plain destinations', () {
+143:     const cases = <(String, String)>[
+144:       ('business_profile', 'screen: business 5'),
+145:       ('post_detail', 'screen: post 5'),
+146:       ('reel_detail', 'screen: reel 5'),
+147:       ('product_detail', 'screen: product 5'),
+148:     ];
+149: 
+150:     for (final (type, expectedText) in cases) {
+151:       testWidgets('$type + 5 pushes its screen', (tester) async {
+152:         final setup = await _pump(tester);
+153: 
+154:         await setup.navigator.open(deepLinkType: type, targetId: 5);
+155:         await tester.pumpAndSettle();
+156: 
+157:         expect(find.text(expectedText), findsOneWidget);
+158:         expect(setup.router.canPop(), isTrue);
+159:         // No conversation lookup for a non-chat destination.
+160:         expect(setup.repository.listCalls, 0);
+161:       });
+162:     }
+163:   });
+164: 
+165:   group('chat_thread', () {
+166:     testWidgets('opens the thread with the Conversation as extra', (
+167:       tester,
+168:     ) async {
+169:       final target = _conversation(101);
+170:       final setup = await _pump(
+171:         tester,
+172:         conversations: [_conversation(7), target],
+173:       );
+174: 
+175:       await setup.navigator.open(deepLinkType: 'chat_thread', targetId: 101);
+176:       await tester.pumpAndSettle();
+177: 
+178:       expect(find.text('screen: chat thread 101'), findsOneWidget);
+179:       expect(setup.threadExtras, [same(target)]);
+180:       expect(setup.repository.listCalls, 1);
+181:       expect(setup.router.canPop(), isTrue);
+182:     });
+183: 
+184:     testWidgets('falls back to the chat list when the conversation is '
+185:         'not in the list', (tester) async {
+186:       final setup = await _pump(tester, conversations: [_conversation(7)]);
+187: 
+188:       await setup.navigator.open(deepLinkType: 'chat_thread', targetId: 101);
+189:       await tester.pumpAndSettle();
+190: 
+191:       expect(find.text('screen: chat list'), findsOneWidget);
+192:       expect(setup.threadExtras, isEmpty);
+193:     });
+194: 
+195:     testWidgets('falls back to the chat list when the lookup fails', (
+196:       tester,
+197:     ) async {
+198:       final setup = await _pump(tester, repositoryThrows: true);
+199: 
+200:       await setup.navigator.open(deepLinkType: 'chat_thread', targetId: 101);
+201:       await tester.pumpAndSettle();
+202: 
+203:       expect(find.text('screen: chat list'), findsOneWidget);
+204:       expect(setup.threadExtras, isEmpty);
+205:     });
+206: 
+207:     testWidgets('a missing target id goes home without any lookup', (
+208:       tester,
+209:     ) async {
+210:       final setup = await _pump(tester, conversations: [_conversation(101)]);
+211: 
+212:       await setup.navigator.open(deepLinkType: 'chat_thread', targetId: null);
+213:       await tester.pumpAndSettle();
+214: 
+215:       expect(find.text('screen: home'), findsOneWidget);
+216:       expect(setup.repository.listCalls, 0);
+217:     });
+218:   });
+219: 
+220:   group('fallbacks', () {
+221:     testWidgets('an unknown deep_link_type goes home', (tester) async {
+222:       final setup = await _pump(tester);
+223: 
+224:       await setup.navigator.open(deepLinkType: 'something_new', targetId: 5);
+225:       await tester.pumpAndSettle();
+226: 
+227:       expect(find.text('screen: home'), findsOneWidget);
+228:     });
+229: 
+230:     testWidgets('a known type with a null id goes home', (tester) async {
+231:       final setup = await _pump(tester);
+232: 
+233:       await setup.navigator.open(
+234:         deepLinkType: 'business_profile',
+235:         targetId: null,
+236:       );
+237:       await tester.pumpAndSettle();
+238: 
+239:       expect(find.text('screen: home'), findsOneWidget);
+240:     });
+241: 
+242:     testWidgets('a blank deep_link_type navigates nowhere', (tester) async {
+243:       final setup = await _pump(tester);
+244: 
+245:       await setup.navigator.open(deepLinkType: '', targetId: null);
+246:       await setup.navigator.open(deepLinkType: '   ', targetId: 5);
+247:       await tester.pumpAndSettle();
+248: 
+249:       expect(find.text('screen: notifications'), findsOneWidget);
+250:       expect(setup.repository.listCalls, 0);
+251:     });
+252:   });
+253: 
+254:   group('the two convenience entry points share the same logic', () {
+255:     testWidgets('openNotification uses the notification\'s own fields', (
+256:       tester,
+257:     ) async {
+258:       final setup = await _pump(tester);
+259:       final notification = AppNotification(
+260:         id: 1,
+261:         notificationType: 'new_follower',
+262:         title: 'New follower',
+263:         body: 'Someone followed you',
+264:         deepLinkType: 'business_profile',
+265:         targetId: 9,
+266:         isRead: false,
+267:         createdAt: DateTime(2026, 9, 30),
+268:       );
+269: 
+270:       await setup.navigator.openNotification(notification);
+271:       await tester.pumpAndSettle();
+272: 
+273:       expect(find.text('screen: business 9'), findsOneWidget);
+274:     });
+275: 
+276:     testWidgets('openPush uses the push deep link', (tester) async {
+277:       final setup = await _pump(tester, conversations: [_conversation(33)]);
+278: 
+279:       await setup.navigator.openPush(
+280:         const PushDeepLink(type: 'chat_thread', targetId: 33),
+281:       );
+282:       await tester.pumpAndSettle();
+283: 
+284:       expect(find.text('screen: chat thread 33'), findsOneWidget);
+285:       expect(setup.threadExtras.single, isA<Conversation>());
+286:     });
+287:   });
+288: }
+
+===== [2] content_public_providers.dart
+--- lib\features\content\presentation\content_public_providers.dart  (lines 1-67 of 67)
+1: import 'package:flutter_riverpod/flutter_riverpod.dart';
+2: 
+3: import '../data/post_public_repository.dart';
+4: import '../data/reel_public_repository.dart';
+5: import '../domain/public_post_entity.dart';
+6: import '../domain/public_reel_entity.dart';
+7: 
+8: /// Part P-045 scope: the public, by-id Post/Reel a Customer sees at
+9: /// `/post/:id` and `/reel/:id`. Same contract, `autoDispose` + disabled
+10: /// retry, and states as `productPublicDetailProvider`
+11: /// (`product_public_providers.dart`, Part P-034):
+12: ///
+13: /// * `AsyncLoading` — the request is in flight.
+14: /// * `AsyncData(non-null)` — published (and, for a Reel, fully
+15: ///   processed) — see `PostPublicRepositoryImpl.fetchPublicPost` /
+16: ///   `ReelPublicRepositoryImpl.fetchPublicReel` (this part, STEP 1) for
+17: ///   exactly what "published" means for each.
+18: /// * `AsyncData(null)` — not found: backend 404, OR exists but isn't
+19: ///   publicly visible yet. A real, renderable state, NOT an error — the
+20: ///   screen shows a "not found" empty state with no Retry button.
+21: /// * `AsyncError` — a genuine failure. The screen shows
+22: ///   `ErrorStateWidget` with Retry.
+23: ///
+24: /// The family argument is an `int`, not the raw `:id` route string —
+25: /// same reasoning as `productPublicDetailProvider`: both backend routes
+26: /// are `<int:pk>/`, so a non-numeric id can never identify anything.
+27: /// `PostDetailScreen`/`ReelDetailScreen` (this part, STEP 4/5) parse it
+28: /// before ever reading these providers.
+29: final postPublicDetailProvider = FutureProvider.autoDispose
+30:     .family<PublicPost?, int>((ref, id) {
+31:       return ref.watch(postPublicRepositoryProvider).fetchPublicPost(id);
+32:     }, retry: (retryCount, error) => null);
+33: 
+34: /// See [postPublicDetailProvider]'s doc — identical contract, for Reel.
+35: final reelPublicDetailProvider = FutureProvider.autoDispose
+36:     .family<PublicReel?, int>((ref, id) {
+37:       return ref.watch(reelPublicRepositoryProvider).fetchPublicReel(id);
+38:     }, retry: (retryCount, error) => null);
+39: 
+40: /// Part P-045 STEP 6 addition: the FIRST page of one business's public,
+41: /// published Posts (`GET /api/v1/posts/public/?business_id=...`), shown
+42: /// as the Posts section of the public business profile screen
+43: /// (`business_profile_public_screen.dart`, Part P-029's screen, extended
+44: /// by this part). Same "first page only, no load-more UI" scope decision
+45: /// as `businessProductsProvider` (`product_public_providers.dart`, Part
+46: /// P-034) — the cursor metadata (`next`/`previous`) is intentionally
+47: /// dropped. An empty list is a valid, renderable state (the business
+48: /// hasn't shared any posts yet), not an error.
+49: ///
+50: /// `autoDispose` + disabled retry, for the same reasons as
+51: /// [postPublicDetailProvider].
+52: final businessPostsProvider = FutureProvider.autoDispose
+53:     .family<List<PublicPost>, int>((ref, businessId) async {
+54:       final page = await ref
+55:           .watch(postPublicRepositoryProvider)
+56:           .fetchBusinessPosts(businessId);
+57:       return page.results;
+58:     }, retry: (retryCount, error) => null);
+59: 
+60: /// See [businessPostsProvider]'s doc — identical contract, for Reel.
+61: final businessReelsProvider = FutureProvider.autoDispose
+62:     .family<List<PublicReel>, int>((ref, businessId) async {
+63:       final page = await ref
+64:           .watch(reelPublicRepositoryProvider)
+65:           .fetchBusinessReels(businessId);
+66:       return page.results;
+67:     }, retry: (retryCount, error) => null);
+
+===== [3] post_public_repository.dart (data impl, full)
+--- lib\features\content\data\post_public_repository.dart  (lines 1-80 of 80)
+1: import 'package:dio/dio.dart';
+2: import 'package:flutter_riverpod/flutter_riverpod.dart';
+3: 
+4: import '../../../core/network/dio_client.dart';
+5: import '../../../core/network/paginated_response.dart';
+6: import '../domain/post_public_repository.dart';
+7: import '../domain/public_post_entity.dart';
+8: import 'dtos/post_public_response_dto.dart';
+9: 
+10: /// Part P-045 scope: [PostPublicRepository] implementation. Follows
+11: /// `ProductPublicRepositoryImpl`'s exact conventions (Part P-034):
+12: /// depends only on `dioClientProvider`, interprets "not visible to the
+13: /// public" as a `null` return HERE (never in `core/network`, which
+14: /// stays feature-agnostic), and rethrows every other [DioException]
+15: /// untouched so `.error` stays a typed `ApiFailure` (`ErrorInterceptor`,
+16: /// P-004).
+17: class PostPublicRepositoryImpl implements PostPublicRepository {
+18:   PostPublicRepositoryImpl({required Dio dio}) : _dio = dio;
+19: 
+20:   final Dio _dio;
+21: 
+22:   static const _publicListPath = '/api/v1/posts/public/';
+23: 
+24:   static String _detailPath(int id) => '/api/v1/posts/$id/';
+25: 
+26:   @override
+27:   Future<PublicPost?> fetchPublicPost(int id) async {
+28:     try {
+29:       final response = await _dio.get<Map<String, dynamic>>(_detailPath(id));
+30:       final json = response.data!;
+31: 
+32:       // GET /api/v1/posts/{id}/ (PostDetailView) is a pre-existing,
+33:       // AllowAny endpoint that serves the FULL owner-facing
+34:       // PostSerializer shape regardless of moderation status — a
+35:       // known, pre-existing gap flagged in PostPublicListView's own
+36:       // docstring ("PostDetailView's own public GET is unaffected and
+37:       // unchanged, and is a separate, pre-existing concern from
+38:       // P-041"), not something this part introduces or must fix. This
+39:       // repository must still never hand a pending/rejected Post to a
+40:       // customer-facing caller, so `status` is read directly off the
+41:       // raw map here — BEFORE it's dropped at PostPublicResponseDto's
+42:       // boundary (see that file's docstring). Same "check the raw
+43:       // field, then discard it" pattern ProductPublicRepositoryImpl
+44:       // uses for `isActive` (Part P-034).
+45:       if (json['status'] != 'published') {
+46:         return null;
+47:       }
+48: 
+49:       return PostPublicResponseDto.fromJson(json).toEntity();
+50:     } on DioException catch (e) {
+51:       if (e.response?.statusCode == 404) {
+52:         // Genuinely doesn't exist — a real, renderable state, never an
+53:         // error. Same convention as ProductPublicRepositoryImpl.
+54:         return null;
+55:       }
+56:       rethrow;
+57:     }
+58:   }
+59: 
+60:   @override
+61:   Future<PaginatedResponse<PublicPost>> fetchBusinessPosts(
+62:     int businessId,
+63:   ) async {
+64:     final response = await _dio.get<Map<String, dynamic>>(
+65:       _publicListPath,
+66:       queryParameters: {'business_id': businessId},
+67:     );
+68:     return PaginatedResponse.fromJson<PublicPost>(
+69:       response.data!,
+70:       (json) => PostPublicResponseDto.fromJson(json).toEntity(),
+71:     );
+72:   }
+73: }
+74: 
+75: /// Exposes [PostPublicRepository] via Riverpod — a plain `Provider`, so
+76: /// tests/screens can override it. Same pattern as
+77: /// `productPublicRepositoryProvider` (Part P-034).
+78: final postPublicRepositoryProvider = Provider<PostPublicRepository>(
+79:   (ref) => PostPublicRepositoryImpl(dio: ref.watch(dioClientProvider)),
+80: );
+
+===== [4] reel_public_repository.dart (data impl, full)
+--- lib\features\content\data\reel_public_repository.dart  (lines 1-72 of 72)
+1: import 'package:dio/dio.dart';
+2: import 'package:flutter_riverpod/flutter_riverpod.dart';
+3: 
+4: import '../../../core/network/dio_client.dart';
+5: import '../../../core/network/paginated_response.dart';
+6: import '../domain/reel_public_repository.dart';
+7: import '../domain/public_reel_entity.dart';
+8: import 'dtos/reel_public_response_dto.dart';
+9: 
+10: /// Part P-045 scope: [ReelPublicRepository] implementation. Same
+11: /// conventions as `PostPublicRepositoryImpl` above — the one
+12: /// difference is the extra `processing_status == "ready"` check,
+13: /// mirroring `Reel.published_objects` (`ReelPublishedManager`)'s own
+14: /// server-side requirement for the list endpoint.
+15: class ReelPublicRepositoryImpl implements ReelPublicRepository {
+16:   ReelPublicRepositoryImpl({required Dio dio}) : _dio = dio;
+17: 
+18:   final Dio _dio;
+19: 
+20:   static const _publicListPath = '/api/v1/reels/public/';
+21: 
+22:   static String _detailPath(int id) => '/api/v1/reels/$id/';
+23: 
+24:   @override
+25:   Future<PublicReel?> fetchPublicReel(int id) async {
+26:     try {
+27:       final response = await _dio.get<Map<String, dynamic>>(_detailPath(id));
+28:       final json = response.data!;
+29: 
+30:       // Same reasoning as PostPublicRepositoryImpl.fetchPublicPost —
+31:       // GET /api/v1/reels/{id}/ (ReelDetailView) is a pre-existing,
+32:       // AllowAny endpoint serving the full owner-facing ReelSerializer
+33:       // shape. A Reel additionally needs processing_status == "ready"
+34:       // (not just status == "published") before it's public-safe —
+35:       // ReelPublicListView's own docstring: "Every row ...  already
+36:       // has processing_status='ready' by construction (via
+37:       // Reel.published_objects / ReelPublishedManager)".
+38:       final isPublished = json['status'] == 'published';
+39:       final isReady = json['processing_status'] == 'ready';
+40:       if (!isPublished || !isReady) {
+41:         return null;
+42:       }
+43: 
+44:       return ReelPublicResponseDto.fromJson(json).toEntity();
+45:     } on DioException catch (e) {
+46:       if (e.response?.statusCode == 404) {
+47:         return null;
+48:       }
+49:       rethrow;
+50:     }
+51:   }
+52: 
+53:   @override
+54:   Future<PaginatedResponse<PublicReel>> fetchBusinessReels(
+55:     int businessId,
+56:   ) async {
+57:     final response = await _dio.get<Map<String, dynamic>>(
+58:       _publicListPath,
+59:       queryParameters: {'business_id': businessId},
+60:     );
+61:     return PaginatedResponse.fromJson<PublicReel>(
+62:       response.data!,
+63:       (json) => ReelPublicResponseDto.fromJson(json).toEntity(),
+64:     );
+65:   }
+66: }
+67: 
+68: /// Exposes [ReelPublicRepository] via Riverpod. Same pattern as
+69: /// `postPublicRepositoryProvider` above.
+70: final reelPublicRepositoryProvider = Provider<ReelPublicRepository>(
+71:   (ref) => ReelPublicRepositoryImpl(dio: ref.watch(dioClientProvider)),
+72: );
+
+===== [5] existing tests for post/reel public detail screens
+D:\Cavallo\social_commerce_app\test\features\content\presentation\post_detail_screen_test.dart
+D:\Cavallo\social_commerce_app\test\features\content\presentation\reel_detail_screen_test.dart
+--- test\features\content\presentation\post_detail_screen_test.dart  (lines 1-200 of 361)
+1: import 'dart:async';
+2: 
+3: import 'package:flutter/material.dart';
+4: import 'package:flutter_riverpod/flutter_riverpod.dart';
+5: import 'package:flutter_test/flutter_test.dart';
+6: import 'package:social_commerce_app/core/network/api_failure.dart';
+7: import 'package:social_commerce_app/core/network/paginated_response.dart';
+8: import 'package:social_commerce_app/core/widgets/app_button.dart';
+9: import 'package:social_commerce_app/features/content/data/post_public_repository.dart';
+10: import 'package:social_commerce_app/features/content/domain/post_public_repository.dart';
+11: import 'package:social_commerce_app/features/content/domain/public_post_entity.dart';
+12: import 'package:social_commerce_app/features/content/presentation/post_detail_screen.dart';
+13: import 'package:social_commerce_app/features/social/data/social_interaction_repository_impl.dart';
+14: import 'package:social_commerce_app/features/social/domain/comment_entity.dart';
+15: 
+16: import '../../social/fake_social_interaction_repository.dart';
+17: 
+18: /// Part P-045 (STEP 8) scope: widget tests for `PostDetailScreen`
+19: /// (`/post/:id`). Hand-rolled fake, same shape as every other fake
+20: /// repository in this project (no mockito/mocktail): a mutable
+21: /// result/error, an optional pending [Completer] for a deterministic
+22: /// loading state, and a call counter so the non-numeric-id test can assert
+23: /// zero network calls.
+24: ///
+25: /// Part P-058 update: the screen now also contains the real action row, the
+26: /// comments section and a Report menu, so every test also overrides the
+27: /// social repository with a controllable fake (never the real Dio one).
+28: class _FakePostPublicRepository implements PostPublicRepository {
+29:   _FakePostPublicRepository({this.result, this.error, this.pending});
+30: 
+31:   PublicPost? result;
+32:   Object? error;
+33:   Completer<PublicPost?>? pending;
+34:   int fetchPublicPostCallCount = 0;
+35: 
+36:   @override
+37:   Future<PublicPost?> fetchPublicPost(int id) async {
+38:     fetchPublicPostCallCount++;
+39:     if (pending != null) {
+40:       return pending!.future;
+41:     }
+42:     if (error != null) {
+43:       throw error!;
+44:     }
+45:     return result;
+46:   }
+47: 
+48:   // Unused by this screen — implemented to satisfy the interface.
+49:   @override
+50:   Future<PaginatedResponse<PublicPost>> fetchBusinessPosts(
+51:     int businessId,
+52:   ) async => const PaginatedResponse<PublicPost>(
+53:     results: [],
+54:     next: null,
+55:     previous: null,
+56:   );
+57: }
+58: 
+59: const _post = PublicPost(
+60:   id: 501,
+61:   businessId: 7,
+62:   caption: 'A published post, seen at /post/501.',
+63:   imageUrl: 'https://example.com/post-501.jpg',
+64: );
+65: 
+66: Future<void> _pumpScreen(
+67:   WidgetTester tester, {
+68:   required String postId,
+69:   required _FakePostPublicRepository repository,
+70:   FakeSocialInteractionRepository? social,
+71: }) async {
+72:   await tester.pumpWidget(
+73:     ProviderScope(
+74:       overrides: [
+75:         postPublicRepositoryProvider.overrideWithValue(repository),
+76:         socialInteractionRepositoryProvider.overrideWithValue(
+77:           social ?? FakeSocialInteractionRepository(),
+78:         ),
+79:       ],
+80:       child: MaterialApp(home: PostDetailScreen(postId: postId)),
+81:     ),
+82:   );
+83: }
+84: 
+85: void main() {
+86:   group('PostDetailScreen — non-numeric id', () {
+87:     testWidgets(
+88:       'shows not-found immediately, without calling the repository',
+89:       (tester) async {
+90:         final repository = _FakePostPublicRepository(result: _post);
+91: 
+92:         await _pumpScreen(
+93:           tester,
+94:           postId: 'not-a-number',
+95:           repository: repository,
+96:         );
+97:         await tester.pumpAndSettle();
+98: 
+99:         expect(
+100:           find.text('Post not found.\nIt may have been removed.'),
+101:           findsOneWidget,
+102:         );
+103:         expect(repository.fetchPublicPostCallCount, 0);
+104:       },
+105:     );
+106:   });
+107: 
+108:   group('PostDetailScreen — loading', () {
+109:     testWidgets('shows a LoadingIndicator before the fetch resolves', (
+110:       tester,
+111:     ) async {
+112:       final completer = Completer<PublicPost?>();
+113:       final repository = _FakePostPublicRepository(pending: completer);
+114: 
+115:       await _pumpScreen(tester, postId: '501', repository: repository);
+116:       await tester.pump();
+117: 
+118:       expect(find.byType(CircularProgressIndicator), findsOneWidget);
+119:       // No Report menu until the Post itself has loaded.
+120:       expect(find.byTooltip('More options'), findsNothing);
+121: 
+122:       completer.complete(_post);
+123:       await tester.pumpAndSettle();
+124: 
+125:       expect(find.byType(CircularProgressIndicator), findsNothing);
+126:     });
+127:   });
+128: 
+129:   group('PostDetailScreen — found', () {
+130:     testWidgets(
+131:       'shows the caption, the real action row and the comments section',
+132:       (tester) async {
+133:         final repository = _FakePostPublicRepository(result: _post);
+134: 
+135:         await _pumpScreen(tester, postId: '501', repository: repository);
+136:         await tester.pumpAndSettle();
+137: 
+138:         expect(
+139:           find.text('A published post, seen at /post/501.'),
+140:           findsOneWidget,
+141:         );
+142:         expect(find.byIcon(Icons.favorite_border), findsOneWidget);
+143:         expect(find.byIcon(Icons.mode_comment_outlined), findsOneWidget);
+144:         expect(find.byIcon(Icons.share_outlined), findsOneWidget);
+145:         expect(find.text('Comments'), findsOneWidget);
+146:         expect(
+147:           find.text('No comments yet. Be the first to comment.'),
+148:           findsOneWidget,
+149:         );
+150:       },
+151:     );
+152: 
+153:     testWidgets('an empty caption shows the placeholder copy', (
+154:       tester,
+155:     ) async {
+156:       final repository = _FakePostPublicRepository(
+157:         result: const PublicPost(id: 502, businessId: 7, caption: ''),
+158:       );
+159: 
+160:       await _pumpScreen(tester, postId: '502', repository: repository);
+161:       await tester.pumpAndSettle();
+162: 
+163:       expect(find.text('No caption.'), findsOneWidget);
+164:     });
+165: 
+166:     testWidgets(
+167:       'tapping Like shows the liked state immediately, before any response',
+168:       (tester) async {
+169:         final repository = _FakePostPublicRepository(result: _post);
+170:         final social = FakeSocialInteractionRepository();
+171: 
+172:         await _pumpScreen(
+173:           tester,
+174:           postId: '501',
+175:           repository: repository,
+176:           social: social,
+177:         );
+178:         await tester.pumpAndSettle();
+179: 
+180:         // Close the gate only now, after the initial comment load finished.
+181:         social.gate = Completer<void>();
+182: 
+183:         // Full-screen image at the default 800×600 test surface can push
+184:         // the action row below the fold — ensureVisible scrolls it into
+185:         // view before the tap.
+186:         final likeButton = find.byTooltip('Like');
+187:         await tester.ensureVisible(likeButton);
+188:         await tester.pumpAndSettle();
+189: 
+190:         await tester.tap(likeButton);
+191:         await tester.pump();
+192: 
+193:         expect(find.byIcon(Icons.favorite), findsOneWidget);
+194:         expect(find.byIcon(Icons.favorite_border), findsNothing);
+195: 
+196:         social.gate!.complete();
+197:         await tester.pumpAndSettle();
+198: 
+199:         expect(social.calls, contains('like:post:501'));
+200:       },
+
+===== [6] fake public repositories used in tests
+test\features\business_profile\presentation\business_profile_public_content_section_test.dart:55: class _FakePostPublicRepository implements PostPublicRepository {
+test\features\business_profile\presentation\business_profile_public_content_section_test.dart:82: class _FakeReelPublicRepository implements ReelPublicRepository {
+test\features\business_profile\presentation\business_profile_public_content_section_test.dart:132: postPublicRepositoryProvider.overrideWithValue(postRepository),
+test\features\business_profile\presentation\business_profile_public_content_section_test.dart:133: reelPublicRepositoryProvider.overrideWithValue(reelRepository),
+test\features\business_profile\presentation\business_profile_public_screen_test.dart:100: class _EmptyPostPublicRepository implements PostPublicRepository {
+test\features\business_profile\presentation\business_profile_public_screen_test.dart:116: class _EmptyReelPublicRepository implements ReelPublicRepository {
+test\features\business_profile\presentation\business_profile_public_screen_test.dart:170: postPublicRepositoryProvider.overrideWithValue(
+test\features\business_profile\presentation\business_profile_public_screen_test.dart:173: reelPublicRepositoryProvider.overrideWithValue(
+test\features\content\presentation\post_detail_screen_test.dart:28: class _FakePostPublicRepository implements PostPublicRepository {
+test\features\content\presentation\post_detail_screen_test.dart:75: postPublicRepositoryProvider.overrideWithValue(repository),
+test\features\content\presentation\reel_detail_screen_test.dart:24: class _FakeReelPublicRepository implements ReelPublicRepository {
+test\features\content\presentation\reel_detail_screen_test.dart:73: reelPublicRepositoryProvider.overrideWithValue(repository),
+test\features\featured\featured_badge_ui_test.dart:86: class _EmptyPostRepo implements PostPublicRepository {
+test\features\featured\featured_badge_ui_test.dart:100: class _EmptyReelRepo implements ReelPublicRepository {
+test\features\featured\featured_badge_ui_test.dart:134: postPublicRepositoryProvider.overrideWithValue(_EmptyPostRepo()),
+test\features\featured\featured_badge_ui_test.dart:135: reelPublicRepositoryProvider.overrideWithValue(_EmptyReelRepo()),
+
+===== [7] domain: PublicPost / PublicReel entities (constructors)
+--- lib\features\content\domain\public_post_entity.dart  (lines 1-80 of 142)
+1: /// Part P-045 scope: the clean, customer-facing domain representation
+2: /// of a single PUBLISHED Post — deliberately separate from the
+3: /// owner-facing `Post` (`post_entity.dart`, Parts P-041/P-044), which
+4: /// carries `ModerationStatus`/`rejectionReason`, concepts the public,
+5: /// unauthenticated surface must never reference at all (mirrors the
+6: /// backend's own split between `PostSerializer` and
+7: /// `PostPublicSerializer` — `content/serializers.py`, Part P-043).
+8: /// Every [PublicPost] this app ever constructs is, by construction,
+9: /// already published — see `PostPublicRepositoryImpl` (this part,
+10: /// STEP 1) for exactly where and how that's enforced.
+11: ///
+12: /// Part BUGFIX-058: added [isLiked], [isSaved], [likesCount],
+13: /// [commentsCount], [sharesCount] — the per-viewer social state and
+14: /// real counters now returned by `PostPublicSerializer`. These are the
+15: /// values `ContentActionRow` seeds `contentInteractionProvider` from
+16: /// on every fetch, fixing the cross-account like/save state leak.
+17: /// Deliberately optional with defaults (0 / false), not required: a
+18: /// real fetch through `PostPublicResponseDto.toEntity()` always sets
+19: /// them from the server response, but existing test fixtures across
+20: /// the app construct [PublicPost] directly without them, and forcing
+21: /// every one of those call sites to change is out of this bugfix's
+22: /// scope.
+23: library;
+24: 
+25: class PublicPost {
+26:   const PublicPost({
+27:     required this.id,
+28:     required this.businessId,
+29:     required this.caption,
+30:     this.imageUrl,
+31:     this.likesCount = 0,
+32:     this.commentsCount = 0,
+33:     this.sharesCount = 0,
+34:     this.isLiked = false,
+35:     this.isSaved = false,
+36:     this.createdAt,
+37:     this.updatedAt,
+38:     this.isFeatured = false,
+39:   });
+40: 
+41:   final int id;
+42: 
+43:   final int businessId;
+44: 
+45:   final String caption;
+46: 
+47:   /// Nullable — `Post.image` is optional on the backend, same as the
+48:   /// owner-facing `Post.imageUrl` (see that file's docstring).
+49:   final String? imageUrl;
+50: 
+51:   /// Denormalized counter from the backend (`Post.likes_count`).
+52:   final int likesCount;
+53: 
+54:   /// Denormalized counter from the backend (`Post.comments_count`).
+55:   final int commentsCount;
+56: 
+57:   /// Denormalized counter from the backend (`Post.shares_count`).
+58:   final int sharesCount;
+59: 
+60:   /// Whether the CURRENT viewer (the authenticated request user this
+61:   /// object was fetched under) has liked this post. False for an
+62:   /// unauthenticated fetch — see `PostPublicSerializer.get_is_liked`.
+63:   final bool isLiked;
+64: 
+65:   /// Whether the CURRENT viewer has saved this post. Same
+66:   /// per-viewer/unauthenticated-false shape as [isLiked].
+67:   final bool isSaved;
+68: 
+69:   final DateTime? createdAt;
+70:   final DateTime? updatedAt;
+71: 
+72:   /// Part P-110: whether the OWNING BUSINESS is Featured (real P-087
+73:   /// state via the backend's business join). Display-only; defaults to
+74:   /// false so existing fixtures that build this entity keep compiling.
+75:   final bool isFeatured;
+76: 
+77:   PublicPost copyWith({
+78:     int? id,
+79:     int? businessId,
+80:     String? caption,
+--- lib\features\content\domain\public_reel_entity.dart  (lines 1-80 of 149)
+1: /// Part P-045 scope: the clean, customer-facing domain representation
+2: /// of a single PUBLISHED, fully-processed Reel — same split reasoning
+3: /// as `PublicPost` (`public_post_entity.dart`, this same part). Every
+4: /// [PublicReel] this app ever constructs is, by construction, already
+5: /// `status == published` AND `processing_status == ready` — see
+6: /// `ReelPublicRepositoryImpl` (this part, STEP 1) for exactly where
+7: /// and how both are enforced.
+8: ///
+9: /// Part BUGFIX-058: added [isLiked], [isSaved], [likesCount],
+10: /// [commentsCount], [sharesCount] — same per-viewer social state and
+11: /// real counters added to `PublicPost`, now returned by
+12: /// `ReelPublicSerializer` too. Same optional-with-defaults reasoning
+13: /// as `PublicPost` above — see that entity's docstring.
+14: library;
+15: 
+16: class PublicReel {
+17:   const PublicReel({
+18:     required this.id,
+19:     required this.businessId,
+20:     required this.caption,
+21:     this.videoUrl,
+22:     this.thumbnailUrl,
+23:     this.durationSeconds,
+24:     this.likesCount = 0,
+25:     this.commentsCount = 0,
+26:     this.sharesCount = 0,
+27:     this.isLiked = false,
+28:     this.isSaved = false,
+29:     this.createdAt,
+30:     this.updatedAt,
+31:     this.isFeatured = false,
+32:   });
+33: 
+34:   final int id;
+35: 
+36:   final int businessId;
+37: 
+38:   final String caption;
+39: 
+40:   final String? videoUrl;
+41: 
+42:   /// Read-only, set by `content.tasks.transcode_reel()`. Should always
+43:   /// be non-null in practice for a [PublicReel] (the backend's own
+44:   /// `ReelPublishedManager` requires `processing_status == "ready"`,
+45:   /// which only happens after transcoding sets this), but kept
+46:   /// nullable defensively since the raw JSON field itself is nullable.
+47:   final String? thumbnailUrl;
+48: 
+49:   final int? durationSeconds;
+50: 
+51:   /// Denormalized counter from the backend (`Reel.likes_count`).
+52:   final int likesCount;
+53: 
+54:   /// Denormalized counter from the backend (`Reel.comments_count`).
+55:   final int commentsCount;
+56: 
+57:   /// Denormalized counter from the backend (`Reel.shares_count`).
+58:   final int sharesCount;
+59: 
+60:   /// Whether the CURRENT viewer has liked this reel. False for an
+61:   /// unauthenticated fetch — see `ReelPublicSerializer.get_is_liked`.
+62:   final bool isLiked;
+63: 
+64:   /// Whether the CURRENT viewer has saved this reel. Same
+65:   /// per-viewer/unauthenticated-false shape as [isLiked].
+66:   final bool isSaved;
+67: 
+68:   final DateTime? createdAt;
+69:   final DateTime? updatedAt;
+70: 
+71:   /// Part P-110: whether the OWNING BUSINESS is Featured (real P-087
+72:   /// state via the backend's business join). Display-only; defaults to
+73:   /// false so existing fixtures that build this entity keep compiling.
+74:   final bool isFeatured;
+75: 
+76:   PublicReel copyWith({
+77:     int? id,
+78:     int? businessId,
+79:     String? caption,
+80:     String? videoUrl,
+
+===== [8] owner-side content: how an owner can open one of their OWN posts/reels
+lib\features\content\data\dtos\post_response_dto.dart:21: required this.rejectionReason,
+lib\features\content\data\dtos\post_response_dto.dart:33: rejectionReason: json['rejection_reason'] as String?,
+lib\features\content\data\dtos\post_response_dto.dart:48: final String? rejectionReason;
+lib\features\content\data\dtos\post_response_dto.dart:59: rejectionReason: rejectionReason,
+lib\features\content\data\dtos\reel_response_dto.dart:22: required this.rejectionReason,
+lib\features\content\data\dtos\reel_response_dto.dart:37: rejectionReason: json['rejection_reason'] as String?,
+lib\features\content\data\dtos\reel_response_dto.dart:55: final String? rejectionReason;
+lib\features\content\data\dtos\reel_response_dto.dart:69: rejectionReason: rejectionReason,
+lib\features\content\domain\content_item_entity.dart:28: sealed class ContentItem {
+lib\features\content\domain\content_item_entity.dart:44: String? get rejectionReason;
+lib\features\content\domain\content_item_entity.dart:55: class PostContentItem extends ContentItem {
+lib\features\content\domain\content_item_entity.dart:69: String? get rejectionReason => post.rejectionReason;
+lib\features\content\domain\content_item_entity.dart:87: class ReelContentItem extends ContentItem {
+lib\features\content\domain\content_item_entity.dart:101: String? get rejectionReason => reel.rejectionReason;
+lib\features\content\domain\post_entity.dart:19: /// * `rejectionReason` is this part's own backend addition (STEP 1) —
+lib\features\content\domain\post_entity.dart:33: this.rejectionReason,
+lib\features\content\domain\post_entity.dart:52: final String? rejectionReason;
+lib\features\content\domain\post_entity.dart:63: String? rejectionReason,
+lib\features\content\domain\post_entity.dart:73: rejectionReason: rejectionReason ?? this.rejectionReason,
+lib\features\content\domain\post_entity.dart:88: other.rejectionReason == rejectionReason &&
+lib\features\content\domain\post_entity.dart:99: rejectionReason,
+lib\features\content\domain\public_post_entity.dart:4: /// carries `ModerationStatus`/`rejectionReason`, concepts the public,
+lib\features\content\domain\reel_entity.dart:67: this.rejectionReason,
+lib\features\content\domain\reel_entity.dart:97: final String? rejectionReason;
+lib\features\content\domain\reel_entity.dart:111: String? rejectionReason,
+lib\features\content\domain\reel_entity.dart:124: rejectionReason: rejectionReason ?? this.rejectionReason,
+lib\features\content\domain\reel_entity.dart:142: other.rejectionReason == rejectionReason &&
+lib\features\content\domain\reel_entity.dart:156: rejectionReason,
+lib\features\content\presentation\content_list_screen.dart:92: class ContentListScreen extends ConsumerStatefulWidget {
+lib\features\content\presentation\content_list_screen.dart:112: class _ContentListScreenState extends ConsumerState<ContentListScreen> {
+lib\features\content\presentation\content_list_screen.dart:221: class _ContentListView extends ConsumerWidget {
+lib\features\content\presentation\content_list_screen.dart:244: class _ContentListItem extends StatelessWidget {
+lib\features\content\presentation\content_list_screen.dart:305: rejectionReason: item.rejectionReason,
+lib\features\content\presentation\content_list_screen.dart:371: required this.rejectionReason,
+lib\features\content\presentation\content_list_screen.dart:375: final String? rejectionReason;
+lib\features\content\presentation\content_list_screen.dart:396: // Defensive fallback: rejectionReason should always be
+lib\features\content\presentation\content_list_screen.dart:400: 'Rejected: ${rejectionReason ?? 'no reason given'}',
+lib\features\content\presentation\post_form_screen.dart:56: class PostFormScreen extends ConsumerStatefulWidget {
+lib\features\content\presentation\post_form_screen.dart:63: class _PostFormScreenState extends ConsumerState<PostFormScreen> {
+lib\features\content\presentation\reel_form_screen.dart:68: class ReelFormScreen extends ConsumerStatefulWidget {
+lib\features\content\presentation\reel_form_screen.dart:75: class _ReelFormScreenState extends ConsumerState<ReelFormScreen> {
+
+===== [9] pubspec.yaml dev_dependencies + test helpers dir
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+  # Mocks Dio's HTTP adapter for the P-004 network-layer unit tests
+  # (test/core/network/) — lets us assert on status codes/bodies without
+  # a real backend running.
+  http_mock_adapter: ^0.6.1
+
+flutter:
+  uses-material-design: true
+core
+features
+routing

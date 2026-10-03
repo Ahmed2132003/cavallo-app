@@ -1,0 +1,385 @@
+﻿P-095 STEP 1 AUDIT - 10/03/2026 04:35:08
+
+===== [1] BACKEND: git state =====
+ M celerybeat-schedule
+?? p095_step1_audit.txt
+
+ed246ff update part 94 stap 1 , 2 , 3 , 4
+
+
+===== [2] BACKEND: notifications model files =====
+D:\Cavallo\scd-backend\notifications\models.py
+
+===== [3] BACKEND: notification_type / deep_link_type definitions =====
+--- D:\Cavallo\scd-backend\notifications\models.py
+26: notification_type vs deep_link_type + target_id
+31: * notification_type answers WHY the notification exists
+32: ("new_follower", "comment_on_content", "chat_message", ...).
+36: * deep_link_type + target_id answer WHERE tapping the
+37: notification navigates ("business_profile" + a BusinessProfile
+38: id, "chat_thread" + a Conversation id, ...). They drive the
+42: different notification_types (new_follower and new_rating) both
+43: deep-link to the same "business_profile" screen type, and one
+44: notification_type (moderation_approved) can deep-link to a
+45: different screen type depending on what was approved (post_detail
+46: or reel_detail).
+48: deep_link_type may be blank (a notification that navigates
+49: nowhere, e.g. a plain system announcement). target_id is
+50: nullable for the same reason. The meaning of target_id depends on
+51: deep_link_type: business_profile -> BusinessProfile id,
+52: post_detail -> Post id, reel_detail -> Reel id, product_detail ->
+53: Product id, chat_thread -> Conversation id.
+60: class NotificationType(models.TextChoices):
+61: CHAT_MESSAGE = "chat_message", "Chat message"
+62: MODERATION_APPROVED = "moderation_approved", "Moderation approved"
+63: MODERATION_REJECTED = "moderation_rejected", "Moderation rejected"
+64: NEW_FOLLOWER = "new_follower", "New follower"
+65: COMMENT_ON_CONTENT = "comment_on_content", "Comment on content"
+66: NEW_LIKE = "new_like", "New like"
+71: class DeepLinkType(models.TextChoices):
+72: BUSINESS_PROFILE = "business_profile", "Business profile"
+73: POST_DETAIL = "post_detail", "Post detail"
+74: REEL_DETAIL = "reel_detail", "Reel detail"
+75: PRODUCT_DETAIL = "product_detail", "Product detail"
+83: notification_type = models.CharField(
+85: choices=NotificationType.choices,
+89: deep_link_type = models.CharField(
+91: choices=DeepLinkType.choices,
+95: target_id = models.PositiveIntegerField(null=True, blank=True)
+116: f"notification:{self.pk} {self.notification_type} "
+129: Category -> notification_type mapping (consumed by the dispatch
+132: * chat_notifications_enabled -> chat_message
+133: * moderation_notifications_enabled -> moderation_approved,
+134: moderation_rejected
+135: * social_notifications_enabled -> new_follower, comment_on_content,
+136: new_like, new_share, new_rating
+
+
+===== [4] BACKEND: where each type is created (non-test code) =====
+--- TYPE: moderation_approved
+moderation\services.py:136: notification_type = "moderation_approved"
+notifications\models.py:44: notification_type (moderation_approved) can deep-link to a
+notifications\models.py:62: MODERATION_APPROVED = "moderation_approved", "Moderation approved"
+notifications\models.py:133: * moderation_notifications_enabled -> moderation_approved,
+notifications\tasks.py:24: moderation_approved   -> moderation_notifications_enabled
+notifications\tasks.py:70: Notification.NotificationType.MODERATION_APPROVED.value: (
+
+--- TYPE: moderation_rejected
+moderation\services.py:140: notification_type = "moderation_rejected"
+notifications\models.py:63: MODERATION_REJECTED = "moderation_rejected", "Moderation rejected"
+notifications\models.py:134: moderation_rejected
+notifications\tasks.py:25: moderation_rejected   -> moderation_notifications_enabled
+notifications\tasks.py:73: Notification.NotificationType.MODERATION_REJECTED.value: (
+
+--- TYPE: new_follower
+analytics\admin.py:12: "new_followers",
+analytics\admin.py:24: "new_followers",
+analytics\models.py:13: - new_followers            <- social.Follow rows created that day
+analytics\models.py:45: new_followers = models.PositiveIntegerField(default=0)
+analytics\serializers.py:20: "new_followers",
+analytics\tasks.py:14: - new_followers: social.Follow rows created on the date. Unfollow is a
+analytics\tasks.py:95: "new_followers": Follow.objects.filter(
+notifications\models.py:32: ("new_follower", "comment_on_content", "chat_message", ...).
+notifications\models.py:42: different notification_types (new_follower and new_rating) both
+notifications\models.py:64: NEW_FOLLOWER = "new_follower", "New follower"
+notifications\models.py:135: * social_notifications_enabled -> new_follower, comment_on_content,
+notifications\tasks.py:26: new_follower          -> social_notifications_enabled
+notifications\tasks.py:76: Notification.NotificationType.NEW_FOLLOWER.value: "social_notifications_enabled",
+social\views.py:103: notification_type="new_follower",
+
+--- TYPE: comment_on_content
+notifications\models.py:32: ("new_follower", "comment_on_content", "chat_message", ...).
+notifications\models.py:65: COMMENT_ON_CONTENT = "comment_on_content", "Comment on content"
+notifications\models.py:135: * social_notifications_enabled -> new_follower, comment_on_content,
+notifications\tasks.py:27: comment_on_content    -> social_notifications_enabled
+notifications\tasks.py:77: Notification.NotificationType.COMMENT_ON_CONTENT.value: (
+social\views.py:414: notification_type="comment_on_content",
+
+--- TYPE: new_like
+notifications\models.py:66: NEW_LIKE = "new_like", "New like"
+notifications\models.py:136: new_like, new_share, new_rating
+notifications\tasks.py:28: new_like              -> social_notifications_enabled
+notifications\tasks.py:80: Notification.NotificationType.NEW_LIKE.value: "social_notifications_enabled",
+
+--- TYPE: chat_message
+chat\consumers.py:20: chat_message() below on every consumer instance currently joined to
+chat\consumers.py:262: async def chat_message(self, event):
+chat\consumers.py:281: chat_message() above does for "chat.message". Forwards
+chat\consumers.py:334: replaced by an underscore, exactly as chat_message() and
+chat\tasks.py:94: notification_type="chat_message",
+notifications\models.py:32: ("new_follower", "comment_on_content", "chat_message", ...).
+notifications\models.py:61: CHAT_MESSAGE = "chat_message", "Chat message"
+notifications\models.py:132: * chat_notifications_enabled -> chat_message
+notifications\tasks.py:23: chat_message          -> chat_notifications_enabled
+notifications\tasks.py:69: Notification.NotificationType.CHAT_MESSAGE.value: "chat_notifications_enabled",
+
+
+===== [5] BACKEND: existing tests mentioning deep_link =====
+chat\test_tasks.py:53: deep_link_type="chat_thread",
+core\tests\test_integration_phase17.py:735: deep_link_type="chat_thread",
+core\tests\test_integration_phase17_step4.py:5: up in the Notification Center API, and the (deep_link_type, target_id)
+core\tests\test_integration_phase17_step4.py:80: def test_follow_and_chat_notify_business_and_deep_link(
+core\tests\test_integration_phase17_step4.py:113: assert kwargs["deep_link_type"] == "business_profile"
+core\tests\test_integration_phase17_step4.py:124: assert follow_notif["deep_link_type"] == "business_profile"
+core\tests\test_integration_phase17_step4.py:160: assert kwargs["deep_link_type"] == "chat_thread"
+core\tests\test_integration_phase17_step4.py:170: assert chat_notif["deep_link_type"] == "chat_thread"
+notifications\tests\test_api.py:40: "deep_link_type": "business_profile",
+notifications\tests\test_api.py:137: "deep_link_type",
+notifications\tests\test_api.py:143: assert item["deep_link_type"] == "business_profile"
+notifications\tests\test_api.py:395: deep_link_type="business_profile",
+notifications\tests\test_api.py:415: deep_link_type="chat_thread",
+notifications\tests\test_enqueue.py:17: deep_link_type="business_profile",
+notifications\tests\test_enqueue.py:26: deep_link_type="business_profile",
+notifications\tests\test_models.py:27: def test_notification_stores_type_and_deep_link_pair_separately():
+notifications\tests\test_models.py:35: deep_link_type=Notification.DeepLinkType.BUSINESS_PROFILE,
+notifications\tests\test_models.py:41: assert notification.deep_link_type == "business_profile"
+notifications\tests\test_models.py:43: assert notification.notification_type != notification.deep_link_type
+notifications\tests\test_models.py:46: def test_two_different_types_can_deep_link_to_the_same_screen_type():
+notifications\tests\test_models.py:54: deep_link_type=Notification.DeepLinkType.BUSINESS_PROFILE,
+notifications\tests\test_models.py:62: deep_link_type=Notification.DeepLinkType.BUSINESS_PROFILE,
+notifications\tests\test_models.py:67: assert follower.deep_link_type == rating.deep_link_type == "business_profile"
+notifications\tests\test_models.py:70: def test_deep_link_is_optional():
+notifications\tests\test_models.py:81: assert notification.deep_link_type == ""
+notifications\tests\test_push.py:52: "deep_link_type": "chat_thread",
+notifications\tests\test_push.py:83: "deep_link_type": "chat_thread",
+notifications\tests\test_push.py:152: "deep_link_type": "",
+notifications\tests\test_push.py:155: ) == {"type": "system", "notification_id": "7", "deep_link_type": ""}
+notifications\tests\test_services.py:42: deep_link_type="chat_thread",
+notifications\tests\test_services.py:51: assert stored.deep_link_type == "chat_thread"
+notifications\tests\test_services.py:56: def test_create_notification_without_deep_link_stores_blank_and_null():
+notifications\tests\test_services.py:67: assert notification.deep_link_type == ""
+notifications\tests\test_services.py:71: def test_create_notification_keeps_type_and_deep_link_distinct():
+notifications\tests\test_services.py:79: deep_link_type="business_profile",
+notifications\tests\test_services.py:87: deep_link_type="business_profile",
+notifications\tests\test_services.py:92: assert first.deep_link_type == second.deep_link_type == "business_profile"
+notifications\tests\test_services.py:109: def test_create_notification_rejects_unknown_deep_link_type():
+notifications\tests\test_services.py:118: deep_link_type="not_a_screen",
+notifications\tests\test_services.py:125: def test_create_notification_rejects_target_id_without_deep_link_type():
+notifications\tests\test_sources.py:8: proving (a) the source's notification_type / deep_link fields are
+notifications\tests\test_sources.py:141: deep_link_type="post_detail",
+notifications\tests\test_sources.py:155: deep_link_type="post_detail",
+notifications\tests\test_sources.py:169: deep_link_type="reel_detail",
+notifications\tests\test_sources.py:190: deep_link_type="business_profile",
+notifications\tests\test_sources.py:251: deep_link_type="business_profile",
+notifications\tests\test_sources.py:313: deep_link_type="post_detail",
+notifications\tests\test_sources.py:323: assert dispatch_delay.call_args.kwargs["deep_link_type"] == "reel_detail"
+notifications\tests\test_sources.py:363: deep_link_type="post_detail",
+notifications\tests\test_sources.py:425: deep_link_type="chat_thread",
+notifications\tests\test_tasks.py:96: deep_link_type="business_profile",
+notifications\tests\test_tasks.py:104: assert notification.deep_link_type == "business_profile"
+notifications\tests\test_tasks.py:113: "deep_link_type": "business_profile",
+notifications\tests\test_tasks.py:218: def test_deep_link_is_optional():
+notifications\tests\test_tasks.py:219: user = _make_user("no_deep_link_user")
+notifications\tests\test_tasks.py:230: assert notification.deep_link_type == ""
+notifications\tests\test_tasks.py:232: assert mock_push.call_args.kwargs["data"]["deep_link_type"] == ""
+
+
+===== [6] MOBILE: git state =====
+ D p093_step3.ps1
+ D p093_step3a.ps1
+ D p093_step3b.ps1
+ D p093_step4a.ps1
+ D p093_step4b.ps1
+
+8a435dd update part 93 stap 1 , 2 , 3 ,4
+
+
+===== [7] MOBILE: deep link resolver file(s) =====
+D:\Cavallo\social_commerce_app\lib\core\deep_link_resolver.dart
+
+--- FULL CONTENT: D:\Cavallo\social_commerce_app\lib\core\deep_link_resolver.dart
+1: import '../routing/route_names.dart';
+2: 
+3: /// Part P-080: the Flutter-side half of the notification deep-link
+4: /// contract defined by the backend in Part P-078.
+5: ///
+6: /// The backend `Notification` model carries two separate fields:
+7: /// `deep_link_type` (WHERE to go, a string) and `target_id` (the id of the
+8: /// thing to open). [resolveDeepLink] turns that pair into a route path that
+9: /// ALREADY exists in `RouteNames` — no route is invented here.
+10: ///
+11: /// ### COUPLING — keep these two in sync (flagged on purpose)
+12: ///
+13: /// [DeepLinkTypes] and the `switch` inside [resolveDeepLink] mirror the
+14: /// `deep_link_type` choice list in the backend's `notifications/models.py`
+15: /// (pinned there by `test_choice_values_are_the_locked_contract`). If a
+16: /// future phase adds a new notification source with a new deep-link
+17: /// target, BOTH the backend choice list AND this file (plus its test) must
+18: /// be updated together.
+19: ///
+20: /// Consumers: Part P-081 (FCM tap handling) and Part P-082 (notification
+21: /// center UI) call [resolveDeepLink]; this part builds only the pure
+22: /// resolution function, no UI and no FCM handling.
+23: 
+24: /// The exact `deep_link_type` strings sent by the backend (P-078).
+25: class DeepLinkTypes {
+26:   DeepLinkTypes._();
+27: 
+28:   static const String businessProfile = 'business_profile';
+29:   static const String postDetail = 'post_detail';
+30:   static const String reelDetail = 'reel_detail';
+31:   static const String productDetail = 'product_detail';
+32:   static const String chatThread = 'chat_thread';
+33: 
+34:   /// Every value [resolveDeepLink] knows how to resolve.
+35:   static const Set<String> all = <String>{
+36:     businessProfile,
+37:     postDetail,
+38:     reelDetail,
+39:     productDetail,
+40:     chatThread,
+41:   };
+42: }
+43: 
+44: /// Where an unresolvable deep link lands instead of crashing.
+45: const String deepLinkFallbackRoute = RouteNames.homePath;
+46: 
+47: /// Resolves a notification's [deepLinkType] + [targetId] into a concrete
+48: /// route path (for example `business_profile` + `5` -> `/business/5`).
+49: ///
+50: /// Never throws and never returns null or a malformed path. Returns
+51: /// [deepLinkFallbackRoute] (`/home`) when:
+52: /// - [deepLinkType] is unknown or blank (a blank type means "navigates
+53: ///   nowhere" in the backend contract), or
+54: /// - [targetId] is null or not a positive id (every supported type
+55: ///   requires one, so a null id would otherwise produce `/business/null`).
+56: String resolveDeepLink(String deepLinkType, int? targetId) {
+57:   final String? pathPattern = switch (deepLinkType) {
+58:     DeepLinkTypes.businessProfile => RouteNames.businessProfilePath,
+59:     DeepLinkTypes.postDetail => RouteNames.postDetailPath,
+60:     DeepLinkTypes.reelDetail => RouteNames.reelDetailPath,
+61:     DeepLinkTypes.productDetail => RouteNames.productDetailPath,
+62:     DeepLinkTypes.chatThread => RouteNames.chatThreadPath,
+63:     _ => null,
+64:   };
+65: 
+66:   if (pathPattern == null) {
+67:     return deepLinkFallbackRoute;
+68:   }
+69:   if (targetId == null || targetId <= 0) {
+70:     return deepLinkFallbackRoute;
+71:   }
+72: 
+73:   return pathPattern.replaceFirst(':${RouteNames.idParam}', '$targetId');
+74: }
+
+===== [8] MOBILE: tests referencing resolveDeepLink / deep link =====
+test\core\deep_link_resolver_test.dart:2: import 'package:social_commerce_app/core/deep_link_resolver.dart';
+test\core\deep_link_resolver_test.dart:5: /// Part P-080: unit tests for [resolveDeepLink].
+test\core\deep_link_resolver_test.dart:8: /// written out on purpose instead of reusing [DeepLinkTypes] / [RouteNames]
+test\core\deep_link_resolver_test.dart:21: group('resolveDeepLink - known deep_link_type values', () {
+test\core\deep_link_resolver_test.dart:23: expect(resolveDeepLink('business_profile', 5), '/business/5');
+test\core\deep_link_resolver_test.dart:27: expect(resolveDeepLink('post_detail', 12), '/post/12');
+test\core\deep_link_resolver_test.dart:31: expect(resolveDeepLink('reel_detail', 7), '/reel/7');
+test\core\deep_link_resolver_test.dart:35: expect(resolveDeepLink('product_detail', 33), '/product/33');
+test\core\deep_link_resolver_test.dart:39: expect(resolveDeepLink('chat_thread', 101), '/chat/101');
+test\core\deep_link_resolver_test.dart:44: resolveDeepLink('business_profile', 2147483647),
+test\core\deep_link_resolver_test.dart:50: group('resolveDeepLink - unrecognized deepLinkType', () {
+test\core\deep_link_resolver_test.dart:52: expect(resolveDeepLink('story_detail', 5), '/home');
+test\core\deep_link_resolver_test.dart:53: expect(resolveDeepLink('story_detail', 5), RouteNames.homePath);
+test\core\deep_link_resolver_test.dart:59: expect(resolveDeepLink('', 5), '/home');
+test\core\deep_link_resolver_test.dart:60: expect(resolveDeepLink('', null), '/home');
+test\core\deep_link_resolver_test.dart:65: expect(resolveDeepLink('Business_Profile', 5), '/home');
+test\core\deep_link_resolver_test.dart:69: expect(resolveDeepLink(' business_profile ', 5), '/home');
+test\core\deep_link_resolver_test.dart:73: group('resolveDeepLink - missing or invalid targetId', () {
+test\core\deep_link_resolver_test.dart:78: final result = resolveDeepLink(type, null);
+test\core\deep_link_resolver_test.dart:87: expect(resolveDeepLink(type, 0), '/home', reason: type);
+test\core\deep_link_resolver_test.dart:93: expect(resolveDeepLink(type, -3), '/home', reason: type);
+test\core\deep_link_resolver_test.dart:98: expect(resolveDeepLink('nonsense', null), '/home');
+test\core\deep_link_resolver_test.dart:103: test('DeepLinkTypes.all is exactly the five backend P-078 values', () {
+test\core\deep_link_resolver_test.dart:104: expect(DeepLinkTypes.all, <String>{
+test\core\deep_link_resolver_test.dart:114: expect(deepLinkFallbackRoute, '/home');
+test\core\deep_link_resolver_test.dart:115: expect(deepLinkFallbackRoute, RouteNames.homePath);
+test\core\deep_link_resolver_test.dart:122: final result = resolveDeepLink(type, 42);
+test\core\deep_link_resolver_test.dart:135: resolveDeepLink('business_profile', 5),
+test\core\deep_link_resolver_test.dart:139: resolveDeepLink('post_detail', 5),
+test\core\deep_link_resolver_test.dart:143: resolveDeepLink('reel_detail', 5),
+test\core\deep_link_resolver_test.dart:147: resolveDeepLink('product_detail', 5),
+test\core\deep_link_resolver_test.dart:151: resolveDeepLink('chat_thread', 5),
+test\core\deep_link_resolver_test.dart:158: () => resolveDeepLink('\u0645\u062d\u0645\u062f', 1),
+test\core\deep_link_resolver_test.dart:161: expect(() => resolveDeepLink('x' * 10000, 1), returnsNormally);
+test\core\deep_link_resolver_test.dart:162: expect(() => resolveDeepLink('post_detail', 1 << 62), returnsNormally);
+test\core\push\fcm_service_test.dart:8: import 'package:social_commerce_app/core/deep_link_resolver.dart';
+test\core\push\fcm_service_test.dart:22: 'deep_link_type': 'chat_thread',
+test\core\push\fcm_service_test.dart:244: expect(received.single.data['deep_link_type'], 'chat_thread');
+test\core\push\fcm_service_test.dart:293: final taps = <PushDeepLink>[];
+test\core\push\fcm_service_test.dart:303: expect(taps.single.route, resolveDeepLink('chat_thread', 9));
+test\core\push\fcm_service_test.dart:327: final taps = <PushDeepLink>[];
+test\core\push\fcm_service_test.dart:334: 'deep_link_type': '',
+test\core\push\fcm_service_test.dart:349: final taps = <PushDeepLink>[];
+test\core\push\fcm_service_test.dart:354: data: {'deep_link_type': 'chat_thread', 'target_id': 'abc'},
+test\core\push\fcm_service_test.dart:360: expect(taps.single.route, deepLinkFallbackRoute);
+test\core\push\fcm_service_test.dart:404: group('PushDeepLink.fromData', () {
+test\core\push\fcm_service_test.dart:406: final link = PushDeepLink.fromData(_chatData)!;
+test\core\push\fcm_service_test.dart:413: test('a missing deep_link_type means no deep link', () {
+test\core\push\fcm_service_test.dart:414: expect(PushDeepLink.fromData(const {'type': 'system'}), isNull);
+test\core\push\fcm_service_test.dart:417: test('a blank deep_link_type means no deep link', () {
+test\core\push\fcm_service_test.dart:418: expect(PushDeepLink.fromData(const {'deep_link_type': '   '}), isNull);
+test\core\push\fcm_service_test.dart:423: PushDeepLink.fromData(const {'deep_link_type': 'business_profile'})!;
+test\core\push\fcm_service_test.dart:426: expect(link.route, deepLinkFallbackRoute);
+test\core\push\fcm_service_test.dart:435: data: {'target_id': 9, 'deep_link_type': 'chat_thread'},
+test\core\push\fcm_service_test.dart:441: expect(message.data, {'target_id': '9', 'deep_link_type': 'chat_thread'});
+test\features\notifications\fake_notification_repository.dart:11: String deepLinkType = 'business_profile',
+test\features\notifications\fake_notification_repository.dart:19: deepLinkType: deepLinkType,
+test\features\notifications\data\notification_repository_test.dart:13: String deepLinkType = 'business_profile',
+test\features\notifications\data\notification_repository_test.dart:20: 'deep_link_type': deepLinkType,
+test\features\notifications\data\notification_repository_test.dart:48: _item(1, deepLinkType: '', targetId: null),
+test\features\notifications\data\notification_repository_test.dart:59: expect(page.results[1].deepLinkType, '');
+test\features\notifications\domain\app_notification_test.dart:2: import 'package:social_commerce_app/core/deep_link_resolver.dart';
+test\features\notifications\domain\app_notification_test.dart:6: String deepLinkType = 'business_profile',
+test\features\notifications\domain\app_notification_test.dart:13: 'deep_link_type': deepLinkType,
+test\features\notifications\domain\app_notification_test.dart:27: expect(n.deepLinkType, 'business_profile');
+test\features\notifications\domain\app_notification_test.dart:33: test('fromJson tolerates a blank deep_link_type and a null target_id', () {
+test\features\notifications\domain\app_notification_test.dart:34: final n = AppNotification.fromJson(_json(deepLinkType: '', targetId: null));
+test\features\notifications\domain\app_notification_test.dart:36: expect(n.deepLinkType, '');
+test\features\notifications\domain\app_notification_test.dart:40: test('hasDeepLink is false for a blank type and true otherwise', () {
+test\features\notifications\domain\app_notification_test.dart:42: AppNotification.fromJson(_json(deepLinkType: '')).hasDeepLink,
+test\features\notifications\domain\app_notification_test.dart:45: expect(AppNotification.fromJson(_json()).hasDeepLink, isTrue);
+test\features\notifications\domain\app_notification_test.dart:48: test('route delegates to resolveDeepLink (P-080)', () {
+test\features\notifications\domain\app_notification_test.dart:52: expect(n.route, resolveDeepLink('business_profile', 7));
+test\features\notifications\domain\app_notification_test.dart:56: final n = AppNotification.fromJson(_json(deepLinkType: '', targetId: null));
+test\features\notifications\domain\app_notification_test.dart:58: expect(n.route, deepLinkFallbackRoute);
+test\features\notifications\domain\app_notification_test.dart:69: expect(read.deepLinkType, original.deepLinkType);
+test\features\notifications\presentation\notification_center_screen_test.dart:188: fakeNotification(3, deepLinkType: '', targetId: null),
+test\features\notifications\presentation\notification_navigator_test.dart:154: await setup.navigator.open(deepLinkType: type, targetId: 5);
+test\features\notifications\presentation\notification_navigator_test.dart:175: await setup.navigator.open(deepLinkType: 'chat_thread', targetId: 101);
+test\features\notifications\presentation\notification_navigator_test.dart:188: await setup.navigator.open(deepLinkType: 'chat_thread', targetId: 101);
+test\features\notifications\presentation\notification_navigator_test.dart:200: await setup.navigator.open(deepLinkType: 'chat_thread', targetId: 101);
+test\features\notifications\presentation\notification_navigator_test.dart:212: await setup.navigator.open(deepLinkType: 'chat_thread', targetId: null);
+test\features\notifications\presentation\notification_navigator_test.dart:221: testWidgets('an unknown deep_link_type goes home', (tester) async {
+test\features\notifications\presentation\notification_navigator_test.dart:224: await setup.navigator.open(deepLinkType: 'something_new', targetId: 5);
+test\features\notifications\presentation\notification_navigator_test.dart:234: deepLinkType: 'business_profile',
+test\features\notifications\presentation\notification_navigator_test.dart:242: testWidgets('a blank deep_link_type navigates nowhere', (tester) async {
+test\features\notifications\presentation\notification_navigator_test.dart:245: await setup.navigator.open(deepLinkType: '', targetId: null);
+test\features\notifications\presentation\notification_navigator_test.dart:246: await setup.navigator.open(deepLinkType: '   ', targetId: 5);
+test\features\notifications\presentation\notification_navigator_test.dart:264: deepLinkType: 'business_profile',
+test\features\notifications\presentation\notification_navigator_test.dart:280: const PushDeepLink(type: 'chat_thread', targetId: 33),
+test\features\notifications\presentation\push_notification_handler_test.dart:24: final tapController = StreamController<PushDeepLink>.broadcast();
+test\features\notifications\presentation\push_notification_handler_test.dart:25: final pending = <PushDeepLink>[];
+test\features\notifications\presentation\push_notification_handler_test.dart:31: Stream<PushDeepLink> get taps => tapController.stream;
+test\features\notifications\presentation\push_notification_handler_test.dart:34: List<PushDeepLink> takePendingTaps() {
+test\features\notifications\presentation\push_notification_handler_test.dart:35: final taps = List<PushDeepLink>.of(pending);
+test\features\notifications\presentation\push_notification_handler_test.dart:52: final opened = <PushDeepLink>[];
+test\features\notifications\presentation\push_notification_handler_test.dart:55: Future<void> openPush(PushDeepLink link) async {
+test\features\notifications\presentation\push_notification_handler_test.dart:64: 'deep_link_type': 'chat_thread',
+test\features\notifications\presentation\push_notification_handler_test.dart:160: const PushDeepLink(
+test\features\notifications\presentation\push_notification_handler_test.dart:177: fcm.pending.add(const PushDeepLink(type: 'post', targetId: 3));
+test\features\notifications\presentation\push_notification_handler_test.dart:217: const PushMessage(data: {'deep_link_type': 'post', 'target_id': '1'}),
+
+
+===== [9] MOBILE: notification center screen(s) (P-082) =====
+D:\Cavallo\social_commerce_app\lib\features\notifications\data\notification_repository_impl.dart
+D:\Cavallo\social_commerce_app\lib\features\notifications\domain\app_notification.dart
+D:\Cavallo\social_commerce_app\lib\features\notifications\domain\notification_preferences.dart
+D:\Cavallo\social_commerce_app\lib\features\notifications\domain\notification_repository.dart
+D:\Cavallo\social_commerce_app\lib\features\notifications\presentation\notification_center_screen.dart
+D:\Cavallo\social_commerce_app\lib\features\notifications\presentation\notification_list_provider.dart
+D:\Cavallo\social_commerce_app\lib\features\notifications\presentation\notification_navigator.dart
+D:\Cavallo\social_commerce_app\lib\features\notifications\presentation\notification_preferences_provider.dart
+D:\Cavallo\social_commerce_app\lib\features\notifications\presentation\notification_preferences_screen.dart
+D:\Cavallo\social_commerce_app\lib\features\notifications\presentation\push_notification_handler.dart
+
+===== [10] REPORT: append P-095 section if missing =====
+P-095 section appended to report.
+
+DONE. Full output saved to: D:\Cavallo\scd-backend\p095_step1_audit.txt

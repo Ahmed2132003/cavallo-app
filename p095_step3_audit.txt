@@ -1,0 +1,962 @@
+﻿P-095 STEP 3 AUDIT - 10/03/2026 04:43:02
+
+===== [1] moderation/services.py header (_CONTENT_DEEP_LINKS)
+--- moderation\services.py  (lines 1-58 of 231)
+1: """
+2: Moderation state-machine service (Part P-037, notifications added in P-079).
+3: 
+4: approve() and reject() are the ONLY sanctioned way any code may move a
+5: Moderatable content object's ``status`` to "published" or "rejected".
+6: 
+7: RULE FOR PHASE 7 (Posts/Reels) AND PHASE 8 (Stories): content models,
+8: views, serializers, admin actions and Celery tasks must NEVER write to a
+9: Moderatable model's ``status`` field directly to publish or reject
+10: something. Always call the functions in this module. Setting the field
+11: anywhere else bypasses the audit trail (ModerationLog) and reintroduces
+12: the Section 28 "moderation bypass" risk that this whole app exists to
+13: prevent.
+14: 
+15: Each function performs the full state transition in ONE transaction:
+16: 
+17: 1. the ModerationQueue row's ``status``,
+18: 2. the underlying content object's ``status`` (via the generic FK),
+19: 3. a new ModerationLog row,
+20: 
+21: all three or none. If any step fails, nothing is persisted.
+22: 
+23: This module contains no permission checks and no HTTP concerns.
+24: 
+25: Part P-079: AFTER the transaction has committed, the content's business
+26: owner is notified through notifications.tasks.enqueue_notification (the
+27: single notification orchestration path; never call
+28: create_notification/send_push_notification from here). The notification
+29: is best-effort: a failure to enqueue is logged and never affects the
+30: moderation decision that has already been committed. This module still
+31: imports no specific content model: the owner and the deep link are
+32: resolved generically from ``content.business`` and the model name.
+33: """
+34: 
+35: import logging
+36: 
+37: from django.core.exceptions import ValidationError
+38: from django.db import transaction
+39: 
+40: from moderation.models import Moderatable, ModerationLog, ModerationQueue
+41: from notifications.tasks import enqueue_notification
+42: 
+43: logger = logging.getLogger(__name__)
+44: 
+45: # model_name -> deep_link_type (target_id = the content's own id).
+46: # Anything not listed (today: story) has no detail screen in the P-078
+47: # contract, so it deep-links to the owning business profile instead.
+48: _CONTENT_DEEP_LINKS = {
+49:     "post": "post_detail",
+50:     "reel": "reel_detail",
+51: }
+52: 
+53: 
+54: class AlreadyDecidedError(ValidationError):
+55:     """
+56:     Raised when approve()/reject() is called on a queue item that is no
+57:     longer pending.
+58: 
+
+===== [2] social/views.py LikeToggleView (any notification?)
+--- social\views.py  (lines 140-232 of 566)
+140: # liked just because it exists in the ContentType table.
+141: ALLOWED_CONTENT_TYPES = {
+142:     "post": ("content", "Post"),
+143:     "reel": ("content", "Reel"),
+144: }
+145: 
+146: 
+147: def _resolve_like_target(content_type_str, object_id):
+148:     if content_type_str not in ALLOWED_CONTENT_TYPES:
+149:         raise ValidationError(
+150:             {
+151:                 "content_type": (
+152:                     f"Unrecognized content_type '{content_type_str}'. "
+153:                     f"Must be one of: {', '.join(ALLOWED_CONTENT_TYPES)}."
+154:                 )
+155:             }
+156:         )
+157:     app_label, model_name = ALLOWED_CONTENT_TYPES[content_type_str]
+158:     model = apps.get_model(app_label, model_name)
+159:     try:
+160:         obj = model.objects.get(pk=object_id)
+161:     except model.DoesNotExist:
+162:         raise NotFound(f"{model_name} not found.")
+163:     content_type = ContentType.objects.get_for_model(model)
+164:     return content_type, obj
+165: 
+166: 
+167: class LikeToggleView(APIView):
+168:     """
+169:     POST   /api/v1/likes/ — like (idempotent)
+170:     DELETE /api/v1/likes/ — unlike (idempotent)
+171: 
+172:     Body: {"content_type": "post"|"reel", "object_id": <id>}
+173: 
+174:     Mirrors FollowToggleView's exact transactional shape (P-052):
+175:     get_or_create()/filter().delete() gated atomic F()-counter update,
+176:     resolved generically via obj.__class__ instead of a fixed model.
+177:     """
+178: 
+179:     permission_classes = [IsAuthenticated]
+180: 
+181:     def post(self, request):
+182:         content_type_str = request.data.get("content_type")
+183:         object_id = request.data.get("object_id")
+184:         if not content_type_str or object_id is None:
+185:             raise ValidationError(
+186:                 {"detail": "Both 'content_type' and 'object_id' are required."}
+187:             )
+188:         content_type, obj = _resolve_like_target(content_type_str, object_id)
+189: 
+190:         with transaction.atomic():
+191:             _like, created = Like.objects.get_or_create(
+192:                 user=request.user, content_type=content_type, object_id=obj.pk
+193:             )
+194:             if created:
+195:                 obj.__class__.objects.filter(pk=obj.pk).update(
+196:                     likes_count=F("likes_count") + 1
+197:                 )
+198: 
+199:         return Response({"liked": True})
+200: 
+201:     def delete(self, request):
+202:         content_type_str = request.data.get("content_type")
+203:         object_id = request.data.get("object_id")
+204:         if not content_type_str or object_id is None:
+205:             raise ValidationError(
+206:                 {"detail": "Both 'content_type' and 'object_id' are required."}
+207:             )
+208:         content_type, obj = _resolve_like_target(content_type_str, object_id)
+209: 
+210:         with transaction.atomic():
+211:             deleted_count, _ = Like.objects.filter(
+212:                 user=request.user, content_type=content_type, object_id=obj.pk
+213:             ).delete()
+214:             if deleted_count:
+215:                 obj.__class__.objects.filter(pk=obj.pk, likes_count__gt=0).update(
+216:                     likes_count=F("likes_count") - 1
+217:                 )
+218: 
+219:         return Response({"liked": False})
+220: 
+221: 
+222: # Whitelist for Part P-054 (Save) — separate from LikeToggleView's
+223: # ALLOWED_CONTENT_TYPES above because Save includes "product" and Like
+224: # does not (P-053 stays Post/Reel-only; see that view's own comment).
+225: # Kept deliberately explicit and closed, same reasoning as Like's.
+226: SAVE_ALLOWED_CONTENT_TYPES = {
+227:     "post": ("content", "Post"),
+228:     "reel": ("content", "Reel"),
+229:     "product": ("products", "Product"),
+230: }
+231: 
+232: 
+
+===== [3] content/views.py : Post/Reel detail views + status filtering
+--- content\views.py:64
+class PostDetailView(generics.RetrieveUpdateDestroyAPIView):
+        """
+        GET: public (AllowAny), looked up by pk.
+        PATCH/DELETE: require auth AND an explicit object-level ownership
+        check inside perform_update()/perform_destroy() — defense in depth,
+        not left to permission_classes alone (same as ProductDetailView).
+        DELETE is the inherited soft delete (is_deleted=True), never a real
+        row deletion.
+        """
+    
+        serializer_class = PostSerializer
+        queryset = Post.objects.all()
+    
+        def get_permissions(self):
+            if self.request.method in ("PATCH", "PUT", "DELETE"):
+                return [permissions.IsAuthenticated()]
+            return [permissions.AllowAny()]
+    
+        def get_object(self):
+            post = _get_post_or_404(self.kwargs["pk"])
+            self.check_object_permissions(self.request, post)
+            return post
+    
+        def _check_ownership(self, post):
+            if post.business.user_id != self.request.user.id:
+                raise PermissionDenied("You do not own this post.")
+    
+        def perform_update(self, serializer):
+            self._check_ownership(serializer.instance)
+            serializer.save()
+    
+        def perform_destroy(self, instance):
+            self._check_ownership(instance)
+            instance.delete()
+    
+    
+    class PostPublicListView(generics.ListAPIView):
+        """
+        Part P-043. GET /api/v1/posts/public/ — public, read-only list of
+        approved-and-visible Posts, optionally narrowed to one business via
+        ?business_id= — the first endpoint a Customer with no account at
+--- content\views.py:164
+class ReelDetailView(generics.RetrieveUpdateDestroyAPIView):
+        """
+        Part P-042. Same public-GET / owner-only-PATCH-DELETE pattern as
+        PostDetailView above, byte-for-byte. See ReelSerializer's docstring
+        for the one known, deliberately out-of-scope limitation: PATCHing
+        `video` here does not re-trigger transcode_reel.
+        """
+    
+        serializer_class = ReelSerializer
+        queryset = Reel.objects.all()
+    
+        def get_permissions(self):
+            if self.request.method in ("PATCH", "PUT", "DELETE"):
+                return [permissions.IsAuthenticated()]
+            return [permissions.AllowAny()]
+    
+        def get_object(self):
+            reel = _get_reel_or_404(self.kwargs["pk"])
+            self.check_object_permissions(self.request, reel)
+            return reel
+    
+        def _check_ownership(self, reel):
+            if reel.business.user_id != self.request.user.id:
+                raise PermissionDenied("You do not own this reel.")
+    
+        def perform_update(self, serializer):
+            self._check_ownership(serializer.instance)
+            serializer.save()
+    
+        def perform_destroy(self, instance):
+            self._check_ownership(instance)
+            instance.delete()
+    
+    
+    class ReelPublicListView(generics.ListAPIView):
+        """
+        Part P-043. GET /api/v1/reels/public/ — same shape as
+        PostPublicListView above, sourced from Reel.published_objects
+        (ReelPublishedManager — also requires processing_status="ready",
+        see content/models.py). Same ?business_id= filter, same
+        StandardCursorPagination.
+--- content\urls.py  (lines 1-9 of 9)
+1: from django.urls import path
+2: 
+3: from content.views import PostDetailView, PostListCreateView, PostPublicListView
+4: 
+5: urlpatterns = [
+6:     path("public/", PostPublicListView.as_view(), name="post-public-list"),
+7:     path("<int:pk>/", PostDetailView.as_view(), name="post-detail"),
+8:     path("", PostListCreateView.as_view(), name="post-list-create"),
+9: ]
+
+===== [4] content/views.py : status / published / owner filters
+46: permission_classes = [permissions.IsAuthenticated]
+49: def get_queryset(self):
+67: PATCH/DELETE: require auth AND an explicit object-level ownership
+69: not left to permission_classes alone (same as ProductDetailView).
+87: def _check_ownership(self, post):
+92: self._check_ownership(serializer.instance)
+96: self._check_ownership(instance)
+107: Sourced from Post.published_objects (never Post.objects) — this is
+108: the entire point of this part: a pending or rejected Post, or a
+120: permission_classes = [permissions.AllowAny]
+123: def get_queryset(self):
+124: queryset = Post.published_objects.select_related("business")
+133: Part P-042. Same ownership/list-create pattern as PostListCreateView
+136: upload is saved. The Reel is created with processing_status=
+145: permission_classes = [permissions.IsAuthenticated]
+148: def get_queryset(self):
+166: Part P-042. Same public-GET / owner-only-PATCH-DELETE pattern as
+185: def _check_ownership(self, reel):
+190: self._check_ownership(serializer.instance)
+194: self._check_ownership(instance)
+201: PostPublicListView above, sourced from Reel.published_objects
+202: (ReelPublishedManager — also requires processing_status="ready",
+208: permission_classes = [permissions.AllowAny]
+211: def get_queryset(self):
+212: queryset = Reel.published_objects.select_related("business")
+
+===== [5] rejection reason storage + serializer exposure
+--- categories\models.py:29
+Flag for Ahmed if this reasoning doesn't hold going forward.
+        """
+    
+--- categories\models.py:47
+# Two different branches may reasonably want a same-named leaf
+            # (e.g. "Accessories" under both "Fashion" and "Electronics"),
+            # per the execution prompt's own instruction — so uniqueness is
+--- moderation\models.py:32
+reason to ever be "soft-deleted" the way a Post or Comment would be;
+        doing so would let a queue row disappear from the default `.objects`
+        manager while the underlying content it refers to is still live,
+--- moderation\models.py:37
+reason when it lands.
+        """
+    
+--- moderation\models.py:242
+ModerationQueue (P-036), for the same reason: an audit trail must
+        stay permanent. A soft-deleted log row would silently vanish from
+        the default manager, and the rejection reason and reviewer identity
+--- moderation\models.py:244
+the default manager, and the rejection reason and reviewer identity
+        must never be lost, even if the queue item is later cleaned up.
+    
+--- moderation\models.py:251
+``reason`` is blank=True at the database level because approvals
+        carry no reason. A non-empty reason for rejections is enforced in
+        the service layer (moderation/services.py), not as a DB constraint.
+--- moderation\models.py:252
+carry no reason. A non-empty reason for rejections is enforced in
+        the service layer (moderation/services.py), not as a DB constraint.
+    
+--- moderation\models.py:276
+reason = models.TextField(blank=True)
+    
+        class Meta:
+--- notifications\models.py:50
+nullable for the same reason. The meaning of target_id depends on
+        deep_link_type: business_profile -> BusinessProfile id,
+        post_detail -> Post id, reel_detail -> Reel id, product_detail ->
+--- products\models.py:50
+# (assumption A3), same reasoning as P-024's separate country/city
+        # fields and P-027's country-agnostic phone validation. Extending
+        # this set later is a one-line change plus a migration; adding
+--- reports\models.py:25
+class Reason(models.TextChoices):
+            SPAM = "spam", "Spam"
+            INAPPROPRIATE = "inappropriate", "Inappropriate"
+--- reports\models.py:44
+reason = models.CharField(max_length=20, choices=Reason.choices)
+        # Optional free text. Mainly meant for reason="other", but allowed for
+        # any reason to add context.
+--- reports\models.py:45
+# Optional free text. Mainly meant for reason="other", but allowed for
+        # any reason to add context.
+        details = models.TextField(blank=True, default="")
+--- reports\models.py:46
+# any reason to add context.
+        details = models.TextField(blank=True, default="")
+        status = models.CharField(
+--- reports\models.py:69
+f"Report #{self.pk} ({self.reason}) on "
+                f"{self.content_type_id}:{self.object_id}"
+            )
+--- chat\serializers.py:254
+account_type. Reasonably resolved via whichever profile data is
+        available (Business or Customer) — per P-074's Detailed Implementation.
+    
+--- content\serializers.py:41
+def _get_rejection_reason(obj):
+        """
+        Part P-044. Return the reason text from the most recent 'rejected'
+--- content\serializers.py:43
+Part P-044. Return the reason text from the most recent 'rejected'
+        ModerationLog entry for this Moderatable object, or None if the
+        object is not currently rejected (or — defensively, should not
+--- content\serializers.py:75
+return log.reason if log else None
+    
+    
+--- content\serializers.py:86
+`rejection_reason` (Part P-044): a SerializerMethodField, always
+        read-only by construction (no need to list it in read_only_fields).
+        Populated only when status == "rejected"; None otherwise.
+--- content\serializers.py:91
+rejection_reason = serializers.SerializerMethodField()
+    
+        class Meta:
+--- content\serializers.py:101
+"rejection_reason",
+                "created_at",
+                "updated_at",
+--- content\serializers.py:116
+def get_rejection_reason(self, obj):
+            return _get_rejection_reason(obj)
+    
+--- content\serializers.py:117
+return _get_rejection_reason(obj)
+    
+    
+--- content\serializers.py:129
+`business` and `status` are read-only for the exact same reasons as
+        PostSerializer above (business resolved server-side in the view;
+        status exclusively owned by moderation.services).
+--- content\serializers.py:133
+`rejection_reason` (Part P-044): same SerializerMethodField as
+        PostSerializer above — populated only when status == "rejected".
+    
+--- content\serializers.py:144
+rejection_reason = serializers.SerializerMethodField()
+    
+        class Meta:
+--- content\serializers.py:157
+"rejection_reason",
+                "created_at",
+                "updated_at",
+--- content\serializers.py:185
+def get_rejection_reason(self, obj):
+            return _get_rejection_reason(obj)
+    
+--- content\serializers.py:186
+return _get_rejection_reason(obj)
+    
+    
+--- content\serializers.py:197
+extension, any future rejection-reason field) off the one endpoint
+        a Customer with no auth at all can hit. Every row PostPublicListView
+        ever returns already has status="published" by construction (via
+--- moderation\serializers.py:79
+A rejection reason is mandatory: a missing or blank ``reason``
+        produces a normal 400 in the P-012 error envelope (with the field
+        name under ``fields``) instead of reaching the service layer.
+--- moderation\serializers.py:84
+reason = serializers.CharField()
+--- products\serializers.py:41
+# suggested reasonable default for a single product image.
+    _ALLOWED_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"]
+    _MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
+--- products\serializers.py:88
+— mirrors businesses/serializers.py's own reasoning: nothing on
+        Product is sensitive enough to need a separate "public" subset (no
+        raw User/BusinessProfile internals are ever exposed, just the
+--- reports\serializers.py:17
+reason = serializers.ChoiceField(choices=Report.Reason.choices)
+        details = serializers.CharField(
+            required=False,
+--- search\serializers.py:4
+Deliberately thin, mirroring feed/serializers.py's own reasoning
+    (P-059): every result is either an already-visible BusinessProfile or
+    Product, so field-level representation is delegated entirely to the
+--- stories\serializers.py:17
+Deliberately no rejection_reason field (unlike PostSerializer/
+        ReelSerializer, P-044) — this part's own scope covers only the
+        model plus a minimal creation endpoint; the owner-facing
+--- stories\serializers.py:20
+rejection-reason surfacing PostSerializer/ReelSerializer got in
+        P-044 is not part of this part's Definition of Done and is left as
+        a gap for a future part, not silently added here.
+
+===== [6] MOBILE: post/reel detail screens
+D:\Cavallo\social_commerce_app\lib\features\content\presentation\post_detail_screen.dart
+D:\Cavallo\social_commerce_app\lib\features\content\presentation\reel_detail_screen.dart
+--- lib\features\content\presentation\post_detail_screen.dart  (lines 1-160 of 230)
+1: import 'package:dio/dio.dart';
+2: import 'package:flutter/material.dart';
+3: import 'package:flutter_riverpod/flutter_riverpod.dart';
+4: 
+5: import '../../../core/network/api_failure.dart';
+6: import '../../../core/widgets/empty_state_widget.dart';
+7: import '../../../core/widgets/error_state_widget.dart';
+8: import '../../../core/widgets/loading_indicator.dart';
+9: import '../../social/presentation/comments_section.dart';
+10: import '../../social/presentation/content_action_row.dart';
+11: import '../../social/presentation/content_overflow_menu.dart';
+12: import '../domain/public_post_entity.dart';
+13: import 'content_public_providers.dart';
+14: 
+15: /// Part P-045 scope: the customer-facing Post detail screen behind
+16: /// `/post/:id`. A genuinely new route — P-007's original skeleton never
+17: /// anticipated Posts/Reels as top-level routes, so this is an additive
+18: /// routing change (`route_names.dart` / `app_router.dart`, this part's
+19: /// routing edit), not a placeholder replacement the way
+20: /// `ProductDetailScreen`'s `/product/:id` route was.
+21: ///
+22: /// Part P-058 update: the stub action row is now the real
+23: /// [ContentActionRow] (Like/Save/Share), the Comment icon scrolls to the
+24: /// new [ContentCommentsSection] below it, and the AppBar has a "..." menu
+25: /// with Report (shown only once the Post has loaded).
+26: ///
+27: /// ## States — mirrors `ProductDetailScreen` (Part P-034) exactly
+28: ///
+29: /// A non-numeric `:id` resolves to not-found with zero network calls;
+30: /// `AsyncData(null)` (backend 404, or a Post that exists but isn't
+31: /// published) is a not-found empty state with no Retry; a genuine
+32: /// failure shows `ErrorStateWidget` with Retry.
+33: ///
+34: /// ## Deliberately NO business name/avatar on this screen
+35: ///
+36: /// Same precedent as `ProductDetailScreen`, which shows no business info
+37: /// either. [PublicPost] only carries `businessId`, not a name — showing one
+38: /// here would mean a second network call (fetching the business profile)
+39: /// that neither this part's own spec nor `ProductDetailScreen`'s precedent
+40: /// asks for.
+41: class PostDetailScreen extends ConsumerWidget {
+42:   const PostDetailScreen({super.key, required this.postId});
+43: 
+44:   /// The raw `:id` path parameter, as `go_router` hands it over — a
+45:   /// [String], parsed here rather than by the router.
+46:   final String postId;
+47: 
+48:   @override
+49:   Widget build(BuildContext context, WidgetRef ref) {
+50:     // The backend route is an integer pk, so a non-numeric id can never
+51:     // identify a Post — nothing to fetch. Resolve it to not-found here
+52:     // instead of firing a request guaranteed to fail.
+53:     final id = int.tryParse(postId);
+54:     if (id == null) {
+55:       return Scaffold(
+56:         appBar: AppBar(title: const Text('Post')),
+57:         body: const SafeArea(child: _NotFoundView()),
+58:       );
+59:     }
+60: 
+61:     final postAsync = ref.watch(postPublicDetailProvider(id));
+62:     final loadedPost = postAsync.value;
+63: 
+64:     return Scaffold(
+65:       appBar: AppBar(
+66:         title: const Text('Post'),
+67:         actions: loadedPost == null
+68:             ? null
+69:             : [ContentOverflowMenu(contentType: 'post', objectId: loadedPost.id)],
+70:       ),
+71:       body: switch (postAsync) {
+72:         AsyncData(value: final PublicPost post) => _PostDetailView(
+73:           post: post,
+74:         ),
+75:         AsyncData(value: null) => const _NotFoundView(),
+76:         AsyncError(:final error) => _LoadErrorView(error: error, id: id),
+77:         _ => const LoadingIndicator(),
+78:       },
+79:     );
+80:   }
+81: }
+82: 
+83: /// "This post doesn't exist (or is no longer available)" — an
+84: /// [EmptyStateWidget], not [ErrorStateWidget]: nothing to retry.
+85: class _NotFoundView extends StatelessWidget {
+86:   const _NotFoundView();
+87: 
+88:   @override
+89:   Widget build(BuildContext context) {
+90:     return const EmptyStateWidget(
+91:       message: 'Post not found.\nIt may have been removed.',
+92:       icon: Icons.article_outlined,
+93:     );
+94:   }
+95: }
+96: 
+97: /// A genuine fetch failure — retryable, unlike [_NotFoundView].
+98: class _LoadErrorView extends ConsumerWidget {
+99:   const _LoadErrorView({required this.error, required this.id});
+100: 
+101:   final Object error;
+102:   final int id;
+103: 
+104:   @override
+105:   Widget build(BuildContext context, WidgetRef ref) {
+106:     // Both error shapes are handled on purpose (see
+107:     // `ProductDetailScreen`'s own `_LoadErrorView`): production throws a
+108:     // DioException carrying the typed ApiFailure in `.error`; hand-rolled
+109:     // test fakes throw a bare ApiFailure.
+110:     final message = switch (error) {
+111:       DioException(error: final ApiFailure failure) => failure.message,
+112:       ApiFailure(:final message) => message,
+113:       _ => 'Could not load this post.',
+114:     };
+115: 
+116:     return ErrorStateWidget(
+117:       message: message,
+118:       // Automatic retry is disabled on the provider by design, so this
+119:       // button is the only thing that retries.
+120:       onRetry: () => ref.invalidate(postPublicDetailProvider(id)),
+121:     );
+122:   }
+123: }
+124: 
+125: class _PostDetailView extends StatefulWidget {
+126:   const _PostDetailView({required this.post});
+127: 
+128:   final PublicPost post;
+129: 
+130:   @override
+131:   State<_PostDetailView> createState() => _PostDetailViewState();
+132: }
+133: 
+134: class _PostDetailViewState extends State<_PostDetailView> {
+135:   final GlobalKey _commentsKey = GlobalKey();
+136: 
+137:   void _scrollToComments() {
+138:     final target = _commentsKey.currentContext;
+139:     if (target == null) return;
+140:     Scrollable.ensureVisible(
+141:       target,
+142:       duration: const Duration(milliseconds: 300),
+143:       curve: Curves.easeInOut,
+144:     );
+145:   }
+146: 
+147:   @override
+148:   Widget build(BuildContext context) {
+149:     final theme = Theme.of(context);
+150:     final post = widget.post;
+151: 
+152:     return SingleChildScrollView(
+153:       child: Column(
+154:         crossAxisAlignment: CrossAxisAlignment.start,
+155:         children: [
+156:           _PostDetailImage(imageUrl: post.imageUrl),
+157:           Padding(
+158:             padding: const EdgeInsets.all(16),
+159:             child: Column(
+160:               crossAxisAlignment: CrossAxisAlignment.start,
+--- lib\features\content\presentation\reel_detail_screen.dart  (lines 1-160 of 286)
+1: import 'package:dio/dio.dart';
+2: import 'package:flutter/material.dart';
+3: import 'package:flutter_riverpod/flutter_riverpod.dart';
+4: 
+5: import '../../../core/network/api_failure.dart';
+6: import '../../../core/widgets/empty_state_widget.dart';
+7: import '../../../core/widgets/error_state_widget.dart';
+8: import '../../../core/widgets/loading_indicator.dart';
+9: import '../../social/presentation/comments_section.dart';
+10: import '../../social/presentation/content_action_row.dart';
+11: import '../../social/presentation/content_overflow_menu.dart';
+12: import '../domain/public_reel_entity.dart';
+13: import 'content_public_providers.dart';
+14: 
+15: /// Part P-045 scope: the customer-facing Reel detail screen behind
+16: /// `/reel/:id`. Same route-newness, states, and "no business name/avatar"
+17: /// reasoning as `PostDetailScreen` (this part) — see that file's class
+18: /// docstring, all of which applies here unchanged.
+19: ///
+20: /// Part P-058 update: same wiring as `PostDetailScreen` — real
+21: /// [ContentActionRow], [ContentCommentsSection] below it (the Comment icon
+22: /// scrolls to it), and a Report "..." menu in the AppBar once the Reel has
+23: /// loaded.
+24: ///
+25: /// ## ⚠️ No actual video playback — flagged, not silent
+26: ///
+27: /// This project has no video-playback package in `pubspec.yaml` (no
+28: /// `video_player`/`chewie`/equivalent — confirmed by reading the real
+29: /// file, not assumed), and P-045's own spec never lists adding one as
+30: /// in-scope. So this screen — like `ReelCard`'s thumbnail — shows the
+31: /// Reel's `thumbnailUrl` with a play-icon overlay that is honest about
+32: /// being a stub: tapping it shows a "coming soon" affordance via a
+33: /// `SnackBar`, rather than silently doing nothing OR pretending to play
+34: /// video it cannot actually play. `videoUrl` is still fetched and held on
+35: /// the [PublicReel] entity regardless, so wiring real playback later needs
+36: /// no repository/entity change — only a video package plus this screen's
+37: /// play button.
+38: ///
+39: /// **Decision point for Ahmed**: add a video-playback package now so this
+40: /// screen plays the real video, or keep this honest stub here and wire real
+41: /// playback in a later, dedicated part. Per this project's "no architecture
+42: /// change without asking" rule, this part does NOT add the dependency on its
+43: /// own — flagged here and in the PROGRESS update instead of silently
+44: /// deciding either way.
+45: class ReelDetailScreen extends ConsumerWidget {
+46:   const ReelDetailScreen({super.key, required this.reelId});
+47: 
+48:   /// The raw `:id` path parameter, as `go_router` hands it over — a
+49:   /// [String], parsed here rather than by the router.
+50:   final String reelId;
+51: 
+52:   @override
+53:   Widget build(BuildContext context, WidgetRef ref) {
+54:     // The backend route is an integer pk, so a non-numeric id can never
+55:     // identify a Reel — nothing to fetch. Same early-exit as
+56:     // PostDetailScreen/ProductDetailScreen.
+57:     final id = int.tryParse(reelId);
+58:     if (id == null) {
+59:       return Scaffold(
+60:         appBar: AppBar(title: const Text('Reel')),
+61:         body: const SafeArea(child: _NotFoundView()),
+62:       );
+63:     }
+64: 
+65:     final reelAsync = ref.watch(reelPublicDetailProvider(id));
+66:     final loadedReel = reelAsync.value;
+67: 
+68:     return Scaffold(
+69:       appBar: AppBar(
+70:         title: const Text('Reel'),
+71:         actions: loadedReel == null
+72:             ? null
+73:             : [ContentOverflowMenu(contentType: 'reel', objectId: loadedReel.id)],
+74:       ),
+75:       body: switch (reelAsync) {
+76:         AsyncData(value: final PublicReel reel) => _ReelDetailView(
+77:           reel: reel,
+78:         ),
+79:         AsyncData(value: null) => const _NotFoundView(),
+80:         AsyncError(:final error) => _LoadErrorView(error: error, id: id),
+81:         _ => const LoadingIndicator(),
+82:       },
+83:     );
+84:   }
+85: }
+86: 
+87: /// "This reel doesn't exist (or is no longer available)" — an
+88: /// [EmptyStateWidget], not [ErrorStateWidget]: nothing to retry.
+89: class _NotFoundView extends StatelessWidget {
+90:   const _NotFoundView();
+91: 
+92:   @override
+93:   Widget build(BuildContext context) {
+94:     return const EmptyStateWidget(
+95:       message: 'Reel not found.\nIt may have been removed.',
+96:       icon: Icons.movie_outlined,
+97:     );
+98:   }
+99: }
+100: 
+101: /// A genuine fetch failure — retryable, unlike [_NotFoundView].
+102: class _LoadErrorView extends ConsumerWidget {
+103:   const _LoadErrorView({required this.error, required this.id});
+104: 
+105:   final Object error;
+106:   final int id;
+107: 
+108:   @override
+109:   Widget build(BuildContext context, WidgetRef ref) {
+110:     // Same dual-shape handling as PostDetailScreen/ProductDetailScreen's
+111:     // own `_LoadErrorView` — see either for why both shapes are checked.
+112:     final message = switch (error) {
+113:       DioException(error: final ApiFailure failure) => failure.message,
+114:       ApiFailure(:final message) => message,
+115:       _ => 'Could not load this reel.',
+116:     };
+117: 
+118:     return ErrorStateWidget(
+119:       message: message,
+120:       // Automatic retry is disabled on the provider by design, so this
+121:       // button is the only thing that retries.
+122:       onRetry: () => ref.invalidate(reelPublicDetailProvider(id)),
+123:     );
+124:   }
+125: }
+126: 
+127: class _ReelDetailView extends StatefulWidget {
+128:   const _ReelDetailView({required this.reel});
+129: 
+130:   final PublicReel reel;
+131: 
+132:   @override
+133:   State<_ReelDetailView> createState() => _ReelDetailViewState();
+134: }
+135: 
+136: class _ReelDetailViewState extends State<_ReelDetailView> {
+137:   final GlobalKey _commentsKey = GlobalKey();
+138: 
+139:   void _scrollToComments() {
+140:     final target = _commentsKey.currentContext;
+141:     if (target == null) return;
+142:     Scrollable.ensureVisible(
+143:       target,
+144:       duration: const Duration(milliseconds: 300),
+145:       curve: Curves.easeInOut,
+146:     );
+147:   }
+148: 
+149:   @override
+150:   Widget build(BuildContext context) {
+151:     final theme = Theme.of(context);
+152:     final reel = widget.reel;
+153:     final duration = reel.durationSeconds;
+154: 
+155:     return SingleChildScrollView(
+156:       child: Column(
+157:         crossAxisAlignment: CrossAxisAlignment.start,
+158:         children: [
+159:           _ReelDetailMedia(thumbnailUrl: reel.thumbnailUrl),
+160:           Padding(
+
+===== [7] MOBILE: content providers/repo for post & reel detail (status, rejection, 404)
+--- lib\features\content\data\post_public_repository.dart
+34: // PostSerializer shape regardless of moderation status — a
+39: // repository must still never hand a pending/rejected Post to a
+40: // customer-facing caller, so `status` is read directly off the
+45: if (json['status'] != 'published') {
+51: if (e.response?.statusCode == 404) {
+--- lib\features\content\data\reel_public_repository.dart
+12: /// difference is the extra `processing_status == "ready"` check,
+33: // shape. A Reel additionally needs processing_status == "ready"
+34: // (not just status == "published") before it's public-safe —
+36: // has processing_status='ready' by construction (via
+38: final isPublished = json['status'] == 'published';
+39: final isReady = json['processing_status'] == 'ready';
+46: if (e.response?.statusCode == 404) {
+--- lib\features\content\data\dtos\post_public_response_dto.dart
+11: ///   fields, PLUS `status`/`rejection_reason`. Those two extra keys
+16: ///   reads `json['status']` itself, directly off the raw map, BEFORE
+--- lib\features\content\data\dtos\post_response_dto.dart
+4: /// `{id, business, caption, image, status, rejection_reason,
+11: import '../../domain/moderation_status.dart';
+20: required this.status,
+21: required this.rejectionReason,
+32: status: json['status'] as String,
+33: rejectionReason: json['rejection_reason'] as String?,
+47: final String status;
+48: final String? rejectionReason;
+58: status: ModerationStatus.fromWire(status),
+59: rejectionReason: rejectionReason,
+--- lib\features\content\data\dtos\reel_public_response_dto.dart
+5: /// shape, whose extra `status`/`processing_status`/`rejection_reason`
+--- lib\features\content\data\dtos\reel_response_dto.dart
+5: /// processing_status, status, rejection_reason, created_at,
+9: import '../../domain/moderation_status.dart';
+20: required this.processingStatus,
+21: required this.status,
+22: required this.rejectionReason,
+35: processingStatus: json['processing_status'] as String,
+36: status: json['status'] as String,
+37: rejectionReason: json['rejection_reason'] as String?,
+53: final String processingStatus;
+54: final String status;
+55: final String? rejectionReason;
+67: processingStatus: ReelProcessingStatus.fromWire(processingStatus),
+68: status: ModerationStatus.fromWire(status),
+69: rejectionReason: rejectionReason,
+--- lib\features\content\domain\content_item_entity.dart
+14: /// Reel-specific field ([Reel.processingStatus],
+24: import 'moderation_status.dart';
+40: ModerationStatus get moderationStatus;
+42: /// Non-null only when [moderationStatus] is
+43: /// [ModerationStatus.rejected].
+44: String? get rejectionReason;
+47: /// [ReelProcessingStatus.ready]) to show in a list row. `null` for a
+67: ModerationStatus get moderationStatus => post.status;
+69: String? get rejectionReason => post.rejectionReason;
+99: ModerationStatus get moderationStatus => reel.status;
+101: String? get rejectionReason => reel.rejectionReason;
+--- lib\features\content\domain\post_entity.dart
+9: /// `{id, business, caption, image, status, rejection_reason,
+19: /// * `rejectionReason` is this part's own backend addition (STEP 1) —
+20: ///   non-null ONLY when [status] is [ModerationStatus.rejected]; see
+21: ///   `content.serializers._get_rejection_reason()`.
+24: import 'moderation_status.dart';
+31: required this.status,
+33: this.rejectionReason,
+49: final ModerationStatus status;
+51: /// Non-null only when [status] is [ModerationStatus.rejected].
+52: final String? rejectionReason;
+62: ModerationStatus? status,
+63: String? rejectionReason,
+72: status: status ?? this.status,
+73: rejectionReason: rejectionReason ?? this.rejectionReason,
+87: other.status == status &&
+88: other.rejectionReason == rejectionReason &&
+98: status,
+99: rejectionReason,
+106: 'Post(id: $id, status: $status, businessId: $businessId)';
+--- lib\features\content\domain\post_public_repository.dart
+15: /// 404) OR when it exists but its `status` is not `"published"`. See
+--- lib\features\content\domain\post_repository.dart
+16: /// and status feedback, not an edit/delete UI. A future part can add
+--- lib\features\content\domain\public_post_entity.dart
+4: /// carries `ModerationStatus`/`rejectionReason`, concepts the public,
+--- lib\features\content\domain\public_reel_entity.dart
+5: /// `status == published` AND `processing_status == ready` — see
+44: /// `ReelPublishedManager` requires `processing_status == "ready"`,
+--- lib\features\content\domain\reel_entity.dart
+9: /// processing_status, status, rejection_reason, created_at,
+13: import 'moderation_status.dart';
+15: /// Mirrors `content.models.Reel.processing_status` exactly
+17: /// P-042). This is a SEPARATE, two-stage status from [ModerationStatus]
+22: enum ReelProcessingStatus {
+28: /// Parses the backend's raw `processing_status` string. Throws
+30: /// [ModerationStatus.fromWire].
+31: static ReelProcessingStatus fromWire(String value) {
+34: return ReelProcessingStatus.uploaded;
+36: return ReelProcessingStatus.processing;
+38: return ReelProcessingStatus.ready;
+40: return ReelProcessingStatus.failed;
+43: 'Unknown reel processing_status from backend: $value',
+53: this == ReelProcessingStatus.uploaded ||
+54: this == ReelProcessingStatus.processing;
+62: required this.processingStatus,
+63: required this.status,
+67: this.rejectionReason,
+86: /// `null` until [processingStatus] reaches
+87: /// [ReelProcessingStatus.ready].
+93: final ReelProcessingStatus processingStatus;
+94: final ModerationStatus status;
+96: /// Non-null only when [status] is [ModerationStatus.rejected].
+97: final String? rejectionReason;
+109: ReelProcessingStatus? processingStatus,
+110: ModerationStatus? status,
+111: String? rejectionReason,
+122: processingStatus: processingStatus ?? this.processingStatus,
+123: status: status ?? this.status,
+124: rejectionReason: rejectionReason ?? this.rejectionReason,
+140: other.processingStatus == processingStatus &&
+141: other.status == status &&
+142: other.rejectionReason == rejectionReason &&
+154: processingStatus,
+155: status,
+156: rejectionReason,
+163: 'Reel(id: $id, processingStatus: $processingStatus, '
+164: 'status: $status, businessId: $businessId)';
+--- lib\features\content\domain\reel_public_repository.dart
+9: /// Returns `null` when the reel doesn't exist (404), OR its `status`
+10: /// isn't `"published"`, OR its `processing_status` isn't `"ready"` —
+--- lib\features\content\domain\reel_repository.dart
+28: /// (`processing_status` starts at `"uploaded"`); this call returns
+31: /// is responsible for refreshing to observe the status progress to
+--- lib\features\content\presentation\content_list_screen.dart
+4: /// part), tagged by type, each with an honest moderation-status badge.
+15: /// before its status genuinely equals `published`. Concretely:
+17: ///   / Rejected).
+19: ///   [ReelProcessingStatus.isBeforeModeration] is true — it has not
+25: /// ### `processing_status: failed` — an explicit choice beyond the
+36: /// ### Polling for Reel processing status (documented MVP choice, per
+46: ///   [ReelProcessingStatus.isBeforeModeration] true;
+88: import '../domain/moderation_status.dart';
+130: item.reel.processingStatus.isBeforeModeration,
+241: /// status indicator — either the Reel processing chip or the real
+254: reelItem != null && reelItem.reel.processingStatus.isBeforeModeration;
+257: reelItem.reel.processingStatus == ReelProcessingStatus.failed;
+303: _ModerationStatusBadge(
+304: status: item.moderationStatus,
+305: rejectionReason: item.rejectionReason,
+364: /// amber "Under review" / green "Live" / red "Rejected: {reason}" —
+366: /// (Part P-040), so status urgency reads consistently across the whole
+368: class _ModerationStatusBadge extends StatelessWidget {
+369: const _ModerationStatusBadge({
+370: required this.status,
+371: required this.rejectionReason,
+374: final ModerationStatus status;
+375: final String? rejectionReason;
+379: final (background, foreground, icon, label) = switch (status) {
+380: ModerationStatus.pendingReview => (
+386: ModerationStatus.published => (
+392: ModerationStatus.rejected => (
+396: // Defensive fallback: rejectionReason should always be
+397: // non-null once status == rejected (STEP 1's backend
+400: 'Rejected: ${rejectionReason ?? 'no reason given'}',
+404: return _StatusChip(
+413: /// Distinct from [_ModerationStatusBadge] on purpose — a Reel in
+422: return _StatusChip(
+431: /// See this file's module docstring ("`processing_status: failed` —
+438: return _StatusChip(
+447: class _StatusChip extends StatelessWidget {
+448: const _StatusChip({
+--- lib\features\content\presentation\content_public_providers.dart
+18: /// * `AsyncData(null)` — not found: backend 404, OR exists but isn't
+--- lib\features\content\presentation\own_content_provider.dart
+32: /// functionally correct — the second future's rejection IS eventually
+37: /// Dart's zone error handler sees a rejected future with no listener
+146: /// [refresh]. The created [Reel] starts at `processing_status:
+162: /// the processing-status poll, and the shared "reload after a
+--- lib\features\content\presentation\post_detail_screen.dart
+30: /// `AsyncData(null)` (backend 404, or a Post that exists but isn't
+57: body: const SafeArea(child: _NotFoundView()),
+75: AsyncData(value: null) => const _NotFoundView(),
+85: class _NotFoundView extends StatelessWidget {
+86: const _NotFoundView();
+97: /// A genuine fetch failure — retryable, unlike [_NotFoundView].
+--- lib\features\content\presentation\reel_detail_screen.dart
+61: body: const SafeArea(child: _NotFoundView()),
+79: AsyncData(value: null) => const _NotFoundView(),
+89: class _NotFoundView extends StatelessWidget {
+90: const _NotFoundView();
+101: /// A genuine fetch failure — retryable, unlike [_NotFoundView].
+--- lib\features\content\presentation\reel_form_screen.dart
+62: /// (`processing_status: "uploaded"`) — this screen pops immediately
+65: /// implemented) is what observes the status progress to `"ready"` once
+297: "becomes visible to customers. You'll see its status on "
