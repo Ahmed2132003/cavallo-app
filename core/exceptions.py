@@ -19,8 +19,11 @@ part should build its own custom error response.
 """
 
 from django.conf import settings
+from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
+from django.http import Http404
 from rest_framework import status
-from rest_framework.exceptions import APIException, ValidationError
+from rest_framework.exceptions import APIException, NotFound, ValidationError
+from rest_framework.exceptions import PermissionDenied as DRFPermissionDenied
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 
@@ -189,6 +192,18 @@ def custom_exception_handler(exc, context):
     config.settings.base / DEBUG for the dev-vs-prod behavior split,
     handled by Django itself via DEBUG, not by this function).
     """
+    # Part P-096: DRF's generic views (get_object()) raise Django's Http404,
+    # and Django code may raise django.core.exceptions.PermissionDenied.
+    # DRF's own handler turns both into proper responses, but this
+    # function reads exc.get_codes() below, which the Django classes
+    # lack, so they used to come out as code ERROR. Convert them to the
+    # equivalent DRF exceptions first so they map to NOT_FOUND /
+    # PERMISSION_DENIED like every other error (P-012 contract).
+    if isinstance(exc, Http404):
+        exc = NotFound()
+    elif isinstance(exc, DjangoPermissionDenied):
+        exc = DRFPermissionDenied()
+
     response = drf_exception_handler(exc, context)
 
     if response is None:
