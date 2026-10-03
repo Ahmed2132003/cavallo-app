@@ -11927,3 +11927,65 @@ P-098 (manual E2E smoke script), the next quality-hardening part of Phase 18. Be
 
 ### Edits to existing sections
 In the Part status index/table, add the row: `P-097 | Flutter Widget Tests for Story Viewer + Feed | Phase 18 | COMPLETE (15 tests added across 3 new files, 94 passing in stories+feed, no production code changed, 2 findings F-1/F-2)`. Set the Phase 18 summary line to "IN PROGRESS (P-096 and P-097 complete; next P-098)".
+
+PROGRESS UPDATE
+
+Add this section at the END of PROJECT_PROGRESS.md, after the P-097 section
+("Edits to existing sections" block).
+
+## PART P-098 - Manual E2E Smoke Script - STATUS: COMPLETE (manual run-through: 8 of 8 steps passed, reported by the owner)
+
+Phase 18 (Testing & Quality Hardening). Documentation only. Backend repo root (`cavallo-app`, local `D:\Cavallo\scd-backend`). `cavallo-mobile` untouched. No production code changed, no migrations, no automated E2E runner (Architecture Section 25 defers it on purpose). Executed as 3 steps (one third each), each a PowerShell script run from `D:\Cavallo\scd-backend`.
+
+### What was implemented
+`E2E_SMOKE_TEST.md` (243 lines): a manual release checklist for Register Business -> Create Post -> Moderator approves -> Customer sees it published.
+- Run record table (date, tester, backend and mobile commits, device, RUN STATUS).
+- Section 0, prerequisites: `docker compose up -d`, health check at `http://localhost:8095/health/`, `flutter run` (Android emulator uses 10.0.2.2:8095 by default; a real phone needs `--dart-define=API_BASE_URL=http://<LAN-IP>:8095`), a gallery image, a per-run STAMP, test data. Password for all test accounts: `SmokeTest!2026pass`.
+- Steps 1-8, each with exact action, exact expected result, PASS/FAIL boxes and a Notes line: 1 register Business; 2 onboarding; 3 create Post with image ("Under review"); 4 moderator approves; 5 Business sees "Live"; 6 register Customer; 7 find the Business in Search; 8 Post visible on the Business profile.
+- A "Moderator account" section (one-time setup) placed before Step 4.
+- "Result of this run" and "Known limits of this checklist" sections.
+
+### Files created
+`E2E_SMOKE_TEST.md` in the backend repo root (next to `PROJECT_PROGRESS.md`). Throwaway: `p098_step1.ps1`, `p098_step2.ps1`, `p098_step3.ps1`, `E2E_SMOKE_TEST.md.step1.bak`, `E2E_SMOKE_TEST.md.step2.bak` (safe to delete).
+
+### Files modified
+None besides this PROGRESS section.
+
+### Important implementation details
+1. The Moderator is not creatable from the app (register accepts customer or business only). The checklist creates `smoke-mod@example.com` once with `manage.py shell -c`: customer account, `is_moderator=True`, member of Group "Moderator". Both are needed: `is_moderator` for the Flutter route gate, the Group for the `can_moderate_content` API capability. Expected output: `moderator ready smoke-mod@example.com True True`. The command is idempotent (it resets the password).
+2. The checklist depends on the Home "Debug menu" (PopupMenu, tooltip "Debug menu") for Business Console, Moderation queue, Search and Logout. These are dev-build navigation entries (labels contain "(debug)"). When real navigation replaces them, Steps 3, 4, 5 and 7 must be updated.
+3. After business onboarding the app lands on Home, not on the Business Console. "Business Console (debug)" redirects to the Products tab; the post list is the "Posts/Reels" tab (screen title "My Content").
+4. The Post form's image is optional in the app ("Image (optional)"); the checklist still asks for an image to match the master plan.
+5. Search starts by itself after a 400 ms debounce; there is no search button.
+6. Test data uses a per-run STAMP (`smoke-biz-<STAMP>@example.com`, `Smoke Biz <STAMP>`, `Smoke post <STAMP>`) so reruns never hit "email already exists".
+7. The scripts are idempotent-safe: each refuses to run if its target text/marker is missing or already applied, and writes a .bak first.
+
+### Architecture decisions
+None new. Follows Section 25: manual checklist for the MVP, automation deferred.
+
+### Commands
+From `D:\Cavallo\scd-backend`: `docker compose up -d`; `docker compose logs --tail=100 web`. From `D:\Cavallo\social_commerce_app`: `flutter run`. Moderator setup: see section "Moderator account" in `E2E_SMOKE_TEST.md`.
+
+### Tests and verification results
+- Real run-through on the developer machine (owner-reported, not observed by the assistant): Steps 1-8 all PASS, no text or label differences reported against the checklist. Total run time: NOT RECORDED (the target is under 15 minutes).
+- Backend health check OK before the run. Moderator command output: `moderator ready smoke-mod@example.com True True`.
+
+### Known issues
+- Backend log showed an `OSError: [Errno 5] Input/output error: '/app/locale'` from the Django autoreloader at one startup (Docker bind mount on Windows). The server restarted normally; unrelated to P-098.
+- The checklist was written from source reading and confirmed by the owner's run; a second person has not yet run it cold.
+
+### Remaining work
+1. Fill in the Run record table in `E2E_SMOKE_TEST.md` (date, tester, commits, device, RUN STATUS) at the next release, and record the total time.
+2. Open items carried over from P-095, P-096 and P-097 are NOT resolved by this part: Phase 17 gate D-1, D-2, G-1; P-096 findings S-1, S-2, S-3; P-097 finding F-1; the full `flutter test` on `main` (not run after the 58-file merge). Phase 18 may be marked COMPLETE only if the owner accepts these explicitly; record that decision in the Phase 17 and Phase 18 summary lines.
+3. Repo hygiene: delete `p095_step*_audit.txt`, `p096_step*.ps1`, `p097_step*.ps1` (mobile repo), `p098_step*.ps1` and the two .bak files; add `celerybeat-schedule` to the backend `.gitignore`.
+4. Live Paymob and live FCM remain unverified (Section 7 items 3 and 4); the checklist does not cover them.
+
+### GitHub references
+`cavallo-app` `main` at `78bbac1` before this part. P-098 commit: (fill in after commit). `cavallo-mobile`: no changes (`main` at `6bdb205`).
+
+### Exact next starting point
+Phase 19 (Security Hardening), starting with P-099 (threat-model verification). P-099 must cite the P-096 sweep as evidence and list S-1, S-2 and S-3 as OPEN findings. Before it, record the owner's decision on the open items in Remaining work (2).
+
+### Edits to existing sections
+In the Part status index/table add: `P-098 | Manual E2E Smoke Script | Phase 18 | COMPLETE (E2E_SMOKE_TEST.md, 8 steps, manual run 8/8 PASS, no code changed)`.
+Set the Phase 18 summary line to: "COMPLETE (P-096, P-097, P-098 done; open items S-1/S-2/S-3, D-1/D-2/G-1, F-1 and full flutter test carried forward, accepted by the owner)". Use this wording only if you accept those items; otherwise write "IN PROGRESS (P-098 done; gate items open)".
