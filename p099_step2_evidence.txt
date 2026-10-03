@@ -1,0 +1,136 @@
+
+======================================================================
+RUN HEADER
+======================================================================
+stamp=20261003144758 backend_commit=cb0a346 health=200
+
+======================================================================
+ROW 4a - raw .objects.filter/exclude/get(... status ...) in non-test code
+======================================================================
+moderation\tasks.py:54: .objects.filter(
+moderation\tasks.py:74: .objects.filter(
+moderation\views.py:81: .objects.filter(status=
+payments\tasks.py:88: .objects.filter(
+reports\targets.py:35: .objects.filter(
+stories\views.py:62: .objects.filter(status=
+stories\views.py:85: .objects.filter(
+
+======================================================================
+ROW 4a - hits OUTSIDE the allow-list (content\models.py = the manager itself, moderation\views.py = staff queue, reports\admin.py, stories\* = P-048 query-driven pattern, reports\targets.py)
+======================================================================
+moderation\tasks.py:54: .objects.filter(
+moderation\tasks.py:74: .objects.filter(
+payments\tasks.py:88: .objects.filter(
+
+======================================================================
+ROW 4b - Post/Reel/model default-manager reads in views/services/serializers/targets
+======================================================================
+chat\serializers.py:53: model.objects
+content\views.py:21: Post.objects
+content\views.py:28: Reel.objects
+content\views.py:52: Post.objects
+content\views.py:53: Post.objects
+content\views.py:75: Post.objects
+content\views.py:107: Post.objects
+content\views.py:151: Reel.objects
+content\views.py:152: Reel.objects
+content\views.py:173: Reel.objects
+social\views.py:160: model.objects
+social\views.py:195: __class__.objects
+social\views.py:215: __class__.objects
+social\views.py:246: model.objects
+social\views.py:400: model.objects
+social\views.py:564: model.objects
+
+======================================================================
+ROW 4c - throwaway data created for the live test
+======================================================================
+38 objects imported automatically (use -v 2 for details).
+
+P99|owner_email=sweep-biz-business-1@example.com
+P99|pending_id=3
+P99|pending_status=pending_review
+P99|published_id=4
+P99|published_status=published
+P99|reel_unpublished_id=none
+P99|reel_unpublished_status=none
+
+
+======================================================================
+ROW 4c - anonymous GET (no Authorization header) results
+======================================================================
+GET /api/v1/posts/3/ (status=pending_review) -> 200
+body: {"id":3,"business":7,"caption":"p99-pending-20261003144758","image":null,"status":"pending_review","rejection_reason":null,"created_at":"2026-10-03T11:48:02.513708Z","updated_at":"2026-10-03T11:48:02.513753Z"}
+GET /api/v1/posts/4/ (published control) -> 200
+GET /api/v1/posts/public/ -> 200 ; pending caption present in first page: False
+GET /api/v1/reels/none/ (status=none) -> 0
+body: 
+
+======================================================================
+ROW 4d - cleanup
+======================================================================
+38 objects imported automatically (use -v 2 for details).
+
+P99|cleanup=ERROR ProtectedError("Cannot delete some instances of model 'User' because they are referenced through protected foreign keys: 'BusinessProfile.user'.", {<Post: Post(3) by 7>, <Post: Post(4) by 7>})
+
+
+======================================================================
+ROW 4e - docker compose exec -T web pytest content feed stories search -q -p no:cacheprovider (exit 0)
+======================================================================
+........................................................................ [ 21%]
+........................................................................ [ 43%]
+........................................................................ [ 64%]
+........................................................................ [ 86%]
+..............................................                           [100%]
+334 passed in 202.81s (0:03:22)
+
+
+======================================================================
+ROW 5a - FileField/ImageField declarations in models.py files
+======================================================================
+chat\models.py:76: models.FileField(
+content\models.py:61: models.FileField(
+content\models.py:166: models.FileField(
+content\models.py:170: models.FileField(
+products\models.py:134: models.FileField(
+stories\models.py:96: models.FileField(
+
+======================================================================
+ROW 5a - serializers.FileField/ImageField declared directly in serializers (outside ModelSerializer auto-fields)
+======================================================================
+(none)
+
+======================================================================
+ROW 5b - serializer introspection inside the web container
+======================================================================
+38 objects imported automatically (use -v 2 for details).
+
+P99|ADMIN|products.Product|registered=True|readonly=['created_at', 'updated_at']|exclude=[]
+P99|FIELD|products.Product.image|WRITABLE_VALIDATED|ProductSerializer
+P99|ADMIN|content.Post|registered=True|readonly=['status']|exclude=[]
+P99|FIELD|content.Post.image|WRITABLE_VALIDATED|PostSerializer
+P99|FIELD|content.Post.image|READ_ONLY|PostPublicSerializer
+P99|ADMIN|content.Reel|registered=True|readonly=['status', 'processing_status', 'duration_seconds']|exclude=[]
+P99|FIELD|content.Reel.video|WRITABLE_VALIDATED|ReelSerializer
+P99|FIELD|content.Reel.video|READ_ONLY|ReelPublicSerializer
+P99|FIELD|content.Reel.thumbnail|READ_ONLY|ReelSerializer
+P99|FIELD|content.Reel.thumbnail|READ_ONLY|ReelPublicSerializer
+P99|ADMIN|stories.Story|registered=True|readonly=['status', 'published_at', 'expires_at']|exclude=[]
+P99|FIELD|stories.Story.media|WRITABLE_VALIDATED|StorySerializer
+P99|ADMIN|chat.Message|registered=True|readonly=[]|exclude=[]
+P99|FIELD|chat.Message.media|WRITABLE_VALIDATED|MessageSerializer
+
+
+======================================================================
+ROW 5c - docker compose exec -T web pytest core/tests/test_media.py chat/test_media_messages.py -q -p no:cacheprovider (exit 0)
+======================================================================
+................                                                         [100%]
+16 passed in 15.78s
+
+
+======================================================================
+ROW 5c - docker compose exec -T web pytest content/tests/test_api.py stories/tests/test_api.py products/tests/test_api.py -k "spoofed or disguised" -q -p no:cacheprovider (exit 0)
+======================================================================
+....                                                                     [100%]
+4 passed, 91 deselected in 6.77s
+

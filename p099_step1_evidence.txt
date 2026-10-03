@@ -1,0 +1,102 @@
+
+======================================================================
+RUN HEADER
+======================================================================
+date=2026-10-03 stamp=20261003143606 backend_commit=5546c99 health=200
+
+======================================================================
+ROW 1 - docker compose exec -T web pytest -k permission_sweep -q -p no:cacheprovider (exit 0)
+======================================================================
+........................................................................ [ 27%]
+........................................................................ [ 54%]
+........................................................................ [ 81%]
+..................................................                       [100%]
+266 passed, 1 skipped, 1378 deselected in 216.22s (0:03:36)
+
+
+======================================================================
+ROW 2a - effective settings inside the running web container
+======================================================================
+38 objects imported automatically (use -v 2 for details).
+
+P99|settings_module=config.settings.dev
+P99|rotate=True
+P99|blacklist_after_rotation=True
+P99|access_minutes=15
+P99|refresh_days=7
+P99|algorithm=HS256 (simplejwt default)
+P99|blacklist_app_installed=True
+P99|auth_classes=('rest_framework_simplejwt.authentication.JWTAuthentication',)
+P99|default_permission=('rest_framework.permissions.IsAuthenticated',)
+P99|secret_key_len=33
+P99|secret_key_insecure_prefix=False
+P99|debug=True
+P99|login_rate=5/min
+P99|default_throttle_classes=None
+P99|report_rate_setting=(unset -> code default 10/hour)
+
+
+======================================================================
+ROW 2b - SIMPLE_JWT overrides in per-environment settings files
+======================================================================
+config\settings\dev.py : 0 override line(s)
+config\settings\staging.py : 0 override line(s)
+config\settings\prod.py : 0 override line(s)
+config\settings\test.py : 0 override line(s)
+
+======================================================================
+ROW 2c - docker compose exec -T web pytest accounts/tests/test_auth.py -q -p no:cacheprovider (exit 0)
+======================================================================
+...............                                                          [100%]
+15 passed in 19.24s
+
+
+======================================================================
+ROW 2d - mobile token-storage static check
+======================================================================
+shared_preferences imports (expected: only lib\core\storage\cache_storage.dart):
+    lib\core\storage\cache_storage.dart:4
+flutter_secure_storage imports (expected: only lib\core\storage\secure_token_storage.dart):
+    lib\core\storage\secure_token_storage.dart:2
+FlutterSecureStorage( constructions (non-comment):
+    lib\core\storage\secure_token_storage.dart:57
+
+======================================================================
+ROW 3a - throwaway customer created for the live test (p099-throttle-20261003143606@example.com); token redacted
+======================================================================
+38 objects imported automatically (use -v 2 for details).
+
+P99|token=<redacted>
+
+
+======================================================================
+ROW 3b - 8 bad logins in a row to http://localhost:8095/api/v1/auth/login/
+======================================================================
+status codes: 401, 401, 401, 401, 401, 429, 429, 429
+last body: {"error":{"code":"THROTTLED","message":"Request was throttled. Expected available in 60 seconds.","fields":{}}}
+
+======================================================================
+ROW 3c - 11 report POSTs (bogus reason) as one throwaway user to http://localhost:8095/api/v1/reports/
+======================================================================
+status codes: 400, 400, 400, 400, 400, 400, 400, 400, 400, 400, 429
+last body: {"error":{"code":"THROTTLED","message":"Request was throttled. Expected available in 3600 seconds.","fields":{}}}
+
+======================================================================
+ROW 3d - cleanup of throwaway user
+======================================================================
+38 objects imported automatically (use -v 2 for details).
+
+P99|cleanup=(2, {'notifications.NotificationPreference': 1, 'accounts.User': 1})
+
+
+======================================================================
+ROW 3e - every throttle_classes assignment in non-test code
+======================================================================
+accounts\views.py:80: throttle_classes = [LoginRateThrottle]
+payments\views.py:99: throttle_classes = []
+reports\views.py:25: throttle_classes = [ReportRateThrottle]
+
+======================================================================
+ROW 3e - chat flood-control keyword hits in non-test chat code
+======================================================================
+(none)

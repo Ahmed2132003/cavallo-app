@@ -1,0 +1,237 @@
+
+======================================================================
+RUN HEADER
+======================================================================
+date=2026-10-03 stamp=20261003151820 backend_commit=cb0a346 health=200
+
+======================================================================
+A - cleanup of Step 2 leftovers (sweep-biz-business-1@example.com)
+======================================================================
+38 objects imported automatically (use -v 2 for details).
+
+P99|before=1
+P99|purged=1
+P99|after=0
+
+
+======================================================================
+ROW 6a - static ordering of PaymobWebhookView.post
+======================================================================
+class found=True; verify_webhook_signature at +434, _parse_webhook_payload at +680, process_webhook_event at +956 (must be increasing); request.data used in view=True; constant-time compare (hmac.compare_digest) in gateway=True
+
+======================================================================
+ROW 6b - setup (secret value is never printed)
+======================================================================
+38 objects imported automatically (use -v 2 for details).
+
+P99|gateway=payments.gateways.paymob.PaymobGateway
+P99|secret_configured=False
+P99|body={"type": "TRANSACTION", "obj": {"id": 900001, "pending": false, "amount_cents": 25000, "success": true, "is_auth": false, "is_capture": false, "is_standalone_payment": true, "is_voided": false, "is_refunded": false, "is_3d_secure": true, "integration_id": 111111, "has_parent_transaction": false, "order": {"id": 4778239, "merchant_order_id": "payments-sub-1"}, "created_at": "2026-10-02T10:00:00.000000", "currency": "EGP", "error_occured": false, "owner": 1000, "source_data": {"pan": "2346", "sub_type": "MasterCard", "type": "card"}}}
+P99|sig_wrong_secret=ae3a267408c553843b831f0baebe1b60a0c371bbd2d540697a4fa726ade1643f377a997f4c6e71757289d1a1c3aa882a42cb548c7023f88c523514754a4d44da
+P99|snapshot={'subscriptions': [], 'transactions': [], 'featured_rows': 1, 'featured_flags': [(1, False), (2, False), (3, True), (4, False), (6, False)]}
+
+
+======================================================================
+ROW 6c - forged requests
+======================================================================
+no hmac parameter -> 400
+empty hmac -> 400
+garbage hmac (deadbeef) -> 400
+valid-looking hmac signed with the wrong secret -> 400
+non-JSON body -> 400
+snapshot unchanged: True
+before: {'subscriptions': [], 'transactions': [], 'featured_rows': 1, 'featured_flags': [(1, False), (2, False), (3, True), (4, False), (6, False)]}
+after : {'subscriptions': [], 'transactions': [], 'featured_rows': 1, 'featured_flags': [(1, False), (2, False), (3, True), (4, False), (6, False)]}
+
+======================================================================
+ROW 6d - docker compose exec -T web pytest payments -q -p no:cacheprovider (exit 0)
+======================================================================
+........................................................................ [ 41%]
+........................................................................ [ 82%]
+..............................                                           [100%]
+174 passed in 60.24s (0:01:00)
+
+
+======================================================================
+ROW 7a - attribute assignment / += on a *_count or average_rating field (read-then-write candidates)
+======================================================================
+(none)
+
+======================================================================
+ROW 7a - F('<x>_count') atomic updates
+======================================================================
+reports\services.py:41: F("reports_count")
+social\services.py:9: F("reports_count")
+social\views.py:90: F("follower_count")
+social\views.py:93: F("following_count")
+social\views.py:123: F("follower_count")
+social\views.py:125: F("following_count")
+social\views.py:196: F("likes_count")
+social\views.py:216: F("likes_count")
+social\views.py:378: F("comments_count")
+social\views.py:401: F("comments_count")
+social\views.py:564: F("shares_count")
+
+======================================================================
+ROW 7a - Avg( aggregate recompute sites
+======================================================================
+ratings\services.py:62: Avg(
+
+======================================================================
+ROW 7b - live concurrency test (threads, real API views, throwaway data prefix p99c-20261003151820)
+======================================================================
+38 objects imported automatically (use -v 2 for details).
+
+docker.exe : {"asctime": "2026-10-03 12:19:42,312", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"fa113038-4753-4961-a9ba-e904ac9256f9", "message": "request completed", "method": "POST", "path": "/api/v1/likes/", 
+"status_code": 200}
+At D:\Cavallo\scd-backend\p099_step3.ps1:47 char:23
++ ...  ($PyCode | & docker compose exec -T web python manage.py shell 2>&1  ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ({"asctime": "20...tus_code": 200}:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+{"asctime": "2026-10-03 12:19:42,325", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"7b3556e1-0c2e-4986-98ad-06485e619a1f", "message": "request completed", "method": "POST", "path": "/api/v1/likes/", 
+"status_code": 200}
+{"asctime": "2026-10-03 12:19:42,330", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"4bda8e47-47dd-4623-b7c5-a1cc57be52d5", "message": "request completed", "method": "POST", "path": "/api/v1/likes/", 
+"status_code": 200}
+{"asctime": "2026-10-03 12:19:42,334", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"31b8faf0-8436-4eb2-bb8a-85038684dce9", "message": "request completed", "method": "POST", "path": "/api/v1/likes/", 
+"status_code": 200}
+{"asctime": "2026-10-03 12:19:42,339", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"13c4a201-e6fd-4410-8679-5139de3c6275", "message": "request completed", "method": "POST", "path": "/api/v1/likes/", 
+"status_code": 200}
+{"asctime": "2026-10-03 12:19:42,342", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"c26c57a1-31d4-4e87-8157-992287d4c4a7", "message": "request completed", "method": "POST", "path": "/api/v1/likes/", 
+"status_code": 200}
+{"asctime": "2026-10-03 12:19:42,346", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"13c3646a-aaba-4471-9bf8-6e7b5b2c9d36", "message": "request completed", "method": "POST", "path": "/api/v1/likes/", 
+"status_code": 200}
+{"asctime": "2026-10-03 12:19:42,349", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"6587557b-597e-4bad-a7e0-dfcd4b76e480", "message": "request completed", "method": "POST", "path": "/api/v1/likes/", 
+"status_code": 200}
+P99|likes=statuses:[200, 200, 200, 200, 200, 200, 200, 200] likes_count:8 like_rows:8 expected:8
+{"asctime": "2026-10-03 12:19:42,906", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"042313fa-9125-42e1-854a-372e1ad988f4", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/9/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:42,911", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"1f28c29d-f1ee-4e46-a8e0-a545d1b74157", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/9/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:42,913", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"dfadbe83-5e29-4c9b-b5ef-06818250f90d", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/9/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:42,921", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"90172f20-802a-4b7e-af9b-af35fa38fc85", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/9/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:42,925", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"a67ee17a-c45c-4c8b-a117-e295ca3876ae", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/9/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:42,928", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"edcbc38b-bc79-4d15-a2f2-7e2505da2955", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/9/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:42,931", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"68996199-125d-48e1-aac6-f9d769cc7668", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/9/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:42,934", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"8e2dce5e-7281-4337-9dae-9cd5044d5422", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/9/rate/", "status_code": 200}
+P99|rating_round1=statuses:[200, 200, 200, 200, 200, 200, 200, 200] ratings_count:5 rating_rows:8 average_rating:3.40 actual_average:2.62
+{"asctime": "2026-10-03 12:19:43,425", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"ae77f6fa-ae1e-4612-93ef-68c3d0cbed4b", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/10/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:43,431", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"d40f089c-7b8c-4763-b363-b5366992c6f1", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/10/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:43,435", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"e996f993-35ba-4f2f-8282-a06b569e2f68", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/10/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:43,438", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"09f8be70-faeb-4fac-887c-16cccd49a6b4", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/10/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:43,444", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"46cc6fd2-056a-48f3-a7d4-431e41420d96", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/10/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:43,446", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"fbc8bcfc-ad31-4a0b-a2c3-e19588e4b41d", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/10/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:43,449", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"8c9141db-4d25-445a-8a6b-cf40df919608", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/10/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:43,451", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"6641c789-f748-43ba-8f84-0c6e7adc7657", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/10/rate/", "status_code": 200}
+P99|rating_round2=statuses:[200, 200, 200, 200, 200, 200, 200, 200] ratings_count:5 rating_rows:8 average_rating:3.20 actual_average:2.62
+{"asctime": "2026-10-03 12:19:43,958", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"6d7714e5-b4e4-405c-9a51-183d8568bc7a", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/11/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:43,965", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"b7d6455b-440e-4506-8ed0-c6b59de5c5e6", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/11/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:43,970", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"f906a13e-517a-4028-bd66-a75edca39206", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/11/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:43,973", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"fc7cb43d-fbab-4849-be57-19c6e742d356", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/11/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:43,976", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"bd0e5932-ee99-40d8-ad92-f768300471ec", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/11/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:43,979", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"38c424b8-e787-4929-9fde-981d9bf07152", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/11/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:43,981", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"625d6ff0-39a8-403b-a1e4-d46700780017", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/11/rate/", "status_code": 200}
+{"asctime": "2026-10-03 12:19:43,984", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"7bf89c51-6e9f-4be3-83ae-46bf9825a854", "message": "request completed", "method": "POST", "path": 
+"/api/v1/businesses/11/rate/", "status_code": 200}
+P99|rating_round3=statuses:[200, 200, 200, 200, 200, 200, 200, 200] ratings_count:5 rating_rows:8 average_rating:2.40 actual_average:2.62
+P99|purged=12
+P99|remaining=0
+
+
+======================================================================
+ROW 7c - docker compose exec -T web pytest social ratings reports -q -p no:cacheprovider (exit 0)
+======================================================================
+........................................................................ [ 25%]
+........................................................................ [ 51%]
+........................................................................ [ 76%]
+.................................................................        [100%]
+=============================== warnings summary ===============================
+reports/tests/test_throttles.py::TestReportThrottleConfig::test_rate_can_be_overridden_via_settings
+  /app:0: PytestWarning: Error when trying to teardown test databases: OperationalError('database "test_scd_dev" is being accessed by other users\nDETAIL:  There is 1 other session using the database.\n')
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+281 passed, 1 warning in 232.79s (0:03:52)
+
+
+======================================================================
+FULL SUITE - docker compose exec -T web pytest -q -p no:cacheprovider (exit 0)
+======================================================================
+........................................................................ [  4%]
+........................................................................ [  8%]
+........................................................................ [ 13%]
+........................................................................ [ 17%]
+........................................................................ [ 21%]
+........................................................................ [ 26%]
+........................................................................ [ 30%]
+........................................................................ [ 35%]
+........................................................................ [ 39%]
+........................................................................ [ 43%]
+........................................................................ [ 48%]
+.......................x................................................ [ 52%]
+........................................................................ [ 56%]
+........................................................................ [ 61%]
+........................................................................ [ 65%]
+........................................................................ [ 70%]
+........................................................................ [ 74%]
+........................................................................ [ 78%]
+........................................................................ [ 83%]
+........................................................................ [ 87%]
+........................................................................ [ 91%]
+........................................................................ [ 96%]
+............................................................             [100%]
+1643 passed, 1 skipped, 1 xfailed in 997.11s (0:16:37)
+

@@ -1,0 +1,152 @@
+# SECTION 28 THREAT-MODEL VERIFICATION (Part P-099)
+
+Status: IN PROGRESS - Steps 1 and 2 of 3 done (rows 1-5). Rows 6-7 are filled by Step 3.
+Run date: 2026-10-03 | Backend commit at run time: 5546c99 | Environment: local Docker stack, `config.settings.dev` inside the `web` container.
+
+## How this was checked (read first)
+- Every row below was checked against the CURRENT code and the RUNNING stack, not against the master plan's description of what was built.
+- Layout note: the P-099 execution prompt writes paths as `apps/...`. This repository has no `apps/` folder; each Django app sits at the repo root (`accounts/`, `chat/`, `content/`, ...). Every grep in this document uses the real layout.
+- Raw command output for rows 1-3 is in `p099_step1_evidence.txt` (throwaway, like the earlier `p095_step*_audit.txt` files).
+
+## Summary table
+| # | Threat | Verdict | Where |
+|---|--------|---------|-------|
+| 1 | IDOR | PASS | Row 1 |
+| 2 | Broken auth (JWT theft) | PASS | Row 2 |
+| 3 | Spam/abuse (report/message flood) | PARTIAL - login + report PASS, message flood GAP (finding F-99-1) | Row 3 |
+| 4 | Moderation bypass | FAIL (finding F-99-2: unpublished Post readable by anyone via GET /api/v1/posts/<id>/) | Row 4 |
+| 5 | Malicious file upload | PASS | Row 5 |
+| 6 | Webhook spoofing | PENDING (Step 3) | Row 6 |
+| 7 | Counter race conditions | PENDING (Step 3) | Row 7 |
+
+## Row 1 - IDOR
+- What was checked: that the P-096 permission/IDOR sweep (16 apps, 401 / wrong-owner / wrong-role paths, DB re-read to prove "no change") still passes on the current code.
+- Method: `docker compose exec -T web pytest -k permission_sweep -q -p no:cacheprovider` (the full sweep, a superset of the 5-10 endpoint sample the prompt asks for).
+- Static check: all 16 `test_permission_sweep.py` files present: 16/16; `def test_` definitions across them: 100; pinned S-finding characterisation tests present: 3/3.
+- Result: exit code 0. Pytest summary: `266 passed, 1 skipped, 1378 deselected in 216.22s (0:03:36)`
+- Verdict: **PASS**
+- Findings: S-1, S-2, S-3 from P-096 are still OPEN (see "Open findings" below). They are pinned by passing characterisation tests, so they were not changed by this part.
+
+## Row 2 - Broken auth (JWT theft)
+- What was checked: refresh-token rotation, blacklisting, lifetimes and signing setup in the running container; per-environment overrides; the login/refresh/logout tests; and on the Flutter side that tokens go only through `flutter_secure_storage`.
+- Method 1 (effective settings, read from the running container via `manage.py shell`):
+  - ROTATE_REFRESH_TOKENS = True ; BLACKLIST_AFTER_ROTATION = True ; token_blacklist app installed = True
+  - Access lifetime = 15 min ; Refresh lifetime = 7 days (Section 14 range: 7-30 days)
+  - SECRET_KEY length = 33 ; starts with "django-insecure" = False (the key itself is never printed)
+- Method 2 (override scan, `Select-String` over `config\settings\*.py` for SIMPLE_JWT / lifetime / rotate keys):
+    config\settings\dev.py : 0 override line(s)
+    config\settings\staging.py : 0 override line(s)
+    config\settings\prod.py : 0 override line(s)
+    config\settings\test.py : 0 override line(s)
+- Method 3: `docker compose exec -T web pytest accounts/tests/test_auth.py -q -p no:cacheprovider` -> exit 0, `15 passed in 19.24s`. This file covers rotation (new refresh issued), reuse of a rotated-away token rejected, logout blacklisting, and other users' sessions untouched.
+- Method 4 (Flutter, P-005; `Select-String` over `D:\Cavallo\social_commerce_app\lib` for imports and constructions):
+    shared_preferences imports (expected: only lib\core\storage\cache_storage.dart):
+        lib\core\storage\cache_storage.dart:4
+    flutter_secure_storage imports (expected: only lib\core\storage\secure_token_storage.dart):
+        lib\core\storage\secure_token_storage.dart:2
+    FlutterSecureStorage( constructions (non-comment):
+        lib\core\storage\secure_token_storage.dart:57
+  - Mobile static check: PASS
+- Limits of this row: it checks configuration plus tests plus imports. It does not prove on a device that the Keystore/Keychain is used at runtime.
+- Verdict: **PASS**
+
+## Row 3 - Spam/abuse (report flood, message flood)
+- What was checked: that rate limiting is genuinely active (a live 429), not just present in settings, and where else throttling exists.
+- Live test A, login throttle (scope `login`, configured 5/min, per client IP): 8 bad logins in a row to `POST /api/v1/auth/login/` returned: `401, 401, 401, 401, 401, 429, 429, 429`. Envelope code on the last response: `THROTTLED`. Result: PASS (429 reached at attempt 6; all earlier responses were 401/400).
+- Live test B, report throttle (scope `report`, code default 10/hour, per user): one throwaway customer (`p099-throttle-20261003143606@example.com`, deleted afterwards) sent 11 `POST /api/v1/reports/` requests with an invalid `reason` (invalid requests count toward the quota by design, P-057), returned: `400, 400, 400, 400, 400, 400, 400, 400, 400, 400, 429`. Envelope code on the last response: `THROTTLED`. Result: PASS (429 THROTTLED on the 11th request). Note: the first 10 are 400 because the body is deliberately invalid; the point is the 11th is 429 THROTTLED.
+- Inventory of every `throttle_classes =` assignment in non-test code:
+- `accounts\views.py:80: throttle_classes = [LoginRateThrottle]`
+- `payments\views.py:99: throttle_classes = []`
+- `reports\views.py:25: throttle_classes = [ReportRateThrottle]`
+- Message-flood check: keyword search (`throttl|rate_limit|ratelimit|flood|cooldown|per_minute|too many`) over non-test files in `chat\` found 0 hit(s).
+- Verdict: **PARTIAL - login + report PASS, message flood GAP (finding F-99-1)**
+- Finding F-99-1 (OPEN): Section 28 lists "Report/Message flood". Report flood and login brute force are throttled. No throttle or flood control exists anywhere in non-test chat code, so an authenticated user can send messages (REST and/or WebSocket) with no rate limit. Follow-up: add a per-user message rate limit on the chat send path (REST view and WebSocket consumer), sized in a decision with the owner; add a test that triggers it.
+- Side effect to know about: the live login test used up the 5/min login quota for this machine's address for about one minute; if the app shows a 429 right after this run, wait a minute.
+
+## Open findings (carried from earlier parts + new)
+| ID | Source | Description | Status | Suggested priority |
+|----|--------|-------------|--------|--------------------|
+| S-1 | P-096 (social) | Like/Save accept an unpublished (pending/rejected) post by id and bump `likes_count`; Comment/Share/Report require published. | OPEN | High (also relevant to Row 4) |
+| S-2 | P-096 (ratings) | A business owner can rate their own business, inflating `average_rating` (used by Search `min_rating`). Needs a product decision. | OPEN | Medium |
+| S-3 | P-096 (chat) | `ConversationStartView` 400/404 bodies use `{"detail": ...}` instead of the P-012 envelope. Statuses correct, nothing leaks. | OPEN | Low |
+| F-99-1 | P-099 Row 3 | Section 28 names message flood but no chat throttle exists (grep over non-test chat code finds none). Follow-up: per-user rate limit on the chat send path (REST + WebSocket consumer) with a test. | OPEN | High |
+| F-99-2 | P-099 Row 4 | Unpublished (pending/rejected) Post and Reel are readable by anyone via GET /api/v1/posts/<id>/ and /api/v1/reels/<id>/ (AllowAny, default manager), with status and rejection_reason. Fix proposal in Row 4 (owner or moderator or published only, else 404). | OPEN | High |
+| O-99-1 | P-099 Row 5 | Django admin file uploads bypass validate_upload() (staff only). | OPEN (observation) | Low |
+
+## Row 4 - Moderation bypass
+- What was checked: that every public-facing content read goes through the moderation-aware path (`Post.published_objects` / `Reel.published_objects`, or Story's query-driven status+expiry filter), not the unfiltered default manager.
+- Method 1 (regex over all non-test `.py` files; pattern: `.objects|published_objects .filter|exclude|get( ... status =`). Layout note: the prompt's `grep -rn "\.objects\.filter(status=" apps/` was adapted to the real root-level layout and widened to also catch multi-line calls:
+    moderation\tasks.py:54: .objects.filter(
+    moderation\tasks.py:74: .objects.filter(
+    moderation\views.py:81: .objects.filter(status=
+    payments\tasks.py:88: .objects.filter(
+    reports\targets.py:35: .objects.filter(
+    stories\views.py:62: .objects.filter(status=
+    stories\views.py:85: .objects.filter(
+  - Hits outside the expected allow-list (`content\models.py` is the manager definition itself; `moderation\views.py` is the staff queue; `reports\admin.py`; `stories\views.py`, `stories\tasks.py` and `reports\targets.py` are the P-048 status+expiry pattern):
+    moderation\tasks.py:54: .objects.filter(
+    moderation\tasks.py:74: .objects.filter(
+    payments\tasks.py:88: .objects.filter(
+- Method 2 (default-manager reads of Post/Reel/any model in view-layer files: `views.py`, `services.py`, `serializers.py`, `targets.py`):
+    chat\serializers.py:53: model.objects
+    content\views.py:21: Post.objects
+    content\views.py:28: Reel.objects
+    content\views.py:52: Post.objects
+    content\views.py:53: Post.objects
+    content\views.py:75: Post.objects
+    content\views.py:107: Post.objects
+    content\views.py:151: Reel.objects
+    content\views.py:152: Reel.objects
+    content\views.py:173: Reel.objects
+    social\views.py:160: model.objects
+    social\views.py:195: __class__.objects
+    social\views.py:215: __class__.objects
+    social\views.py:246: model.objects
+    social\views.py:400: model.objects
+    social\views.py:564: model.objects
+- Method 3 (LIVE, anonymous, no Authorization header). A throwaway business and two posts were created through the project's own `core.tests.sweep_factories` helpers, one pending and one published, then removed afterwards:
+  - `GET /api/v1/posts/<pending id>/` (post status = `pending_review`) -> **200**; body leaks `"status": "pending"`: False; body contains a `rejection_reason` key: True
+  - `GET /api/v1/posts/<published id>/` (control) -> 200
+  - `GET /api/v1/posts/public/` -> 200; pending caption present on the first page: False (the public LIST is correctly moderation-aware)
+  - `GET /api/v1/reels/<non-published reel id>/` (no non-published Reel exists in the dev database, so this was not tested live; it shares the same code path (content/views.py ReelDetailView)) -> not tested
+  - Result: FAIL: anonymous GET of a pending_review post returned 200
+- Method 4: `docker compose exec -T web pytest content feed stories search -q -p no:cacheprovider` -> exit 0, `334 passed in 202.81s (0:03:22)`. Passing tests do not cover this gap, because no existing test asserts that an unpublished Post/Reel is hidden from `GET /<id>/`.
+- Root cause (read in code): `content/views.py` -> `PostDetailView` and `ReelDetailView` are `AllowAny` for GET, resolve the object with `_get_post_or_404` / `_get_reel_or_404` (`Post.objects` / `Reel.objects`: only soft-deleted rows are excluded, any moderation status is served), and serialize with `PostSerializer` / `ReelSerializer`, which include `status` and `rejection_reason`. The Flutter public detail screens hide non-published items client-side (P-095 D-1), so the app looks correct while the API still serves the content.
+- Related (already open): S-1 (Like/Save accept an unpublished post by id) comes from the same habit of using `model.objects` where `model.published_objects` is the sanctioned manager.
+- Verdict: **FAIL (finding F-99-2: unpublished Post readable by anyone via GET /api/v1/posts/<id>/)**
+- Finding F-99-2 (OPEN, High): a pending or rejected Post/Reel (for example one rejected for harmful content) stays readable by ANY anonymous client who knows or guesses its integer id, together with its moderation status and rejection reason. This is exactly the "moderation bypass" Section 28 names. NOT fixed inside P-099, because the correct fix changes behavior other parts rely on (owner needs to see their own rejected item, which is also the root of Flutter D-1; moderators need to see pending items). Proposed fix: in `PostDetailView.get_object` and `ReelDetailView.get_object`, for GET only, return the object when it is published (and, for Reels, `processing_status == ready`), OR the requester owns the business, OR the requester has `can_moderate_content`; otherwise raise `NotFound` (404, so existence is not revealed). Tests to add: anonymous and non-owner GET of a pending/rejected Post and Reel -> 404; owner and moderator GET -> 200. Same check for `/reels/<id>/`. Estimated size: about 2 small view changes plus about 8 tests.
+## Row 5 - Malicious file upload
+- What was checked: every file-accepting field in the project is behind `core.media.validate_upload()` (libmagic content sniffing + size cap, P-013) on every writable serializer path.
+- Method 1 (static; `FileField|ImageField` declarations in every `models.py`, plus any `serializers.FileField/ImageField` declared directly in a serializer):
+    chat\models.py:76: models.FileField(
+    content\models.py:61: models.FileField(
+    content\models.py:166: models.FileField(
+    content\models.py:170: models.FileField(
+    products\models.py:134: models.FileField(
+    stories\models.py:96: models.FileField(
+  - Serializer-declared file fields: 0 (expected 0)
+- Method 2 (introspection inside the running `web` container: for each model file field, every `ModelSerializer` bound to that model is instantiated; the field is classified as READ_ONLY, NOT_EXPOSED, WRITABLE_VALIDATED (its `validate_<field>` source calls `validate_upload`) or WRITABLE_NOT_VALIDATED):
+    P99|FIELD|products.Product.image|WRITABLE_VALIDATED|ProductSerializer
+    P99|FIELD|content.Post.image|WRITABLE_VALIDATED|PostSerializer
+    P99|FIELD|content.Post.image|READ_ONLY|PostPublicSerializer
+    P99|FIELD|content.Reel.video|WRITABLE_VALIDATED|ReelSerializer
+    P99|FIELD|content.Reel.video|READ_ONLY|ReelPublicSerializer
+    P99|FIELD|content.Reel.thumbnail|READ_ONLY|ReelSerializer
+    P99|FIELD|content.Reel.thumbnail|READ_ONLY|ReelPublicSerializer
+    P99|FIELD|stories.Story.media|WRITABLE_VALIDATED|StorySerializer
+    P99|FIELD|chat.Message.media|WRITABLE_VALIDATED|MessageSerializer
+  - Counts: validated-writable = 5 ; unguarded = 0 ; flagged read-side-by-name only = 0. A READ_SIDE_BY_NAME line is a serializer whose class name contains Public/List/Read/Summary/Nested; it would only matter if it were used on a write endpoint (verify if any appear).
+  - `Reel.thumbnail` is not user-uploadable: it must show READ_ONLY (it is produced by ffmpeg in `content/tasks.py` from the already-validated video).
+- Method 3 (existing rejection tests, real HTTP through the API client):
+  - `docker compose exec -T web pytest core/tests/test_media.py chat/test_media_messages.py -q -p no:cacheprovider` -> exit 0, `16 passed in 15.78s`
+  - `docker compose exec -T web pytest content/tests/test_api.py stories/tests/test_api.py products/tests/test_api.py -k "spoofed or disguised" -q -p no:cacheprovider` -> exit 0, `4 passed, 91 deselected in 6.77s` (renamed-extension / disguised-executable uploads rejected for Post image, Reel video, Story media and Product image).
+- Observation O-99-1 (Low): the Django admin registers models that own file fields (below). Admin forms upload through the model field and do NOT call `validate_upload()`, so a staff user could attach an unvalidated file there. Staff-only and outside the public attack surface; documented, not changed.
+    P99|ADMIN|products.Product|registered=True|readonly=['created_at', 'updated_at']|exclude=[]
+    P99|ADMIN|content.Post|registered=True|readonly=['status']|exclude=[]
+    P99|ADMIN|content.Reel|registered=True|readonly=['status', 'processing_status', 'duration_seconds']|exclude=[]
+    P99|ADMIN|stories.Story|registered=True|readonly=['status', 'published_at', 'expires_at']|exclude=[]
+    P99|ADMIN|chat.Message|registered=True|readonly=[]|exclude=[]
+- Verdict: **PASS**
+<!-- ROW6_PLACEHOLDER: Step 3 replaces this line with "## Row 6 - Webhook spoofing" -->
+<!-- ROW7_PLACEHOLDER: Step 3 replaces this line with "## Row 7 - Counter race conditions" -->
+<!-- FINAL_PLACEHOLDER: Step 3 adds the full-suite pytest result and the final sign-off here -->
