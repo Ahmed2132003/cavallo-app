@@ -12058,3 +12058,71 @@ Phase 19 is finished once the owner accepts the findings above (P-100 certificat
 ### Edits to existing sections
 In the Part status index/table add: `P-099 | Full Section-28 Threat-Model Verification Pass | Phase 19 | VERIFIED (7/7 threats checked on live code; 3 new open findings F-99-1 High, F-99-2 High, F-99-3 Medium; no code changed)`.
 Set the Phase 19 summary line to: "IN PROGRESS (P-099 verified with open findings F-99-1/F-99-2/F-99-3; P-100 deferred by decision record)".
+
+## PART P-100 â€” Certificate Pinning (Deferred/Optional) â€” STATUS: COMPLETE âœ… (decision: DEFERRED, documented; no code changed in either repo)
+
+Phase 19 (Security Hardening). Documentation only, both repos (`cavallo-app` local `D:\Cavallo\scd-backend`, `cavallo-mobile` local `D:\Cavallo\social_commerce_app`). No production code changed, no migrations, no new dependency. Executed as 3 steps (one third each) using PowerShell scripts kept OUTSIDE the repos in `D:\Cavallo\_scripts` (so they cannot be committed by a stray `git add .`), followed by a selective `git add` of named files only.
+
+### Decision
+Certificate pinning is DEFERRED for the MVP. This is a deliberate decision, consistent with Architecture Section 15 (Could-Have), not an oversight.
+
+### Why
+1. Nothing real to pin: master plan Section 7 item 9 (API / staging / production domain) is still OPEN, so there is no production certificate. The Flutter `CONFIG.md` only shows placeholder URLs.
+2. A wrong pin locks every installed app out of the network until a new build ships, and the release path (Section 7 item 8, store accounts, Phase 22) is unresolved.
+3. Normal TLS validation stays active: `lib/` has no `badCertificateCallback` override and no custom `SecurityContext`; a bad certificate already maps to a failure through `ErrorInterceptor` (`DioExceptionType.badCertificate`).
+
+### What was implemented
+- `CERTIFICATE_PINNING_DECISION.md`: Status DEFERRED, the reasons above, the prerequisites for implementing it later and when to revisit.
+- A short "Certificate pinning (deferred - P-100)" section at the end of both `CONFIG.md` files, so anyone preparing a staging/prod build sees the decision (the Flutter one also warns not to add a `badCertificateCallback` override "to make staging work").
+- Preflight evidence (script check before writing): no pinning-related code in `lib/` (`badCertificateCallback`, `IOHttpClientAdapter`, `SecurityContext`, `certificate_pinning`), no pinning dependency in `pubspec.yaml`.
+
+### Files created
+- Backend: `CERTIFICATE_PINNING_DECISION.md` (repo root, next to `E2E_SMOKE_TEST.md`).
+- Outside the repos (not committed, safe to delete): `D:\Cavallo\_scripts\p100_step1.ps1`, `p100_step2.ps1`, `p100_step3_verify.ps1`, `p100_progress.ps1`, and backups in `D:\Cavallo\_scripts\backups\`.
+
+### Files modified
+- Backend: `CONFIG.md` (section appended; 9 insertions, 1 deletion), `PROJECT_PROGRESS.md` (this section).
+- Mobile: `CONFIG.md` (section appended; 15 insertions, 1 deletion).
+- NOT touched: `lib/core/network/dio_client.dart` (P-004), `pubspec.yaml`, `pubspec.lock`, any `.py` / `.dart` file. (The "1 deletion" in each diff is the old last line, which had no trailing newline.)
+
+### Important implementation details
+1. Both `CONFIG.md` files use CRLF line endings; the script preserves them and appends only.
+2. The deferral note is deliberately generic about dates and domains: it points to Section 7 item 9 instead of naming a domain, because none exists.
+3. To implement later (full list in `CERTIFICATE_PINNING_DECISION.md`): real production domain with a valid certificate plus a staging domain to test failures; pin the SPKI hash of the leaf or the issuing CA/intermediate, with at least one backup pin; apply to staging/prod only, never to `localhost` / `10.0.2.2`; hook via `IOHttpClientAdapter` in `dio_client.dart` or the `dio_certificate_pinning` package (check it is still maintained); required test: a non-matching certificate must fail with `DioExceptionType.badCertificate` and the correct one must succeed.
+
+### Architecture decisions
+None new. Section 15 respected (pinning stays Could-Have/deferred); P-004's Dio client is unchanged.
+
+### Commands
+- Mobile, from `D:\Cavallo\social_commerce_app`: `flutter analyze` and `flutter test test/core/network/`.
+- Verification script (read-only, run before `git add`): `powershell -ExecutionPolicy Bypass -File D:\Cavallo\_scripts\p100_step3_verify.ps1`.
+- Backend commit: `git add CERTIFICATE_PINNING_DECISION.md CONFIG.md` then `git commit` then `git push`. Mobile commit: `git add CONFIG.md` then `git commit` then `git push`. Never `git add .` here (see Known issues).
+
+### Tests and verification results (real run on the developer machine)
+- `flutter analyze`: No issues found (49.6s).
+- `flutter test test/core/network/`: 24 passed.
+- `p100_step3_verify.ps1`: 15 checks, all PASS (decision file and prerequisites section, section present exactly once in each `CONFIG.md`, mobile only `CONFIG.md` modified, `dio_client.dart` / `pubspec.yaml` / `pubspec.lock` untouched, no pinning code in `lib/`, backend no `.py/.yml/.ini/.txt` changes).
+- Both pushes confirmed: backend `5546c99..cb0a346`, mobile `6bdb205..87cbcbb`, both on `main`.
+- NOT run: the full `flutter test`, the full backend `pytest` (no code changed). No test for "non-pinned certificate fails" exists, because nothing was implemented.
+
+### Known issues
+- Repo hygiene carried over, not part of P-100: `celerybeat-schedule` is tracked and shows as modified; `p096_step*.ps1` show as deleted in the backend working tree and are not committed; the last line of the backend `.gitignore` appears to be UTF-16 encoded in the GitHub copy, so the `celerybeat-schedule` ignore entry is probably not effective. Not fixed here.
+- Untracked files in the backend working tree belong to the P-099 work (`SECTION_28_THREAT_MODEL_VERIFICATION.md`, `p099_step1.ps1`, `p099_step1_evidence.txt`) and were deliberately not added by P-100.
+
+### Remaining work
+1. Revisit pinning when Section 7 item 9 (domain) is resolved, and before Phase 22 (Production Build and Release Readiness) is closed.
+2. Phase 19 can be closed only when the P-099 section is recorded in this file.
+3. Open items carried over from P-095 to P-098 (D-1, D-2, G-1, S-1, S-2, S-3, F-1, full `flutter test` on `main`) are NOT resolved by this part.
+
+### GitHub references
+- `cavallo-app` `main`: `cb0a346` (P-100: certificate pinning deferred - decision record + CONFIG.md note), pushed as `5546c99..cb0a346`.
+- `cavallo-mobile` `main`: `87cbcbb` (P-100: certificate pinning deferred - CONFIG.md note), pushed as `6bdb205..87cbcbb`.
+
+### Phase 19 status
+P-100 COMPLETE (deferred and documented). Phase 19 is COMPLETE once P-099 is recorded COMPLETE; then set its summary line to: "COMPLETE (P-099 threat-model verification, P-100 certificate pinning DEFERRED and documented)". If P-099 is not complete, keep: "IN PROGRESS (P-100 complete; P-099 pending)". Gate for Phase 20: P-099 recorded and the owner's decision on its open findings noted.
+
+### Exact next starting point
+P-101 (Phase 20): query/index audit against the composite indexes in Architecture Section 9 (confirm they exist and are actually used via EXPLAIN) plus a cache-hit-rate spot check on Feed, Business Profile and Categories. Check the Phase 19 gate above before starting. P-102 (Flutter offline/resilience audit against Architecture Section 27) follows.
+
+### Edits to existing sections
+In the Part status index/table add: `P-100 | Certificate Pinning (Deferred/Optional) | Phase 19 | COMPLETE (DEFERRED: CERTIFICATE_PINNING_DECISION.md + CONFIG.md notes, no code changed)`. Set the Phase 19 summary line as described in "Phase 19 status". Leave Section 7 item 9 (domain) marked OPEN: this part does not resolve it.
