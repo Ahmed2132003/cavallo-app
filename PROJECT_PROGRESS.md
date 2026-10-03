@@ -12126,3 +12126,66 @@ P-101 (Phase 20): query/index audit against the composite indexes in Architectur
 
 ### Edits to existing sections
 In the Part status index/table add: `P-100 | Certificate Pinning (Deferred/Optional) | Phase 19 | COMPLETE (DEFERRED: CERTIFICATE_PINNING_DECISION.md + CONFIG.md notes, no code changed)`. Set the Phase 19 summary line as described in "Phase 19 status". Leave Section 7 item 9 (domain) marked OPEN: this part does not resolve it.
+
+---
+
+## PART P-101 - Query/Index Audit + Cache-Hit-Rate Spot Check (Phase 20) - STATUS: COMPLETE (2026-10-04) - 4 missing Section 9 composite indexes added; cache hits verified; 4 design-level findings OPEN
+
+### What was implemented
+- Built a realistic audit data set (300 businesses over 8 cities / 3 countries, 6000 products, 6000 posts, 3000 reels, 3000 stories of which 146 active, 11862 moderation rows, 1510 follows) with ANALYZE, then ran EXPLAIN (ANALYZE, BUFFERS) on the REAL Django-generated SQL (captured with a Django execute_wrapper) for: Feed following + backfill tiers (page 1 and cursor page 2), public Post/Reel lists by business, Search (4 filter shapes + 2 full-text), Moderation pending list (with and without priority), Story public list (all / one business) and the expiry sweep. Every query was also re-planned with enable_seqscan=off (diagnostic) to separate "planner prefers a seq scan on a small table" from "no usable index".
+- Found 4 Section 9 composite indexes MISSING and added them: Post, Reel and Story (business, status, created_at); BusinessProfile (category, city). Additive migrations only.
+- Verified the three cached targets really hit the cache through the real URLs.
+- Full report: `PERFORMANCE_AUDIT_PHASE20.md` (Parts A-E, raw plans included).
+
+### Files created
+- Backend: `PERFORMANCE_AUDIT_PHASE20.md`; `p101_step1.ps1`, `p101_step2.ps1`, `p101_step3.ps1`; helpers `p101_seed.py`, `p101_cleanup.py`, `p101_inventory.py`, `p101_explain.py`, `p101_verify.py`, `p101_cache.py`, `p101_postclean.py`; evidence `p101_step1_evidence.txt`, `p101_step2_evidence.txt`, `p101_step3_evidence.txt`, `p101_step2_plans.txt`, `p101_step3_plans.txt`; migrations `content/migrations/*_p101_composite_indexes.py`, `stories/migrations/*_p101_composite_indexes.py`, `businesses/migrations/*_p101_composite_indexes.py`.
+### Files modified
+- `content/models.py` (2 Meta.indexes entries), `stories/models.py` (1), `businesses/models.py` (1), `PERFORMANCE_AUDIT_PHASE20.md` is new, `PROJECT_PROGRESS.md` (this section, appended). Nothing in the mobile repo changed.
+
+### Important implementation details
+- New index names (Django's 30-char limit): `post_biz_status_created_idx`, `reel_biz_status_created_idx`, `story_biz_status_created_idx`, `biz_category_city_idx`. Existing indexes (`content_post_business_idx`, `content_reel_business_idx`, `story_biz_status_exp_idx`, GIN indexes, moderation indexes) are unchanged.
+- Section 9's `(category_id, city)` on Product is impossible as written (Product has no city); the as-built `products_category_business` was audited instead and is used by the planner.
+- Audit data was deleted at the end (users `p101_*`, businesses `P101 *`, categories `p101-*`); the Redis keys `categories:tree`, the audit feed key and the audit business-profile key were deleted too.
+
+### Architecture decisions
+- No architecture change. Indexes only. No cache code changed (no cache-key bug found).
+- F-1..F-4 below were deliberately NOT fixed: they are design-level (not missing indexes) or indexes the plan does not name.
+
+### Commands
+- Run from `D:\Cavallo\scd-backend` (PowerShell): `powershell -ExecutionPolicy Bypass -File .\p101_step1.ps1`, then `.\p101_step2.ps1`, then `.\p101_step3.ps1`.
+- Apply on another machine: `docker compose exec -T web python manage.py migrate`.
+- Commit (never `git add .`): `git add content/models.py stories/models.py businesses/models.py content/migrations stories/migrations businesses/migrations PERFORMANCE_AUDIT_PHASE20.md p101_step1.ps1 p101_step2.ps1 p101_step3.ps1 p101_seed.py p101_cleanup.py p101_inventory.py p101_explain.py p101_verify.py p101_cache.py p101_postclean.py p101_step1_evidence.txt p101_step2_evidence.txt p101_step3_evidence.txt p101_step2_plans.txt p101_step3_plans.txt PROJECT_PROGRESS.md`, then `git commit`, then `git push`.
+
+### Tests and verification results (real run on the developer machine)
+- Step 1 inventory: A1/A2/A3/B1 MISSING; B2, C1, C2, D1, D2, A4 found. Step 2: 17 scenarios, 27 plans. Step 3: all indexes found after the fix, `makemigrations --check` clean, targeted pytest (`content stories businesses feed search moderation`): 507 passed in 260.45s (0:04:20).
+- Cache: Feed first page, Business Profile and Categories tree each computed once in 5 requests with the Redis TTL counting down; negative control (feed `page_size=10`) computed on every request, as documented.
+- NOT run: the full backend pytest (only index metadata changed), the Flutter side, any test at production data volume.
+
+### Findings OPEN (design-level, need owner decision or real usage data)
+- F-1 Feed backfill tier seq-scans Post/Reel because its ORDER BY starts with `business.is_featured` (joined table). Cost grows with content volume; page 1 of Home Feed is cached 90 s, Discover and cursor pages are not. Later option: denormalize `is_featured` onto Post/Reel or build a UNION/materialized feed.
+- F-2 Story public list without a business filter and the expiry sweep seq-scan `stories_story` (both Story indexes lead with `business`). Candidate: (status, expires_at). Also: `story_biz_status_exp_idx` is usable but was not chosen by the planner at this volume; re-check at larger volume.
+- F-3 Moderation pending list sorts all pending rows per page. Candidate: (status, created_at).
+- F-4 City-only search seq-scans small tables (correct at this size).
+
+### Known issues
+- Repo hygiene carried over, not part of P-101: `celerybeat-schedule` tracked and modified; `p099_step*.ps1` show as deleted; GitHub `.gitignore` last line probably UTF-16.
+- `OFFLINE_RESILIENCE_AUDIT_PHASE20.md` is untracked in the backend working tree and is not part of P-101 (it belongs to P-102 work).
+- P-099 open findings (F-99-1, F-99-2, F-99-3; S-1 moderation-bypass) are NOT resolved by this part.
+- Backups of the modified files are in `p101_backups\` (untracked, do not commit).
+
+### Remaining work
+1. Owner decision on F-1..F-3 (separate small parts if accepted).
+2. Re-run the plan check at larger data volume before production (Phase 22).
+3. P-102 (Flutter offline/resilience audit).
+
+### GitHub references
+- `cavallo-app` `main`: commit pending (the owner commits and pushes with the command above; fill the hash here after pushing). `cavallo-mobile`: no change.
+
+### Phase 20 status
+P-101 COMPLETE. Phase 20 stays IN PROGRESS until P-102 is recorded.
+
+### Exact next starting point
+P-102 (Phase 20): Flutter offline/resilience audit against Architecture Section 27 (client side of this phase). Check first whether `OFFLINE_RESILIENCE_AUDIT_PHASE20.md` in the backend working tree is an earlier P-102 attempt before starting.
+
+### Edits to existing sections
+In the Part status index/table add: `P-101 | Query/Index Audit + Cache-Hit-Rate Spot Check | Phase 20 | COMPLETE (4 composite indexes added; cache hits verified; F-1..F-4 open in PERFORMANCE_AUDIT_PHASE20.md)`.

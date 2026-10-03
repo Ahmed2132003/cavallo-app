@@ -1,0 +1,238 @@
+
+##### POST public list by business (P-043) | table=content_post
+-- SQL:
+SELECT "content_post"."id", "content_post"."created_at", "content_post"."updated_at", "content_post"."is_deleted", "content_post"."deleted_at", "content_post"."status", "content_post"."business_id", "content_post"."caption", "content_post"."image", "content_post"."likes_count", "content_post"."comments_count", "content_post"."shares_count", "businesses_businessprofile"."id", "businesses_businessprofile"."created_at", "businesses_businessprofile"."updated_at", "businesses_businessprofile"."is_deleted", "businesses_businessprofile"."deleted_at", "businesses_businessprofile"."user_id", "businesses_businessprofile"."business_name", "businesses_businessprofile"."business_type", "businesses_businessprofile"."country", "businesses_businessprofile"."city", "businesses_businessprofile"."description", "businesses_businessprofile"."category_id", "businesses_businessprofile"."phone_number", "businesses_businessprofile"."follower_count", "businesses_businessprofile"."is_featured", "businesses_businessprofile"."search_vector", "businesses_businessprofile"."average_rating", "businesses_businessprofile"."ratings_count" FROM "content_post" INNER JOIN "businesses_businessprofile" ON ("content_post"."business_id" = "businesses_businessprofile"."id") WHERE (NOT "content_post"."is_deleted" AND "content_post"."status" = %s AND "content_post"."business_id" = %s) ORDER BY "content_post"."created_at" DESC LIMIT 21
+-- PARAMS: [Moderatable.Status.PUBLISHED, 12]
+-- PLAN (default planner):
+Limit  (cost=0.55..29.53 rows=21 width=462) (actual time=0.013..0.036 rows=21 loops=1)
+  Buffers: shared hit=26
+  ->  Nested Loop  (cost=0.55..349.60 rows=253 width=462) (actual time=0.013..0.034 rows=21 loops=1)
+        Buffers: shared hit=26
+        ->  Index Scan Backward using post_biz_status_created_idx on content_post  (cost=0.28..338.15 rows=253 width=145) (actual time=0.007..0.021 rows=21 loops=1)
+              Index Cond: ((business_id = 12) AND ((status)::text = 'published'::text))
+              Filter: (NOT is_deleted)
+              Buffers: shared hit=23
+        ->  Materialize  (cost=0.27..8.30 rows=1 width=317) (actual time=0.000..0.000 rows=1 loops=21)
+              Buffers: shared hit=3
+              ->  Index Scan using businesses_businessprofile_pkey on businesses_businessprofile  (cost=0.27..8.29 rows=1 width=317) (actual time=0.002..0.003 rows=1 loops=1)
+                    Index Cond: (id = 12)
+                    Buffers: shared hit=3
+Planning Time: 0.077 ms
+Execution Time: 0.052 ms
+-- PLAN (enable_seqscan=off, diagnostic only):
+Limit  (cost=0.55..29.53 rows=21 width=462) (actual time=0.012..0.034 rows=21 loops=1)
+  Buffers: shared hit=26
+  ->  Nested Loop  (cost=0.55..349.60 rows=253 width=462) (actual time=0.011..0.033 rows=21 loops=1)
+        Buffers: shared hit=26
+        ->  Index Scan Backward using post_biz_status_created_idx on content_post  (cost=0.28..338.15 rows=253 width=145) (actual time=0.006..0.020 rows=21 loops=1)
+              Index Cond: ((business_id = 12) AND ((status)::text = 'published'::text))
+              Filter: (NOT is_deleted)
+              Buffers: shared hit=23
+        ->  Materialize  (cost=0.27..8.30 rows=1 width=317) (actual time=0.000..0.000 rows=1 loops=21)
+              Buffers: shared hit=3
+              ->  Index Scan using businesses_businessprofile_pkey on businesses_businessprofile  (cost=0.27..8.29 rows=1 width=317) (actual time=0.002..0.002 rows=1 loops=1)
+                    Index Cond: (id = 12)
+                    Buffers: shared hit=3
+Planning Time: 0.071 ms
+Execution Time: 0.050 ms
+
+##### REEL public list by business (P-043) | table=content_reel
+-- SQL:
+SELECT "content_reel"."id", "content_reel"."created_at", "content_reel"."updated_at", "content_reel"."is_deleted", "content_reel"."deleted_at", "content_reel"."status", "content_reel"."business_id", "content_reel"."caption", "content_reel"."video", "content_reel"."thumbnail", "content_reel"."duration_seconds", "content_reel"."processing_status", "content_reel"."likes_count", "content_reel"."comments_count", "content_reel"."shares_count", "businesses_businessprofile"."id", "businesses_businessprofile"."created_at", "businesses_businessprofile"."updated_at", "businesses_businessprofile"."is_deleted", "businesses_businessprofile"."deleted_at", "businesses_businessprofile"."user_id", "businesses_businessprofile"."business_name", "businesses_businessprofile"."business_type", "businesses_businessprofile"."country", "businesses_businessprofile"."city", "businesses_businessprofile"."description", "businesses_businessprofile"."category_id", "businesses_businessprofile"."phone_number", "businesses_businessprofile"."follower_count", "businesses_businessprofile"."is_featured", "businesses_businessprofile"."search_vector", "businesses_businessprofile"."average_rating", "businesses_businessprofile"."ratings_count" FROM "content_reel" INNER JOIN "businesses_businessprofile" ON ("content_reel"."business_id" = "businesses_businessprofile"."id") WHERE (NOT "content_reel"."is_deleted" AND "content_reel"."status" = %s AND "content_reel"."processing_status" = %s AND "content_reel"."business_id" = %s) ORDER BY "content_reel"."created_at" DESC LIMIT 21
+-- PARAMS: [Moderatable.Status.PUBLISHED, Reel.ProcessingStatus.READY, 12]
+-- PLAN (default planner):
+Limit  (cost=0.55..33.67 rows=21 width=494) (actual time=0.025..0.044 rows=21 loops=1)
+  Buffers: shared hit=24
+  ->  Nested Loop  (cost=0.55..180.32 rows=114 width=494) (actual time=0.025..0.042 rows=21 loops=1)
+        Buffers: shared hit=24
+        ->  Index Scan Backward using reel_biz_status_created_idx on content_reel  (cost=0.28..170.60 rows=114 width=177) (actual time=0.017..0.026 rows=21 loops=1)
+              Index Cond: ((business_id = 12) AND ((status)::text = 'published'::text))
+              Filter: ((NOT is_deleted) AND ((processing_status)::text = 'ready'::text))
+              Rows Removed by Filter: 1
+              Buffers: shared hit=21
+        ->  Materialize  (cost=0.27..8.30 rows=1 width=317) (actual time=0.000..0.000 rows=1 loops=21)
+              Buffers: shared hit=3
+              ->  Index Scan using businesses_businessprofile_pkey on businesses_businessprofile  (cost=0.27..8.29 rows=1 width=317) (actual time=0.005..0.005 rows=1 loops=1)
+                    Index Cond: (id = 12)
+                    Buffers: shared hit=3
+Planning Time: 0.145 ms
+Execution Time: 0.067 ms
+-- PLAN (enable_seqscan=off, diagnostic only):
+Limit  (cost=0.55..33.67 rows=21 width=494) (actual time=0.016..0.033 rows=21 loops=1)
+  Buffers: shared hit=24
+  ->  Nested Loop  (cost=0.55..180.32 rows=114 width=494) (actual time=0.016..0.032 rows=21 loops=1)
+        Buffers: shared hit=24
+        ->  Index Scan Backward using reel_biz_status_created_idx on content_reel  (cost=0.28..170.60 rows=114 width=177) (actual time=0.011..0.019 rows=21 loops=1)
+              Index Cond: ((business_id = 12) AND ((status)::text = 'published'::text))
+              Filter: ((NOT is_deleted) AND ((processing_status)::text = 'ready'::text))
+              Rows Removed by Filter: 1
+              Buffers: shared hit=21
+        ->  Materialize  (cost=0.27..8.30 rows=1 width=317) (actual time=0.000..0.000 rows=1 loops=21)
+              Buffers: shared hit=3
+              ->  Index Scan using businesses_businessprofile_pkey on businesses_businessprofile  (cost=0.27..8.29 rows=1 width=317) (actual time=0.002..0.003 rows=1 loops=1)
+                    Index Cond: (id = 12)
+                    Buffers: shared hit=3
+Planning Time: 0.076 ms
+Execution Time: 0.049 ms
+
+##### FEED following-tier page1 | table=content_post
+-- SQL:
+SELECT "content_post"."id", "content_post"."created_at", "content_post"."updated_at", "content_post"."is_deleted", "content_post"."deleted_at", "content_post"."status", "content_post"."business_id", "content_post"."caption", "content_post"."image", "content_post"."likes_count", "content_post"."comments_count", "content_post"."shares_count", "businesses_businessprofile"."id", "businesses_businessprofile"."created_at", "businesses_businessprofile"."updated_at", "businesses_businessprofile"."is_deleted", "businesses_businessprofile"."deleted_at", "businesses_businessprofile"."user_id", "businesses_businessprofile"."business_name", "businesses_businessprofile"."business_type", "businesses_businessprofile"."country", "businesses_businessprofile"."city", "businesses_businessprofile"."description", "businesses_businessprofile"."category_id", "businesses_businessprofile"."phone_number", "businesses_businessprofile"."follower_count", "businesses_businessprofile"."is_featured", "businesses_businessprofile"."search_vector", "businesses_businessprofile"."average_rating", "businesses_businessprofile"."ratings_count" FROM "content_post" INNER JOIN "businesses_businessprofile" ON ("content_post"."business_id" = "businesses_businessprofile"."id") WHERE (NOT "content_post"."is_deleted" AND "content_post"."status" = %s AND "content_post"."business_id" IN (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)) ORDER BY "content_post"."created_at" DESC, "content_post"."id" DESC LIMIT 20
+-- PARAMS: [Moderatable.Status.PUBLISHED, 16, 23, 34, 57, 59, 67, 78, 101, 103, 118, 124, 164, 175, 179, 180, 206, 222, 237, 249, 251, 264, 270, 282, 300]
+-- PLAN (default planner):
+Limit  (cost=152.03..152.08 rows=20 width=462) (actual time=0.492..0.494 rows=20 loops=1)
+  Buffers: shared hit=104
+  ->  Sort  (cost=152.03..152.83 rows=322 width=462) (actual time=0.491..0.493 rows=20 loops=1)
+        Sort Key: content_post.created_at DESC, content_post.id DESC
+        Sort Method: top-N heapsort  Memory: 44kB
+        Buffers: shared hit=104
+        ->  Hash Join  (cost=29.14..143.46 rows=322 width=462) (actual time=0.155..0.361 rows=326 loops=1)
+              Hash Cond: (content_post.business_id = businesses_businessprofile.id)
+              Buffers: shared hit=104
+              ->  Index Scan using content_post_business_idx on content_post  (cost=0.28..113.74 rows=322 width=145) (actual time=0.005..0.135 rows=326 loops=1)
+                    Index Cond: (business_id = ANY ('{16,23,34,57,59,67,78,101,103,118,124,164,175,179,180,206,222,237,249,251,264,270,282,300}'::bigint[]))
+                    Filter: ((NOT is_deleted) AND ((status)::text = 'published'::text))
+                    Rows Removed by Filter: 162
+                    Buffers: shared hit=82
+              ->  Hash  (cost=25.05..25.05 rows=305 width=317) (actual time=0.147..0.147 rows=305 loops=1)
+                    Buckets: 1024  Batches: 1  Memory Usage: 118kB
+                    Buffers: shared hit=22
+                    ->  Seq Scan on businesses_businessprofile  (cost=0.00..25.05 rows=305 width=317) (actual time=0.002..0.061 rows=305 loops=1)
+                          Buffers: shared hit=22
+Planning:
+  Buffers: shared hit=12
+Planning Time: 0.164 ms
+Execution Time: 0.511 ms
+-- PLAN (enable_seqscan=off, diagnostic only):
+Limit  (cost=176.94..176.99 rows=20 width=462) (actual time=0.377..0.380 rows=20 loops=1)
+  Buffers: shared hit=101
+  ->  Sort  (cost=176.94..177.75 rows=322 width=462) (actual time=0.377..0.378 rows=20 loops=1)
+        Sort Key: content_post.created_at DESC, content_post.id DESC
+        Sort Method: top-N heapsort  Memory: 44kB
+        Buffers: shared hit=101
+        ->  Merge Join  (cost=0.72..168.37 rows=322 width=462) (actual time=0.012..0.254 rows=326 loops=1)
+              Merge Cond: (content_post.business_id = businesses_businessprofile.id)
+              Buffers: shared hit=101
+              ->  Index Scan using content_post_business_idx on content_post  (cost=0.28..113.74 rows=322 width=145) (actual time=0.005..0.122 rows=326 loops=1)
+                    Index Cond: (business_id = ANY ('{16,23,34,57,59,67,78,101,103,118,124,164,175,179,180,206,222,237,249,251,264,270,282,300}'::bigint[]))
+                    Filter: ((NOT is_deleted) AND ((status)::text = 'published'::text))
+                    Rows Removed by Filter: 162
+                    Buffers: shared hit=82
+              ->  Index Scan using businesses_businessprofile_pkey on businesses_businessprofile  (cost=0.27..49.85 rows=305 width=317) (actual time=0.002..0.068 rows=294 loops=1)
+                    Buffers: shared hit=19
+Planning:
+  Buffers: shared hit=12
+Planning Time: 0.158 ms
+Execution Time: 0.396 ms
+
+##### FEED following-tier page1 | table=content_reel
+-- SQL:
+SELECT "content_reel"."id", "content_reel"."created_at", "content_reel"."updated_at", "content_reel"."is_deleted", "content_reel"."deleted_at", "content_reel"."status", "content_reel"."business_id", "content_reel"."caption", "content_reel"."video", "content_reel"."thumbnail", "content_reel"."duration_seconds", "content_reel"."processing_status", "content_reel"."likes_count", "content_reel"."comments_count", "content_reel"."shares_count", "businesses_businessprofile"."id", "businesses_businessprofile"."created_at", "businesses_businessprofile"."updated_at", "businesses_businessprofile"."is_deleted", "businesses_businessprofile"."deleted_at", "businesses_businessprofile"."user_id", "businesses_businessprofile"."business_name", "businesses_businessprofile"."business_type", "businesses_businessprofile"."country", "businesses_businessprofile"."city", "businesses_businessprofile"."description", "businesses_businessprofile"."category_id", "businesses_businessprofile"."phone_number", "businesses_businessprofile"."follower_count", "businesses_businessprofile"."is_featured", "businesses_businessprofile"."search_vector", "businesses_businessprofile"."average_rating", "businesses_businessprofile"."ratings_count" FROM "content_reel" INNER JOIN "businesses_businessprofile" ON ("content_reel"."business_id" = "businesses_businessprofile"."id") WHERE (NOT "content_reel"."is_deleted" AND "content_reel"."status" = %s AND "content_reel"."processing_status" = %s AND "content_reel"."business_id" IN (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)) ORDER BY "content_reel"."created_at" DESC, "content_reel"."id" DESC LIMIT 20
+-- PARAMS: [Moderatable.Status.PUBLISHED, Reel.ProcessingStatus.READY, 16, 23, 34, 57, 59, 67, 78, 101, 103, 118, 124, 164, 175, 179, 180, 206, 222, 237, 249, 251, 264, 270, 282, 300]
+-- PLAN (default planner):
+Limit  (cost=105.79..105.84 rows=20 width=494) (actual time=0.375..0.377 rows=20 loops=1)
+  Buffers: shared hit=96
+  ->  Sort  (cost=105.79..106.22 rows=172 width=494) (actual time=0.374..0.376 rows=20 loops=1)
+        Sort Key: content_reel.created_at DESC, content_reel.id DESC
+        Sort Method: top-N heapsort  Memory: 56kB
+        Buffers: shared hit=96
+        ->  Hash Join  (cost=29.14..101.21 rows=172 width=494) (actual time=0.158..0.298 rows=172 loops=1)
+              Hash Cond: (content_reel.business_id = businesses_businessprofile.id)
+              Buffers: shared hit=96
+              ->  Index Scan using content_reel_business_idx on content_reel  (cost=0.28..71.89 rows=172 width=177) (actual time=0.007..0.103 rows=172 loops=1)
+                    Index Cond: (business_id = ANY ('{16,23,34,57,59,67,78,101,103,118,124,164,175,179,180,206,222,237,249,251,264,270,282,300}'::bigint[]))
+                    Filter: ((NOT is_deleted) AND ((status)::text = 'published'::text) AND ((processing_status)::text = 'ready'::text))
+                    Rows Removed by Filter: 84
+                    Buffers: shared hit=74
+              ->  Hash  (cost=25.05..25.05 rows=305 width=317) (actual time=0.148..0.149 rows=305 loops=1)
+                    Buckets: 1024  Batches: 1  Memory Usage: 118kB
+                    Buffers: shared hit=22
+                    ->  Seq Scan on businesses_businessprofile  (cost=0.00..25.05 rows=305 width=317) (actual time=0.003..0.062 rows=305 loops=1)
+                          Buffers: shared hit=22
+Planning:
+  Buffers: shared hit=12
+Planning Time: 0.198 ms
+Execution Time: 0.396 ms
+-- PLAN (enable_seqscan=off, diagnostic only):
+Limit  (cost=129.22..129.27 rows=20 width=494) (actual time=0.347..0.350 rows=20 loops=1)
+  Buffers: shared hit=93
+  ->  Sort  (cost=129.22..129.65 rows=172 width=494) (actual time=0.347..0.348 rows=20 loops=1)
+        Sort Key: content_reel.created_at DESC, content_reel.id DESC
+        Sort Method: top-N heapsort  Memory: 56kB
+        Buffers: shared hit=93
+        ->  Merge Join  (cost=0.72..124.65 rows=172 width=494) (actual time=0.015..0.262 rows=172 loops=1)
+              Merge Cond: (content_reel.business_id = businesses_businessprofile.id)
+              Buffers: shared hit=93
+              ->  Index Scan using content_reel_business_idx on content_reel  (cost=0.28..71.89 rows=172 width=177) (actual time=0.007..0.116 rows=172 loops=1)
+                    Index Cond: (business_id = ANY ('{16,23,34,57,59,67,78,101,103,118,124,164,175,179,180,206,222,237,249,251,264,270,282,300}'::bigint[]))
+                    Filter: ((NOT is_deleted) AND ((status)::text = 'published'::text) AND ((processing_status)::text = 'ready'::text))
+                    Rows Removed by Filter: 84
+                    Buffers: shared hit=74
+              ->  Index Scan using businesses_businessprofile_pkey on businesses_businessprofile  (cost=0.27..49.85 rows=305 width=317) (actual time=0.002..0.075 rows=294 loops=1)
+                    Buffers: shared hit=19
+Planning:
+  Buffers: shared hit=12
+Planning Time: 0.181 ms
+Execution Time: 0.380 ms
+
+##### STORY public list for one business | table=stories_story
+-- SQL:
+SELECT "stories_story"."id", "stories_story"."created_at", "stories_story"."updated_at", "stories_story"."is_deleted", "stories_story"."deleted_at", "stories_story"."status", "stories_story"."business_id", "stories_story"."media", "stories_story"."published_at", "stories_story"."expires_at", "stories_story"."archived_at" FROM "stories_story" WHERE (NOT "stories_story"."is_deleted" AND "stories_story"."business_id" = %s AND "stories_story"."expires_at" > %s AND "stories_story"."status" = %s) ORDER BY "stories_story"."created_at" DESC LIMIT 21
+-- PARAMS: [63, datetime.datetime(2026, 10, 3, 23, 51, 41, 119037, tzinfo=datetime.timezone.utc), 'published']
+-- PLAN (default planner):
+Limit  (cost=14.89..14.90 rows=3 width=99) (actual time=0.009..0.010 rows=2 loops=1)
+  Buffers: shared hit=3
+  ->  Sort  (cost=14.89..14.90 rows=3 width=99) (actual time=0.009..0.009 rows=2 loops=1)
+        Sort Key: created_at DESC
+        Sort Method: quicksort  Memory: 25kB
+        Buffers: shared hit=3
+        ->  Index Scan using story_biz_status_exp_idx on stories_story  (cost=0.28..14.87 rows=3 width=99) (actual time=0.006..0.007 rows=2 loops=1)
+              Index Cond: ((business_id = 63) AND ((status)::text = 'published'::text) AND (expires_at > '2026-10-03 23:51:41.119037+00'::timestamp with time zone))
+              Filter: (NOT is_deleted)
+              Buffers: shared hit=3
+Planning Time: 0.050 ms
+Execution Time: 0.019 ms
+-- PLAN (enable_seqscan=off, diagnostic only):
+Limit  (cost=14.89..14.90 rows=3 width=99) (actual time=0.011..0.011 rows=2 loops=1)
+  Buffers: shared hit=3
+  ->  Sort  (cost=14.89..14.90 rows=3 width=99) (actual time=0.010..0.011 rows=2 loops=1)
+        Sort Key: created_at DESC
+        Sort Method: quicksort  Memory: 25kB
+        Buffers: shared hit=3
+        ->  Index Scan using story_biz_status_exp_idx on stories_story  (cost=0.28..14.87 rows=3 width=99) (actual time=0.007..0.008 rows=2 loops=1)
+              Index Cond: ((business_id = 63) AND ((status)::text = 'published'::text) AND (expires_at > '2026-10-03 23:51:41.119037+00'::timestamp with time zone))
+              Filter: (NOT is_deleted)
+              Buffers: shared hit=3
+Planning Time: 0.071 ms
+Execution Time: 0.022 ms
+
+##### SEARCH filter category+city+type | table=businesses_businessprofile
+-- SQL:
+SELECT "businesses_businessprofile"."id", "businesses_businessprofile"."created_at", "businesses_businessprofile"."updated_at", "businesses_businessprofile"."is_deleted", "businesses_businessprofile"."deleted_at", "businesses_businessprofile"."user_id", "businesses_businessprofile"."business_name", "businesses_businessprofile"."business_type", "businesses_businessprofile"."country", "businesses_businessprofile"."city", "businesses_businessprofile"."description", "businesses_businessprofile"."category_id", "businesses_businessprofile"."phone_number", "businesses_businessprofile"."follower_count", "businesses_businessprofile"."is_featured", "businesses_businessprofile"."search_vector", "businesses_businessprofile"."average_rating", "businesses_businessprofile"."ratings_count" FROM "businesses_businessprofile" WHERE (NOT "businesses_businessprofile"."is_deleted" AND "businesses_businessprofile"."category_id" = %s AND "businesses_businessprofile"."city" = %s AND "businesses_businessprofile"."business_type" = %s) ORDER BY "businesses_businessprofile"."is_featured" DESC, "businesses_businessprofile"."created_at" DESC, "businesses_businessprofile"."id" DESC LIMIT 20
+-- PARAMS: [11, 'Cairo', 'trader']
+-- PLAN (default planner):
+Limit  (cost=8.18..8.19 rows=1 width=317) (actual time=0.010..0.010 rows=1 loops=1)
+  Buffers: shared hit=2
+  ->  Sort  (cost=8.18..8.19 rows=1 width=317) (actual time=0.009..0.010 rows=1 loops=1)
+        Sort Key: is_featured DESC, created_at DESC, id DESC
+        Sort Method: quicksort  Memory: 25kB
+        Buffers: shared hit=2
+        ->  Index Scan using biz_category_city_idx on businesses_businessprofile  (cost=0.15..8.17 rows=1 width=317) (actual time=0.006..0.007 rows=1 loops=1)
+              Index Cond: ((category_id = 11) AND ((city)::text = 'Cairo'::text))
+              Filter: ((NOT is_deleted) AND ((business_type)::text = 'trader'::text))
+              Buffers: shared hit=2
+Planning Time: 0.051 ms
+Execution Time: 0.020 ms
+-- PLAN (enable_seqscan=off, diagnostic only):
+Limit  (cost=8.18..8.19 rows=1 width=317) (actual time=0.015..0.016 rows=1 loops=1)
+  Buffers: shared hit=2
+  ->  Sort  (cost=8.18..8.19 rows=1 width=317) (actual time=0.014..0.015 rows=1 loops=1)
+        Sort Key: is_featured DESC, created_at DESC, id DESC
+        Sort Method: quicksort  Memory: 25kB
+        Buffers: shared hit=2
+        ->  Index Scan using biz_category_city_idx on businesses_businessprofile  (cost=0.15..8.17 rows=1 width=317) (actual time=0.009..0.010 rows=1 loops=1)
+              Index Cond: ((category_id = 11) AND ((city)::text = 'Cairo'::text))
+              Filter: ((NOT is_deleted) AND ((business_type)::text = 'trader'::text))
+              Buffers: shared hit=2
+Planning Time: 0.078 ms
+Execution Time: 0.100 ms

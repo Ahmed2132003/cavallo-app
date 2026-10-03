@@ -140,6 +140,8 @@ class BusinessProfile(TimestampedModel, SoftDeleteModel):
             # search columns. Required for SearchQuery lookups against
             # this table to be fast rather than a sequential scan.
             GinIndex(fields=["search_vector"], name="business_search_vector_gin"),
+            # Part P-101: Architecture Section 9 composite index, found missing by the Phase 20 audit.
+            models.Index(fields=["category", "city"], name="biz_category_city_idx"),
         ]
 
     def __str__(self):

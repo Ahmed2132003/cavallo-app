@@ -1,0 +1,87 @@
+
+======================================================================
+git status --short (before)
+======================================================================
+ M celerybeat-schedule
+ D p099_step1.ps1
+ D p099_step2.ps1
+ D p099_step3.ps1
+?? OFFLINE_RESILIENCE_AUDIT_PHASE20.md
+?? PERFORMANCE_AUDIT_PHASE20.md
+?? p101_cleanup.py
+?? p101_inventory.py
+?? p101_seed.py
+?? p101_step1_evidence.txt
+?? p101_step2.ps1
+
+
+======================================================================
+p101_explain.py output
+======================================================================
+P101|FIXTURE|customer=p101_cust_0|follows=24|category_id=11|busy_business=12|story_business=63
+P101|SCEN|FEED following-tier page1|items=20|captured_selects=2
+P101|PLAN|FEED following-tier page1|1|content_post|ms=0.916|seq=businesses_businessprofile|idx=content_post_business_idx|sort=True|ALT_ms=0.585|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,content_post_business_idx
+P101|PLAN|FEED following-tier page1|2|content_reel|ms=1.418|seq=businesses_businessprofile|idx=content_reel_business_idx|sort=True|ALT_ms=0.592|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,content_reel_business_idx
+P101|SCEN|FEED following-tier page2 (cursor)|items=20|captured_selects=2
+P101|PLAN|FEED following-tier page2 (cursor)|3|content_post|ms=0.786|seq=businesses_businessprofile|idx=content_post_business_idx|sort=True|ALT_ms=0.834|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,content_post_business_idx
+P101|PLAN|FEED following-tier page2 (cursor)|4|content_reel|ms=0.634|seq=businesses_businessprofile|idx=content_reel_business_idx|sort=True|ALT_ms=0.962|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,content_reel_business_idx
+P101|SCEN|FEED backfill-tier page1|items=20|captured_selects=2
+P101|PLAN|FEED backfill-tier page1|5|content_post|ms=7.572|seq=businesses_businessprofile,content_post|idx=-|sort=True|ALT_ms=8.768|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,content_post_business_idx
+P101|PLAN|FEED backfill-tier page1|6|content_reel|ms=4.299|seq=businesses_businessprofile,content_reel|idx=-|sort=True|ALT_ms=3.368|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,content_reel_business_idx
+P101|SCEN|FEED backfill-tier page2 (cursor)|items=20|captured_selects=2
+P101|PLAN|FEED backfill-tier page2 (cursor)|7|content_post|ms=5.162|seq=businesses_businessprofile,content_post|idx=-|sort=True|ALT_ms=5.514|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,content_post_business_idx
+P101|PLAN|FEED backfill-tier page2 (cursor)|8|content_reel|ms=3.615|seq=businesses_businessprofile,content_reel|idx=-|sort=True|ALT_ms=4.828|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,content_reel_business_idx
+P101|SCEN|POST public list by business (P-043)|items=21|captured_selects=1
+P101|PLAN|POST public list by business (P-043)|9|content_post|ms=0.569|seq=-|idx=businesses_businessprofile_pkey,content_post_business_idx|sort=True|ALT_ms=0.578|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,content_post_business_idx
+P101|SCEN|REEL public list by business (P-043)|items=21|captured_selects=1
+P101|PLAN|REEL public list by business (P-043)|10|content_reel|ms=0.432|seq=-|idx=businesses_businessprofile_pkey,content_reel_business_idx|sort=True|ALT_ms=0.254|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,content_reel_business_idx
+P101|SCEN|SEARCH filter category+city+type|items=20|captured_selects=2
+P101|PLAN|SEARCH filter category+city+type|11|businesses_businessprofile|ms=0.048|seq=-|idx=businesses_businessprofile_category_id_c58d642a|sort=True|ALT_ms=0.068|ALT_seq=-|ALT_idx=businesses_businessprofile_category_id_c58d642a
+P101|PLAN|SEARCH filter category+city+type|12|products_product|ms=0.245|seq=businesses_businessprofile|idx=products_category_business|sort=True|ALT_ms=0.303|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,products_category_business
+P101|SCEN|SEARCH filter city only|items=20|captured_selects=2
+P101|PLAN|SEARCH filter city only|13|businesses_businessprofile|ms=0.183|seq=businesses_businessprofile|idx=-|sort=True|ALT_ms=68.317|ALT_seq=businesses_businessprofile|ALT_idx=-
+P101|PLAN|SEARCH filter city only|14|products_product|ms=2.986|seq=businesses_businessprofile,products_product|idx=-|sort=True|ALT_ms=2.769|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,products_product_business_id_f19d872e
+P101|SCEN|SEARCH filter category only|items=20|captured_selects=2
+P101|PLAN|SEARCH filter category only|15|businesses_businessprofile|ms=0.056|seq=-|idx=businesses_businessprofile_category_id_c58d642a|sort=True|ALT_ms=0.059|ALT_seq=-|ALT_idx=businesses_businessprofile_category_id_c58d642a
+P101|PLAN|SEARCH filter category only|16|products_product|ms=0.580|seq=businesses_businessprofile|idx=products_product_category_id_9b594869|sort=True|ALT_ms=0.638|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,products_product_category_id_9b594869
+P101|SCEN|SEARCH filter price+category|items=20|captured_selects=2
+P101|PLAN|SEARCH filter price+category|17|businesses_businessprofile|ms=0.036|seq=-|idx=businesses_businessprofile_category_id_c58d642a|sort=True|ALT_ms=0.028|ALT_seq=-|ALT_idx=businesses_businessprofile_category_id_c58d642a
+P101|PLAN|SEARCH filter price+category|18|products_product|ms=0.480|seq=businesses_businessprofile|idx=products_product_category_id_9b594869|sort=True|ALT_ms=0.416|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,products_product_category_id_9b594869
+P101|SCEN|SEARCH full-text q|items=20|captured_selects=2
+P101|PLAN|SEARCH full-text q|19|businesses_businessprofile|ms=0.107|seq=-|idx=business_search_vector_gin|sort=True|ALT_ms=0.136|ALT_seq=-|ALT_idx=business_search_vector_gin
+P101|PLAN|SEARCH full-text q|20|products_product|ms=2.392|seq=businesses_businessprofile|idx=products_search_vector_gin|sort=True|ALT_ms=2.660|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,products_search_vector_gin
+P101|SCEN|SEARCH full-text q + category + city|items=2|captured_selects=2
+P101|PLAN|SEARCH full-text q + category + city|21|businesses_businessprofile|ms=0.043|seq=-|idx=businesses_businessprofile_category_id_c58d642a|sort=True|ALT_ms=0.028|ALT_seq=-|ALT_idx=businesses_businessprofile_category_id_c58d642a
+P101|PLAN|SEARCH full-text q + category + city|22|products_product|ms=0.366|seq=businesses_businessprofile|idx=products_product_category_id_9b594869,products_search_vector_gin|sort=True|ALT_ms=0.353|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,products_product_category_id_9b594869,products_search_vector_gin
+P101|SCEN|MOD pending list|items=21|captured_selects=1
+P101|PLAN|MOD pending list|23|moderation_moderationqueue|ms=1.563|seq=django_content_type|idx=moderation__status_731a97_idx|sort=True|ALT_ms=1.571|ALT_seq=-|ALT_idx=django_content_type_pkey,moderation__status_731a97_idx
+P101|SCEN|MOD pending list priority=fast_path|items=21|captured_selects=1
+P101|PLAN|MOD pending list priority=fast_path|24|moderation_moderationqueue|ms=1.079|seq=-|idx=django_content_type_pkey,moderation__status_731a97_idx|sort=True|ALT_ms=0.888|ALT_seq=-|ALT_idx=django_content_type_pkey,moderation__status_731a97_idx
+P101|SCEN|STORY public list (published, not expired)|items=21|captured_selects=1
+P101|PLAN|STORY public list (published, not expired)|25|stories_story|ms=0.345|seq=stories_story|idx=-|sort=True|ALT_ms=0.500|ALT_seq=-|ALT_idx=story_biz_status_exp_idx
+P101|SCEN|STORY public list for one business|items=2|captured_selects=1
+P101|PLAN|STORY public list for one business|26|stories_story|ms=0.035|seq=-|idx=stories_story_business_id_3e0ad509|sort=True|ALT_ms=0.024|ALT_seq=-|ALT_idx=stories_story_business_id_3e0ad509
+P101|SCEN|STORY expiry sweep (P-048)|items=1999|captured_selects=1
+P101|PLAN|STORY expiry sweep (P-048)|27|stories_story|ms=0.488|seq=stories_story|idx=-|sort=False|ALT_ms=0.614|ALT_seq=-|ALT_idx=story_biz_status_exp_idx
+P101|DONE=1
+
+
+======================================================================
+git status --short (after)
+======================================================================
+ M celerybeat-schedule
+ D p099_step1.ps1
+ D p099_step2.ps1
+ D p099_step3.ps1
+?? OFFLINE_RESILIENCE_AUDIT_PHASE20.md
+?? PERFORMANCE_AUDIT_PHASE20.md
+?? PERFORMANCE_AUDIT_PHASE20.md.step2.bak
+?? p101_cleanup.py
+?? p101_explain.py
+?? p101_inventory.py
+?? p101_seed.py
+?? p101_step1_evidence.txt
+?? p101_step2.ps1
+?? p101_step2_evidence.txt
+?? p101_step2_plans.txt
+

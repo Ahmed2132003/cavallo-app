@@ -1,0 +1,247 @@
+
+======================================================================
+git status --short (before)
+======================================================================
+ M businesses/models.py
+ M celerybeat-schedule
+ M content/models.py
+ D p099_step1.ps1
+ D p099_step2.ps1
+ D p099_step3.ps1
+ M stories/models.py
+?? OFFLINE_RESILIENCE_AUDIT_PHASE20.md
+?? PERFORMANCE_AUDIT_PHASE20.md
+?? PERFORMANCE_AUDIT_PHASE20.md.step2.bak
+?? businesses/migrations/0009_p101_composite_indexes.py
+?? content/migrations/0010_p101_composite_indexes.py
+?? p101_backups/
+?? p101_cleanup.py
+?? p101_explain.py
+?? p101_inventory.py
+?? p101_seed.py
+?? p101_step1_evidence.txt
+?? p101_step2.ps1
+?? p101_step2_evidence.txt
+?? p101_step2_plans.txt
+?? p101_step3.ps1
+?? stories/migrations/0004_p101_composite_indexes.py
+
+
+======================================================================
+migration content check
+======================================================================
+0010_p101_composite_indexes.py: AddIndex=2 other_ops=0
+0004_p101_composite_indexes.py: AddIndex=1 other_ops=0
+0009_p101_composite_indexes.py: AddIndex=1 other_ops=0
+
+
+======================================================================
+migrate
+======================================================================
+Operations to perform:
+  Apply all migrations: accounts, admin, analytics, auth, businesses, categories, chat, content, contenttypes, devices, moderation, monetization, notifications, payments, products, ratings, reports, sessions, social, stories, token_blacklist
+Running migrations:
+  Applying businesses.0009_p101_composite_indexes... OK
+  Applying content.0010_p101_composite_indexes... OK
+  Applying stories.0004_p101_composite_indexes... OK
+
+
+======================================================================
+p101_inventory.py (after fix)
+======================================================================
+P101|PG_VERSION=16.15 (Debian 16.15-1.pgdg13+2)
+P101|INDEX|businesses_businessprofile|biz_category_city_idx|btree|valid=True|category_id,city
+P101|INDEX|businesses_businessprofile|business_search_vector_gin|gin|valid=True|search_vector
+P101|INDEX|businesses_businessprofile|businesses_businessprofile_category_id_c58d642a|btree|valid=True|category_id
+P101|INDEX|businesses_businessprofile|businesses_businessprofile_pkey|btree|valid=True|id
+P101|INDEX|businesses_businessprofile|businesses_businessprofile_user_id_key|btree|valid=True|user_id
+P101|INDEX|categories_category|categories_category_parent_id_f141de59|btree|valid=True|parent_id
+P101|INDEX|categories_category|categories_category_parent_id_name_893f7987_uniq|btree|valid=True|parent_id,name
+P101|INDEX|categories_category|categories_category_pkey|btree|valid=True|id
+P101|INDEX|categories_category|categories_category_slug_6fddebb1_like|btree|valid=True|slug
+P101|INDEX|categories_category|categories_category_slug_key|btree|valid=True|slug
+P101|INDEX|content_post|content_post_business_id_73a35f6c|btree|valid=True|business_id
+P101|INDEX|content_post|content_post_business_idx|btree|valid=True|business_id
+P101|INDEX|content_post|content_post_pkey|btree|valid=True|id
+P101|INDEX|content_post|post_biz_status_created_idx|btree|valid=True|business_id,status,created_at
+P101|INDEX|content_reel|content_reel_business_id_90883a0e|btree|valid=True|business_id
+P101|INDEX|content_reel|content_reel_business_idx|btree|valid=True|business_id
+P101|INDEX|content_reel|content_reel_pkey|btree|valid=True|id
+P101|INDEX|content_reel|reel_biz_status_created_idx|btree|valid=True|business_id,status,created_at
+P101|INDEX|moderation_moderationqueue|moderation__content_095806_idx|btree|valid=True|content_type_id,object_id
+P101|INDEX|moderation_moderationqueue|moderation__status_731a97_idx|btree|valid=True|status
+P101|INDEX|moderation_moderationqueue|moderation_moderationqueue_content_type_id_bee39315|btree|valid=True|content_type_id
+P101|INDEX|moderation_moderationqueue|moderation_moderationqueue_pkey|btree|valid=True|id
+P101|INDEX|products_product|products_category_business|btree|valid=True|category_id,business_id
+P101|INDEX|products_product|products_product_business_id_f19d872e|btree|valid=True|business_id
+P101|INDEX|products_product|products_product_category_id_9b594869|btree|valid=True|category_id
+P101|INDEX|products_product|products_product_pkey|btree|valid=True|id
+P101|INDEX|products_product|products_search_vector_gin|gin|valid=True|search_vector
+P101|INDEX|social_follow|social_follow_business_id_9ee0a423|btree|valid=True|business_id
+P101|INDEX|social_follow|social_follow_follower_id_a92b1c63|btree|valid=True|follower_id
+P101|INDEX|social_follow|social_follow_follower_id_business_id_e4bcf737_uniq|btree|valid=True|follower_id,business_id
+P101|INDEX|social_follow|social_follow_pkey|btree|valid=True|id
+P101|INDEX|stories_story|stories_story_business_id_3e0ad509|btree|valid=True|business_id
+P101|INDEX|stories_story|stories_story_pkey|btree|valid=True|id
+P101|INDEX|stories_story|story_biz_status_created_idx|btree|valid=True|business_id,status,created_at
+P101|INDEX|stories_story|story_biz_status_exp_idx|btree|valid=True|business_id,status,expires_at
+P101|CHECK|A1|Post (business_id,status,created_at) [Sec.9 literal]|FOUND-EXACT|post_biz_status_created_idx
+P101|CHECK|A2|Reel (business_id,status,created_at) [Sec.9 literal]|FOUND-EXACT|reel_biz_status_created_idx
+P101|CHECK|A3|Story (business_id,status,created_at) [Sec.9 literal]|FOUND-EXACT|story_biz_status_created_idx
+P101|CHECK|A4|Story (business_id,status,expires_at) [as built, P-046]|FOUND-EXACT|story_biz_status_exp_idx
+P101|CHECK|B1|BusinessProfile (category_id,city) [Sec.9 literal]|FOUND-EXACT|biz_category_city_idx
+P101|CHECK|B2|Product (category_id,business_id) [as built, P-031]|FOUND-EXACT|products_category_business
+P101|CHECK|C1|GIN Product.search_vector|FOUND-EXACT|products_search_vector_gin
+P101|CHECK|C2|GIN BusinessProfile.search_vector|FOUND-EXACT|business_search_vector_gin
+P101|CHECK|D1|ModerationQueue (status)|FOUND-EXACT|moderation__status_731a97_idx
+P101|CHECK|D2|ModerationQueue (content_type_id,object_id)|FOUND-EXACT|moderation__content_095806_idx
+P101|TABLE|content_post|rows=6002|size=3064 kB|analyzed=NO
+P101|TABLE|content_reel|rows=3001|size=1816 kB|analyzed=NO
+P101|TABLE|stories_story|rows=3005|size=1408 kB|analyzed=NO
+P101|TABLE|products_product|rows=6004|size=10040 kB|analyzed=NO
+P101|TABLE|businesses_businessprofile|rows=305|size=472 kB|analyzed=NO
+P101|TABLE|moderation_moderationqueue|rows=11862|size=1728 kB|analyzed=NO
+P101|TABLE|categories_category|rows=34|size=88 kB|analyzed=NO
+P101|TABLE|social_follow|rows=1511|size=360 kB|analyzed=NO
+
+
+======================================================================
+p101_verify.py output
+======================================================================
+P101|VERIFY|POST public list by business (P-043)|content_post|ms=0.052|seq=-|idx=businesses_businessprofile_pkey,post_biz_status_created_idx|sort=False|ALT_ms=0.050|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,post_biz_status_created_idx
+P101|VERIFY|REEL public list by business (P-043)|content_reel|ms=0.067|seq=-|idx=businesses_businessprofile_pkey,reel_biz_status_created_idx|sort=False|ALT_ms=0.049|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,reel_biz_status_created_idx
+P101|VERIFY|FEED following-tier page1|content_post|ms=0.511|seq=businesses_businessprofile|idx=content_post_business_idx|sort=True|ALT_ms=0.396|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,content_post_business_idx
+P101|VERIFY|FEED following-tier page1|content_reel|ms=0.396|seq=businesses_businessprofile|idx=content_reel_business_idx|sort=True|ALT_ms=0.380|ALT_seq=-|ALT_idx=businesses_businessprofile_pkey,content_reel_business_idx
+P101|VERIFY|STORY public list for one business|stories_story|ms=0.019|seq=-|idx=story_biz_status_exp_idx|sort=True|ALT_ms=0.022|ALT_seq=-|ALT_idx=story_biz_status_exp_idx
+P101|VERIFY|SEARCH filter category+city+type|businesses_businessprofile|ms=0.020|seq=-|idx=biz_category_city_idx|sort=True|ALT_ms=0.100|ALT_seq=-|ALT_idx=biz_category_city_idx
+P101|DONE=1
+
+
+======================================================================
+pytest content stories businesses feed search moderation
+======================================================================
+........................................................................ [ 14%]
+........................................................................ [ 28%]
+........................................................................ [ 42%]
+........................................................................ [ 56%]
+........................................................................ [ 71%]
+........................................................................ [ 85%]
+........................................................................ [ 99%]
+...                                                                      [100%]
+507 passed in 260.45s (0:04:20)
+
+
+======================================================================
+p101_cache.py output
+======================================================================
+docker.exe : {"asctime": "2026-10-03 23:56:09,860", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"67f19735-be37-43db-ae16-055acd339b04", "message": "request completed", "method": "GET", "path": "/api/v1/feed/home/", 
+"status_code": 200}
+At D:\Cavallo\scd-backend\p101_step3.ps1:56 char:37
++ ... ([string[]]$a) { return (& docker compose exec -T web @a 2>&1 | Out-S ...
++                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ({"asctime": "20...tus_code": 200}:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+{"asctime": "2026-10-03 23:56:10,883", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"896f91b0-771b-4887-8a97-b7980e450601", "message": "request completed", "method": "GET", "path": "/api/v1/feed/home/", 
+"status_code": 200}
+{"asctime": "2026-10-03 23:56:11,908", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"73b5081d-2871-48b0-ac00-3129f66fd9f3", "message": "request completed", "method": "GET", "path": "/api/v1/feed/home/", 
+"status_code": 200}
+{"asctime": "2026-10-03 23:56:12,929", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"1af6df1d-5e7d-4ce2-9f8e-68445d809f88", "message": "request completed", "method": "GET", "path": "/api/v1/feed/home/", 
+"status_code": 200}
+{"asctime": "2026-10-03 23:56:13,942", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"3cd4a86b-8ebe-4606-8617-97f301398953", "message": "request completed", "method": "GET", "path": "/api/v1/feed/home/", 
+"status_code": 200}
+P101|CACHE|Feed first page|key=feed:343:page1|ttl_conf=90|codes=200,200,200,200,200|compute_calls=1|queries=4,0,0,0,0|ttls=90,89,88,87,86|redis_hits=14|redis_misses=1|identical=False|verdict=PASS|reasons=-
+{"asctime": "2026-10-03 23:56:14,950", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"03bebd56-6b9d-4924-9319-357c230bb24a", "message": "request completed", "method": "GET", "path": 
+"/api/v1/businesses/12/", "status_code": 200}
+{"asctime": "2026-10-03 23:56:15,953", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"edabfcd8-1903-4734-ba19-30e8c1fcb42a", "message": "request completed", "method": "GET", "path": 
+"/api/v1/businesses/12/", "status_code": 200}
+{"asctime": "2026-10-03 23:56:16,955", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"14d59ef7-b0c0-4dca-9d2c-39d04d86cf74", "message": "request completed", "method": "GET", "path": 
+"/api/v1/businesses/12/", "status_code": 200}
+{"asctime": "2026-10-03 23:56:17,958", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"a6250486-e10a-4709-819b-dd1389bce068", "message": "request completed", "method": "GET", "path": 
+"/api/v1/businesses/12/", "status_code": 200}
+{"asctime": "2026-10-03 23:56:18,961", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"4ac5eece-2875-47cb-b275-406529a59b08", "message": "request completed", "method": "GET", "path": 
+"/api/v1/businesses/12/", "status_code": 200}
+P101|CACHE|Business Profile|key=business_profile:12|ttl_conf=300|codes=200,200,200,200,200|compute_calls=1|queries=2,0,0,0,0|ttls=300,299,298,297,296|redis_hits=14|redis_misses=1|identical=True|verdict=PASS|reasons=-
+{"asctime": "2026-10-03 23:56:19,967", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"1cca7b58-db30-4855-a0a9-f6f4060b84b9", "message": "request completed", "method": "GET", "path": 
+"/api/v1/categories/tree/", "status_code": 200}
+{"asctime": "2026-10-03 23:56:20,970", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"e6040c70-2bfb-48d6-80bc-cdbcaa302a29", "message": "request completed", "method": "GET", "path": 
+"/api/v1/categories/tree/", "status_code": 200}
+{"asctime": "2026-10-03 23:56:21,972", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"53000e9b-a82a-480e-8d01-843d346df2db", "message": "request completed", "method": "GET", "path": 
+"/api/v1/categories/tree/", "status_code": 200}
+{"asctime": "2026-10-03 23:56:22,975", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"80fed62e-573e-412e-bec8-5c2d8ced35ce", "message": "request completed", "method": "GET", "path": 
+"/api/v1/categories/tree/", "status_code": 200}
+{"asctime": "2026-10-03 23:56:23,978", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"9add676f-799a-4da3-8fe8-de493051d8d1", "message": "request completed", "method": "GET", "path": 
+"/api/v1/categories/tree/", "status_code": 200}
+P101|CACHE|Categories tree|key=categories:tree|ttl_conf=3600|codes=200,200,200,200,200|compute_calls=1|queries=1,0,0,0,0|ttls=3600,3599,3598,3597,3596|redis_hits=14|redis_misses=1|identical=True|verdict=PASS|reasons=-
+{"asctime": "2026-10-03 23:56:24,996", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"2620bd83-069d-40b2-931c-03711c05b8b8", "message": "request completed", "method": "GET", "path": "/api/v1/feed/home/", 
+"status_code": 200}
+{"asctime": "2026-10-03 23:56:25,011", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"8ed88a73-2f8b-4748-9fae-2415aa26a0af", "message": "request completed", "method": "GET", "path": "/api/v1/feed/home/", 
+"status_code": 200}
+P101|CONTROL|feed page_size=10 (not cached by design)|compute_calls=3|expected=3|verdict=PASS
+{"asctime": "2026-10-03 23:56:25,025", "levelname": "INFO", "name": "core.middleware", "request_id": 
+"b7e00054-ff47-4896-92e9-ed03fcea9200", "message": "request completed", "method": "GET", "path": "/api/v1/feed/home/", 
+"status_code": 200}
+P101|DONE=1
+
+
+======================================================================
+p101_cleanup.py output
+======================================================================
+P101|CLEANUP=done
+
+
+======================================================================
+p101_postclean.py output
+======================================================================
+P101|REMAINING|users=0|businesses=0|categories=0
+
+
+======================================================================
+git status --short (after code changes)
+======================================================================
+ M businesses/models.py
+ M celerybeat-schedule
+ M content/models.py
+ D p099_step1.ps1
+ D p099_step2.ps1
+ D p099_step3.ps1
+ M stories/models.py
+?? OFFLINE_RESILIENCE_AUDIT_PHASE20.md
+?? PERFORMANCE_AUDIT_PHASE20.md
+?? PERFORMANCE_AUDIT_PHASE20.md.step2.bak
+?? businesses/migrations/0009_p101_composite_indexes.py
+?? content/migrations/0010_p101_composite_indexes.py
+?? p101_backups/
+?? p101_cache.py
+?? p101_cleanup.py
+?? p101_explain.py
+?? p101_inventory.py
+?? p101_postclean.py
+?? p101_seed.py
+?? p101_step1_evidence.txt
+?? p101_step2.ps1
+?? p101_step2_evidence.txt
+?? p101_step2_plans.txt
+?? p101_step3.ps1
+?? p101_step3_evidence.txt
+?? p101_step3_plans.txt
+?? p101_verify.py
+?? stories/migrations/0004_p101_composite_indexes.py
+

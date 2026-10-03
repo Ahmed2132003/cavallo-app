@@ -1,0 +1,108 @@
+
+======================================================================
+docker compose ps
+======================================================================
+celery_beat running
+celery_worker running
+db running
+minio running
+redis running
+web running
+
+
+======================================================================
+git status --short (before)
+======================================================================
+ M celerybeat-schedule
+ D p099_step1.ps1
+ D p099_step2.ps1
+ D p099_step3.ps1
+?? p101_step1.ps1
+?? p101_step1_evidence.txt
+
+
+======================================================================
+p101_seed.py output
+======================================================================
+P101|SEED=created
+P101|businesses=300
+P101|products=6000
+P101|posts=6000
+P101|reels=3000
+P101|stories=3000
+P101|follows=1510
+P101|categories=30
+P101|mq_total=11862
+P101|mq_pending=2566
+P101|stories_active=146
+
+
+======================================================================
+p101_inventory.py output
+======================================================================
+P101|PG_VERSION=16.15 (Debian 16.15-1.pgdg13+2)
+P101|INDEX|businesses_businessprofile|business_search_vector_gin|gin|valid=True|search_vector
+P101|INDEX|businesses_businessprofile|businesses_businessprofile_category_id_c58d642a|btree|valid=True|category_id
+P101|INDEX|businesses_businessprofile|businesses_businessprofile_pkey|btree|valid=True|id
+P101|INDEX|businesses_businessprofile|businesses_businessprofile_user_id_key|btree|valid=True|user_id
+P101|INDEX|categories_category|categories_category_parent_id_f141de59|btree|valid=True|parent_id
+P101|INDEX|categories_category|categories_category_parent_id_name_893f7987_uniq|btree|valid=True|parent_id,name
+P101|INDEX|categories_category|categories_category_pkey|btree|valid=True|id
+P101|INDEX|categories_category|categories_category_slug_6fddebb1_like|btree|valid=True|slug
+P101|INDEX|categories_category|categories_category_slug_key|btree|valid=True|slug
+P101|INDEX|content_post|content_post_business_id_73a35f6c|btree|valid=True|business_id
+P101|INDEX|content_post|content_post_business_idx|btree|valid=True|business_id
+P101|INDEX|content_post|content_post_pkey|btree|valid=True|id
+P101|INDEX|content_reel|content_reel_business_id_90883a0e|btree|valid=True|business_id
+P101|INDEX|content_reel|content_reel_business_idx|btree|valid=True|business_id
+P101|INDEX|content_reel|content_reel_pkey|btree|valid=True|id
+P101|INDEX|moderation_moderationqueue|moderation__content_095806_idx|btree|valid=True|content_type_id,object_id
+P101|INDEX|moderation_moderationqueue|moderation__status_731a97_idx|btree|valid=True|status
+P101|INDEX|moderation_moderationqueue|moderation_moderationqueue_content_type_id_bee39315|btree|valid=True|content_type_id
+P101|INDEX|moderation_moderationqueue|moderation_moderationqueue_pkey|btree|valid=True|id
+P101|INDEX|products_product|products_category_business|btree|valid=True|category_id,business_id
+P101|INDEX|products_product|products_product_business_id_f19d872e|btree|valid=True|business_id
+P101|INDEX|products_product|products_product_category_id_9b594869|btree|valid=True|category_id
+P101|INDEX|products_product|products_product_pkey|btree|valid=True|id
+P101|INDEX|products_product|products_search_vector_gin|gin|valid=True|search_vector
+P101|INDEX|social_follow|social_follow_business_id_9ee0a423|btree|valid=True|business_id
+P101|INDEX|social_follow|social_follow_follower_id_a92b1c63|btree|valid=True|follower_id
+P101|INDEX|social_follow|social_follow_follower_id_business_id_e4bcf737_uniq|btree|valid=True|follower_id,business_id
+P101|INDEX|social_follow|social_follow_pkey|btree|valid=True|id
+P101|INDEX|stories_story|stories_story_business_id_3e0ad509|btree|valid=True|business_id
+P101|INDEX|stories_story|stories_story_pkey|btree|valid=True|id
+P101|INDEX|stories_story|story_biz_status_exp_idx|btree|valid=True|business_id,status,expires_at
+P101|CHECK|A1|Post (business_id,status,created_at) [Sec.9 literal]|MISSING|-
+P101|CHECK|A2|Reel (business_id,status,created_at) [Sec.9 literal]|MISSING|-
+P101|CHECK|A3|Story (business_id,status,created_at) [Sec.9 literal]|MISSING|-
+P101|CHECK|A4|Story (business_id,status,expires_at) [as built, P-046]|FOUND-EXACT|story_biz_status_exp_idx
+P101|CHECK|B1|BusinessProfile (category_id,city) [Sec.9 literal]|MISSING|-
+P101|CHECK|B2|Product (category_id,business_id) [as built, P-031]|FOUND-EXACT|products_category_business
+P101|CHECK|C1|GIN Product.search_vector|FOUND-EXACT|products_search_vector_gin
+P101|CHECK|C2|GIN BusinessProfile.search_vector|FOUND-EXACT|business_search_vector_gin
+P101|CHECK|D1|ModerationQueue (status)|FOUND-EXACT|moderation__status_731a97_idx
+P101|CHECK|D2|ModerationQueue (content_type_id,object_id)|FOUND-EXACT|moderation__content_095806_idx
+P101|TABLE|content_post|rows=6002|size=2744 kB|analyzed=yes
+P101|TABLE|content_reel|rows=3001|size=1640 kB|analyzed=yes
+P101|TABLE|stories_story|rows=3005|size=1232 kB|analyzed=yes
+P101|TABLE|products_product|rows=6004|size=9680 kB|analyzed=yes
+P101|TABLE|businesses_businessprofile|rows=305|size=400 kB|analyzed=yes
+P101|TABLE|moderation_moderationqueue|rows=11862|size=1720 kB|analyzed=yes
+P101|TABLE|categories_category|rows=34|size=88 kB|analyzed=yes
+P101|TABLE|social_follow|rows=1511|size=352 kB|analyzed=yes
+
+
+======================================================================
+git status --short (after)
+======================================================================
+ M celerybeat-schedule
+ D p099_step1.ps1
+ D p099_step2.ps1
+ D p099_step3.ps1
+?? PERFORMANCE_AUDIT_PHASE20.md
+?? p101_cleanup.py
+?? p101_inventory.py
+?? p101_seed.py
+?? p101_step1.ps1
+?? p101_step1_evidence.txt
+
