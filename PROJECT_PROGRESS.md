@@ -12529,3 +12529,105 @@ Phase 21 is fully implemented, verified, uploaded, and closed successfully.
 Monitoring & Observability Go-Live is fully implemented, uploaded, verified, and accepted.
 
 **Phase 22 may now begin.**
+
+## PART P-106 - Production Deployment Configuration (Phase 22) - STATUS: CONFIGURATION COMPLETE AND PROVEN IN A LOCAL DRY-RUN (2026-10-04); GENUINE VPS DEPLOYMENT PENDING (Section 7 items 6 and 9)
+
+### What was implemented
+- `docker-compose.prod.yml` (the P-103 baseline, extended in place; no second production compose file) is now the complete production stack with 8 services: `db` (postgres:16), `redis` (redis:7), `web` (Gunicorn, WSGI, all HTTP/REST/admin), `asgi` (Daphne, WebSocket `/ws/`, chat P-067), `celery_worker`, `celery_beat`, `nginx` (TLS termination + reverse proxy) and `certbot` (Let's Encrypt issue/renew over webroot). The P-103 baseline ran Daphne inside a single `web` service; production now splits HTTP (Gunicorn) from WebSocket (Daphne), as the part specification requires.
+- Only `nginx` publishes host ports (`${HTTP_PORT:-80}:80`, `${HTTPS_PORT:-443}:443`). `web` and `asgi` use `expose` only, so they are reachable only through Nginx. This is what makes trusting `X-Forwarded-Proto` safe.
+- Every container has `deploy.resources.limits` (cpus, memory) plus `memswap_limit` equal to memory (P-104 pattern, sized larger than staging, still bounded, every block commented as a conservative PLACEHOLDER pending Section 7 item 6). Limits: db 1.50 CPU / 1536M; redis 0.50 / 384M; web 1.00 / 768M; asgi 0.75 / 640M; celery_worker 1.00 / 1G; celery_beat 0.25 / 384M; nginx 0.25 / 128M; certbot 0.10 / 128M. Worst case if every container hit its limit: 5.35 CPU / 4992 MB. Production never ships an unlimited container (Section 22 shared-VPS rule; closes P-104 known issue L-3).
+- Nginx (`nginx/prod.conf`): port 80 serves the ACME challenge path and redirects everything else to HTTPS (301); port 443 terminates TLS (TLS 1.2 and 1.3 only, certificate path fixed to `/etc/letsencrypt/live/cavallo/`, HTTP/2). `server_name _` on purpose: the real domain is enforced by Django `ALLOWED_HOSTS` and by the certificate, so no domain is baked into the file.
+- Shared routing in `nginx/snippets/cavallo_locations.conf`, included by BOTH `nginx/prod.conf` and `nginx/local.conf` so the local dry-run exercises the exact production routing: `/ws/` -> `asgi:8001` with `proxy_http_version 1.1`, `Upgrade $http_upgrade`, `Connection "upgrade"` and 3600s read/send timeouts (the specific pitfall called out by the part: plain HTTP works without these headers); `/static/` served from the shared `static_data` volume; everything else -> `web:8000`; `client_max_body_size 105m` (reel limit is 100 MB, content/serializers.py, plus multipart overhead).
+- Upstreams are resolved PER REQUEST through Docker's embedded DNS (`resolver 127.0.0.11 valid=5s ipv6=off;` plus `set $cavallo_web web:8000;` / `set $cavallo_asgi asgi:8001;`) instead of `upstream {}` blocks. An upstream block pins the container IP at Nginx start; after `docker compose up -d` recreates `web` or `asgi` during a deploy the IP changes and Nginx would answer 502 until restarted. Found while reviewing STEP 1 and fixed in STEP 2.
+- `nginx/local.conf` is a NON-TLS stand-in for local dry-runs ONLY (never deploy it). The one deliberate difference: `set $forwarded_proto https;`, because `config.settings.prod` has `SECURE_SSL_REDIRECT=True` and without that header Django would redirect every plain-HTTP local request forever.
+- `config/settings/prod.py` (modified in STEP 1): trusts `X-Forwarded-Proto` via `SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")`. Verified at runtime in STEP 3 together with `DEBUG=False`, `SECURE_SSL_REDIRECT`, `SESSION_COOKIE_SECURE` and `CSRF_COOKIE_SECURE` all True.
+- `requirements.txt` (modified in STEP 1): `gunicorn==23.0.*` added (dry-run resolved with pip).
+- Decisions made here (owner may change them with environment variables, no file edit): Celery worker concurrency 2 (`CELERY_CONCURRENCY`); Gunicorn workers 2 (`GUNICORN_WORKERS`); Redis `maxmemory 256mb` with policy `volatile-lru` (`REDIS_MAXMEMORY`, `REDIS_MAXMEMORY_POLICY`). `volatile-lru` only evicts keys that have a TTL (cache entries, expiring results), never the Celery queue. These close P-104 known issues L-4 (Redis maxmemory) and L-6 (prod worker concurrency) as DECISIONS; the numbers are still placeholders.
+
+### Files created
+- `cavallo-app/nginx/prod.conf`
+- `cavallo-app/nginx/local.conf`
+- `cavallo-app/nginx/snippets/cavallo_locations.conf`
+- `cavallo-app/core/tests/test_nginx_config.py`
+- `cavallo-app/core/tests/test_prod_settings.py`
+- Outside the repos (not committed): `D:\Cavallo\_scripts\p106_step1.ps1`, `p106_step2.ps1`, `p106_step3.ps1`, evidence `p106_step1_evidence.txt`, `p106_step2_evidence.txt`, `p106_step3_evidence.txt`, backups in `D:\Cavallo\_scripts\backups\`.
+- Full file contents: the repo files listed here are the source of truth.
+
+### Files modified
+- `cavallo-app/docker-compose.prod.yml` (P-103 baseline extended; line endings stay CRLF).
+- `cavallo-app/config/settings/prod.py` (STEP 1).
+- `cavallo-app/requirements.txt` (STEP 1, gunicorn).
+- `cavallo-app/PROJECT_PROGRESS.md` (this section, appended; no existing byte changed).
+- `cavallo-mobile`: no changes.
+
+### Important implementation details
+- Work was split in 3 steps, each a PowerShell script run from `D:\Cavallo\scd-backend`: STEP 1 (Nginx files, tests, gunicorn, prod settings), STEP 2 (full compose + per-request DNS rework), STEP 3 (local dry-run, no repo change). STEP 2 only replaces a file if it still matches the exact previous content by SHA-256, and writes ASCII, UTF-8 without BOM.
+- Certificate bootstrap (chicken and egg): `nginx/prod.conf` needs `/etc/letsencrypt/live/cavallo/` to exist, so Nginx cannot start on first deploy until a certificate exists. The compose file header documents the one-time command (host port 80 must be free): `docker compose -f docker-compose.prod.yml run --rm --no-deps -p 80:80 --entrypoint certbot certbot certonly --standalone --cert-name cavallo -d DOMAIN -m EMAIL --agree-tos --non-interactive`. After that the `certbot` service renews over webroot, and `nginx` reloads itself every 6 hours to pick up a renewed certificate.
+- The `certbot` service is a no-op that logs a notice while `DOMAIN` or `LETSENCRYPT_EMAIL` are empty (as in the dry-run).
+- Required in the server `.env` (never in git): POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, SECRET_KEY, ALLOWED_HOSTS, CORS_ALLOWED_ORIGINS, DATABASE_URL (host `db`), REDIS_URL (host `redis`), OBJECT_STORAGE_* (including OBJECT_STORAGE_ENDPOINT_URL if not AWS S3), DOMAIN, LETSENCRYPT_EMAIL. Optional: HTTP_PORT, HTTPS_PORT, GUNICORN_WORKERS, CELERY_CONCURRENCY, REDIS_MAXMEMORY, REDIS_MAXMEMORY_POLICY.
+- The dry-run ran as an isolated compose project `cavallo_p106_dryrun` on host ports 8080/8443 with a small override file that only sets `ALLOWED_HOSTS`, so the developer dev stack (port 8095) was never touched; the dry-run containers and volumes were removed at the end.
+
+### Architecture decisions
+- One production compose file, one Nginx routing definition shared by prod and local (no duplicated location blocks).
+- HTTP and WebSocket are served by different processes (Gunicorn / Daphne) behind one Nginx; `/ws/` is the only path routed to Daphne.
+- Nothing except Nginx is reachable from outside the Docker network.
+- TLS terminates at Nginx; Django trusts `X-Forwarded-Proto` only because `web` and `asgi` publish no host ports.
+- Per-request upstream resolution is mandatory (no static `upstream` blocks), so a deploy that recreates containers cannot leave Nginx pointing at a dead IP.
+
+### Commands
+- Validate (from `D:\Cavallo\scd-backend`, do not print the full config, it inlines `.env` values): `docker compose -f docker-compose.prod.yml config -q`
+- Re-run STEP 3 dry-run: `& D:\Cavallo\_scripts\p106_step3.ps1` (add `-KeepRunning` to leave the stack up; `-HttpPort`/`-HttpsPort` to change host ports; first run builds images, several minutes).
+- Manual dry-run without the script: set `NGINX_CONF=./nginx/local.conf` and `HTTP_PORT=8080`, then `docker compose -p cavallo_p106_dryrun -f docker-compose.prod.yml up -d --build --wait`; remove with `docker compose -p cavallo_p106_dryrun -f docker-compose.prod.yml down -v`. NEVER set `NGINX_CONF` to the local file on the VPS.
+- Tests: `docker compose run --rm --no-deps web pytest core/tests/test_nginx_config.py core/tests/test_prod_settings.py -q`
+
+### Tests and verification results
+- STEP 1 (2026-10-04): PASS `nginx -t` on local.conf and on prod.conf (throwaway self-signed certificate), gunicorn resolves with pip, black + flake8 on the new tests, new P-106 tests.
+- STEP 2: PASS `docker compose -f docker-compose.prod.yml config -q`; resolved config has exactly the 8 services, each with cpus, memory and memswap limits, only nginx publishes ports (80 and 443), `DJANGO_SETTINGS_MODULE=config.settings.prod` on web, asgi, celery_worker and celery_beat; `nginx -t` on local.conf and prod.conf with the reworked snippet; black + flake8; pytest on test_nginx_config.py and test_prod_settings.py.
+- STEP 3 local dry-run (Docker Desktop on the developer machine, PASS):
+  - All 8 services running; db, redis, web, asgi healthy; `migrate` on the throwaway database OK.
+  - HTTP from the host through the published port: `GET http://127.0.0.1:8080/health/` -> 200 (`{"status": "ok", "db": "ok", "redis": "ok"}`), `GET /static/admin/css/base.css` -> 200 (collectstatic volume shared web -> nginx).
+  - Production security settings active at runtime: DEBUG False, SECURE_SSL_REDIRECT True, SESSION_COOKIE_SECURE True, CSRF_COOKIE_SECURE True, SECURE_PROXY_SSL_HEADER trusts X-Forwarded-Proto, STATIC_ROOT `/app/staticfiles`.
+  - SSL redirect proven by behaviour: a request straight to Gunicorn WITHOUT `X-Forwarded-Proto` returns 301 to `https://`; the same API path through Nginx returns 200.
+  - API through Nginx: register x2 -> 201, login x2 -> 200, `POST /api/v1/conversations/start/` -> 201.
+  - WebSocket (the specific pitfall): handshake `/ws/conversations/<id>/?token=...` through Nginx -> `101 Switching Protocols`, correct `Sec-WebSocket-Accept`, `Upgrade: websocket` + `Connection: upgrade` in the response, ping answered by pong over the proxied connection; without a token -> 403 from the consumer (proves `/ws/` reaches Daphne); a real `System.Net.WebSockets.ClientWebSocket` from the host connected through port 8080 (state Open); the Nginx access log shows `101` for both `/ws/` connections and `403` for the unauthenticated one.
+  - Limits enforced by Docker (memory in use / limit): nginx 10.5MiB / 128MiB, asgi 85.7MiB / 640MiB, web 193.2MiB / 768MiB, celery_worker 176.5MiB / 1GiB, certbot 548KiB / 128MiB, celery_beat 103.9MiB / 384MiB, db 35.3MiB / 1.5GiB, redis 3.7MiB / 384MiB.
+- Evidence files: `D:\Cavallo\_scripts\p106_step1_evidence.txt`, `p106_step2_evidence.txt`, `p106_step3_evidence.txt` (JWT tokens are redacted).
+
+### Known issues
+- M-1 (UNVERIFIED, check before closing Phase 22): the part Objective asks for the pre-migration automatic backup step (P-103) to be wired into the PRODUCTION deploy path, not only staging. P-106 did not inspect or change `scripts/deploy/deploy.sh` or the production workflow. Confirm that the production path runs the backup step before `migrate`; if not, add it in a small follow-up.
+- M-2 (blocking for a genuine deploy): Section 7 item 6 (VPS specifics, sibling container inventory) and item 9 (domain) are still OPEN. All limits, Gunicorn workers, Celery concurrency and Redis maxmemory are placeholders until real VPS data exists. Live execution is HONESTLY PENDING; only VALUES (domain, e-mail, sizes) are missing, not configuration.
+- M-3: Not exercised: a real TLS handshake and real certificate issuance/renewal (dry-run is non-TLS by design), the 6-hour Nginx reload, a redeploy that recreates `web`/`asgi` (the per-request DNS fix is applied and syntax-checked but the 502-after-recreate scenario was not reproduced), a 100 MB reel upload through the 105m body limit, reel transcoding under the worker limit (P-104 L-5), sustained load, and a chat message round trip through Nginx beyond the handshake and ping.
+- M-4: HSTS is not configured (`security.W004` from P-010 remains; out of scope here). Enabling HSTS is safe only after a working HTTPS deployment.
+- M-5: The full backend test suite was NOT re-run in P-106 (only the two new test files plus the compose/Nginx validation). `prod.py` and `requirements.txt` changed, so run `pytest -q` once before the first merge to `main`.
+- M-6: `celerybeat-schedule` is tracked in git although Celery rewrites it at runtime; it was included by accident in STEP 1 commit `e4c5b21`. Cleanup (optional): `git rm --cached celerybeat-schedule` and add it to `.gitignore`.
+- M-7: On the VPS verify the Docker Compose v2 plugin (legacy docker-compose v1 ignores `deploy.resources.limits`) and kernel swap-limit support (P-104 L-2), and re-run an enforcement proof there.
+- P-103 known issues K-1..K-7 are unchanged; in particular K-1 (CI on `main` red from pre-existing lint debt) is still open.
+
+### Remaining work
+1. Provide VPS and domain details (Section 7 items 6 and 9); then set DOMAIN, LETSENCRYPT_EMAIL and the real sizes, issue the first certificate with the documented one-time command, and run the first genuine production deploy (including the M-3 checks).
+2. Resolve M-1 (backup step in the production deploy path).
+3. Optional cleanup M-6; run the full suite once (M-5).
+4. P-107 (store release prep) and P-108 (final checklist) are the last two parts of the plan.
+
+### GitHub references
+- `cavallo-app` branch `develop`: STEP 1 `e4c5b21`, STEP 2 `c685df7`. Baseline before P-106: `51b20ce` (develop head when the part started). The commit that records this Progress section is the next commit on `develop` (documentation only).
+- `cavallo-mobile`: no changes.
+
+### Definition of Done
+- [x] Complete `docker-compose.prod.yml` and `nginx/prod.conf`, syntactically valid
+- [x] Local dry-run: all services start; HTTP and WebSocket traffic proxy correctly through Nginx
+- [x] Production security settings (SSL redirect, secure cookies) confirmed active
+- [x] Genuine deployment onto real infrastructure honestly flagged as pending Section 7 items 6 and 9
+- [ ] Backup step in the production deploy path confirmed (M-1)
+
+### Phase 22 status
+IN PROGRESS. P-106 configuration complete and dry-run proven; genuine deploy pending Section 7 items 6 and 9; M-1 to confirm; next P-107, then P-108.
+
+### Exact next starting point
+P-107 (store release prep), then P-108 (final checklist). Before or inside P-108, close M-1 and, once the VPS and domain exist, run the first real production deploy. Open owner decisions: whether to keep the placeholder sizes and the Redis `maxmemory`/`volatile-lru` and concurrency choices made here, and the CI-cleanup part (K-1).
+
+### Edits to existing sections
+- In the Part status index/table add: `P-106 | Production Deployment Configuration | Phase 22 | CONFIG COMPLETE, LOCAL DRY-RUN PASS (8 services, HTTP + WebSocket through Nginx, prod security settings active); VPS deploy PENDING (Section 7 items 6 and 9); limits and sizes are placeholders; backup step in prod deploy path to confirm (M-1)`.
+- Set the Phase 22 summary line to: "IN PROGRESS (P-106 configuration complete and dry-run proven, genuine deploy pending Section 7 items 6 and 9; next P-107)".
+- In the P-104 section, known issues L-3 (prod compose had no limits), L-4 (Redis maxmemory) and L-6 (prod worker concurrency) are addressed by P-106 as described above; the text of P-104 is left unchanged.
+- Leave Section 7 items 6 and 9 marked OPEN.
