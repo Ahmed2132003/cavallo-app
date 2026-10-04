@@ -12631,3 +12631,114 @@ P-107 (store release prep), then P-108 (final checklist). Once the VPS and domai
 - Set the Phase 22 summary line to: "IN PROGRESS (P-106 configuration complete and dry-run proven, genuine deploy pending Section 7 items 6 and 9; next P-107)".
 - In the P-104 section, known issues L-3 (prod compose had no limits), L-4 (Redis maxmemory) and L-6 (prod worker concurrency) are addressed by P-106 as described above; the text of P-104 is left unchanged.
 - Leave Section 7 items 6 and 9 marked OPEN.
+
+
+PROGRESS UPDATE
+
+Add this section after:
+## PART P-106 - Production Deployment Configuration (Phase 22) ... (end of file, after its "### Edits to existing sections" list)
+
+## PART P-107 - App Store / Play Store Release Prep (Phase 22) - STATUS: ALL GROUNDWORK COMPLETE (2026-10-04); ACCOUNTS, SIGNING AND SUBMISSION BLOCKED (Section 7 item 8); SEVERAL APP-LEVEL STORE BLOCKERS FOUND (STORE_LISTING_CHECKLIST.md section A)
+
+Executed in 4 steps on `cavallo-mobile` branch `develop` (local checkout `D:\Cavallo\social_commerce_app`, Windows, Flutter 3.29.3 / Dart 3.7.2, one PowerShell script per step in `D:\Cavallo\_scripts\`, each anchor-based, CRLF-preserving, backed up to `D:\Cavallo\_scripts\backups\`, evidence in `p107_step*_evidence.txt`). The backend repo `cavallo-app` was not touched by this part.
+
+### What was implemented
+- STEP 1 (Android release configuration, `2b972b9`):
+  - `android/app/build.gradle.kts`: release-signing STRUCTURE. Reads `android/key.properties` if present (validates the 4 keys storeFile/storePassword/keyAlias/keyPassword), defines `signingConfigs.release`, uses it for the release build type. Without `key.properties` the release build falls back to the DEBUG key and prints a `P-107 WARNING` (structurally complete build, NOT uploadable to the Play Store). R8 code shrinking and resource shrinking enabled (`isMinifyEnabled = true`, `isShrinkResources = true`, `proguard-android-optimize.txt` + `proguard-rules.pro`). `applicationId` marked PROVISIONAL (value unchanged).
+  - `android/app/src/main/AndroidManifest.xml`: added `android.permission.INTERNET` (it previously existed only in the debug/profile manifests, so every release build had no network access: REST, WebSocket, FCM and Sentry would all have failed). Replaced the scaffold label `social_commerce_app_tmp` with `Social Commerce App` (PROVISIONAL).
+  - New `android/app/proguard-rules.pro` (generic safety rules only: Play Core dontwarn, keep `io.flutter.plugins.**`, keep annotation/signature/line-number attributes) and `android/key.properties.example` (template; the real `key.properties`, `*.jks` and `*.keystore` are git-ignored by `android/.gitignore`).
+  - Launcher icons verified present at all 5 densities (48/72/96/144/192 px); they are the Flutter default PLACEHOLDERS (pending Section 7 item 5).
+- STEP 2 (iOS release configuration, `c2faf04`):
+  - `ios/Runner.xcodeproj/project.pbxproj`: `IPHONEOS_DEPLOYMENT_TARGET` 12.0 -> 13.0 in all 3 places; `ios/Flutter/AppFrameworkInfo.plist`: `MinimumOSVersion` 12.0 -> 13.0 (Firebase iOS SDK 11 needs iOS 13; Apple requires iOS 13 or later from 2026-09-09).
+  - `ios/Runner/Info.plist`: added `NSPhotoLibraryUsageDescription`, `NSCameraUsageDescription`, `NSMicrophoneUsageDescription` (image_picker is used in stories, reels, posts, products and chat; texts are English-only and PROVISIONAL) and a PROVISIONAL comment for the bundle identifier. Bundle identifier left as `com.example.socialCommerceApp` (PROVISIONAL).
+  - New `RELEASE_SIGNING.md` (repo root): provisional-values table, version/build-number scheme (`pubspec.yaml` `version: MAJOR.MINOR.PATCH+BUILD`, currently `0.1.0+1`, BUILD must increase on every upload), Android keystore + Play App Signing steps, iOS App ID / certificate / provisioning / APNs / TestFlight steps, checklist for changing the final identifiers, and a "deliberately NOT done" list.
+- STEP 3 (store checklist and release build, `c283f3c`):
+  - New `STORE_LISTING_CHECKLIST.md` (repo root), prepared 2026-10-04 from the official Apple and Google pages (sources listed in its section H). Sections: A blockers/open decisions (A1..A15), B Apple App Store Connect fields, C Google Play Console fields, D data-practices inventory (draft for privacy policy, App Privacy details and Data safety form), E content-rating draft answers, F App Review notes draft, G listing text drafts (short description is 79 of 80 characters), H sources. Items marked VERIFIED were read from the official page that day; items marked "(verify)" were NOT confirmed (for example Apple character limits for name/subtitle/description/keywords, Google name and full-description limits, whether Play tablet screenshots are optional for a phone-first app) and MUST be re-checked in the consoles.
+  - `flutter build appbundle --release` succeeded (`build\app\outputs\bundle\release\app-release.aab`, 29.4 MB, debug-key signed).
+  - Side effect: `git add .` in this step also committed 3 `android/.kotlin/errors/*.log` files (cleaned up in STEP 3-FIX).
+- STEP 3-FIX (`98c8ef4`):
+  - The STEP 3 build measured `targetSdkVersion = 35` (Flutter 3.29.3's `flutter.targetSdkVersion`), below the Play requirement of API 36 for new apps and updates from 2026-08-31. `build.gradle.kts` now pins `targetSdk = 36` (with a comment; `compileSdk` was already 36, AGP 8.7.0, Gradle 8.10.2). Re-built: AAB 29.4 MB; merged release manifest shows `minSdkVersion="23"`, `targetSdkVersion="36"` and `android.permission.INTERNET`.
+  - Checklist row A5 updated from CHECK to FIXED.
+  - Untracked 14 generated log files with `git rm --cached` (7 `android/.kotlin/errors/*.log`, 3 `flutter_0*.log`, 4 `hs_err_pid*.log`; files remain on the developer machine) and added `/flutter_*.log`, `/hs_err_pid*.log`, `android/.kotlin/` to the root `.gitignore`.
+
+### Files created (all in `cavallo-mobile`)
+- `android/app/proguard-rules.pro`
+- `android/key.properties.example`
+- `RELEASE_SIGNING.md`
+- `STORE_LISTING_CHECKLIST.md`
+
+### Files modified (all in `cavallo-mobile`)
+- `android/app/build.gradle.kts`
+- `android/app/src/main/AndroidManifest.xml`
+- `ios/Runner/Info.plist`
+- `ios/Runner.xcodeproj/project.pbxproj`
+- `ios/Flutter/AppFrameworkInfo.plist`
+- `.gitignore`
+
+### Important implementation details and architecture decisions
+- Placeholders are explicit, not hidden: applicationId/namespace `com.example.social_commerce_app` and iOS bundle id `com.example.socialCommerceApp` (the Play Console rejects `com.example.*`; changing them touches namespace, applicationId, the `MainActivity.kt` folder + package line, every `PRODUCT_BUNDLE_IDENTIFIER` in `project.pbxproj`, and the Firebase registration, so decide the final id BEFORE the Firebase project, P-081, and the store records), app label `Social Commerce App`, icons (Flutter defaults), no release signing. The mechanical replacement procedure is in `RELEASE_SIGNING.md` section 5.
+- One id family should be used on both platforms: lowercase letters, digits and dots only (underscores are invalid in iOS bundle identifiers).
+- Signing credentials never enter the repository: `key.properties`, `*.jks` and `*.keystore` are ignored (confirmed with `git check-ignore`); only `key.properties.example` is committed.
+- `targetSdk` is now pinned instead of following Flutter's default. Re-check the merged manifest after any Flutter or AGP upgrade.
+- Deliberately NOT done (documented in `RELEASE_SIGNING.md` section 6): push entitlements and `UIBackgroundModes` (need App ID and Firebase), `PrivacyInfo.xcprivacy`, `ITSAppUsesNonExemptEncryption` (export-compliance decision), `ios/Podfile` (absent from the repo; Flutter generates it on the first Mac build, then confirm `platform :ios, '13.0'`).
+- Payments (ADR-006): the Featured subscription is sold on a separate Web Dashboard and the app has no purchase UI or link. Apple 3.1.1 rejection risk is open and must be explained in the review notes (checklist section F); do not add a link-out without a policy re-check.
+
+### Commands
+- Android release bundle (from `D:\Cavallo\social_commerce_app`): `flutter build appbundle --release` (output `build\app\outputs\bundle\release\app-release.aab`; without `android\key.properties` it is debug-signed and not uploadable).
+- Android APK variant: `flutter build apk --release`.
+- Check the effective SDK levels: `Get-ChildItem build\app\intermediates\merged_manifests\release -Recurse -Filter AndroidManifest.xml | Select-String 'targetSdkVersion','minSdkVersion','android.permission.INTERNET'`
+- Re-run the step scripts (idempotent): `& D:\Cavallo\_scripts\p107_step1.ps1`, `p107_step2.ps1`, `p107_step3.ps1` (`-SkipBuild` writes only the checklist), `p107_step3fix.ps1`.
+- First Mac command, when a Mac exists: `flutter build ios --release --no-codesign`, then check that `ios/Podfile` contains `platform :ios, '13.0'`; with an account: `flutter build ipa --release` (see `RELEASE_SIGNING.md` section 4).
+- With the real upload keystore: copy `android/key.properties.example` to `android/key.properties`, fill in the 4 values, then `flutter build appbundle --release` (the `P-107 WARNING` line must no longer appear).
+
+### Tests and verification results (2026-10-04)
+- STEP 1: owner confirmed the script checks and the release build on the real machine before committing `2b972b9`. The optional throwaway-keystore signing test (STEP 1 Test 4) is NOT recorded as executed, so the real-keystore branch of `build.gradle.kts` is unproven end to end.
+- STEP 2: static verification only (script PASS lines: 3 x deployment target 13.0 and 0 x 12.0, `Info.plist` well-formed XML with exactly one of each purpose key, `AppFrameworkInfo.plist` 13.0, `RELEASE_SIGNING.md` present); commit `c2faf04`. No iOS build was run (no Mac).
+- STEP 3: PASS 8 checklist sections present, PASS short description 79 characters; `flutter build appbundle --release` PASS (29.4 MB); measured `minSdkVersion = 23`, `targetSdkVersion = 35` (BLOCKER A5 raised); iOS release build BLOCKED (needs macOS and Xcode 26+).
+- STEP 3-FIX: PASS targetSdk 36 pinned, PASS checklist A5, PASS no generated logs tracked, PASS ignored: `android/.kotlin/errors/x.log`, `flutter_09.log`, `hs_err_pid1.log`, `android/key.properties`; release bundle rebuilt (29.4 MB); merged manifest: minSdk 23, targetSdk 36, INTERNET present; working tree clean after commit and push.
+- Not run in P-107: `flutter analyze` and `flutter test` after the STEP 1 to STEP 3-FIX changes (only build configuration and docs changed, no Dart code), any runtime check of the API 36 target on a device or emulator (API 36 changes some behaviour, for example predictive back and orientation restrictions on large screens, so a login + feed smoke test on an Android 16 device is recommended), any R8 runtime check of the minified release (run the release APK and exercise login, feed, chat WebSocket, image picking and push before trusting the R8 rules), and the checklist was reviewed against the official pages by research only, not against the live consoles.
+
+### Known issues and open store BLOCKERS (details and owners in `STORE_LISTING_CHECKLIST.md` section A)
+- A1 BLOCKER: no in-app ACCOUNT DELETION (backend only deactivates accounts; no delete endpoint or Flutter screen). Apple 5.1.1(v) and Google Play both require it, Google also a web deletion link. Needs a NEW part (backend + Flutter).
+- A2 BLOCKER: no BLOCK USER feature (reporting exists). Apple 1.2 and Google UGC policy require blocking, mandatory for 1:1 chat. Note: the presentation (slide 10) lists "Block & Report" for chat, so this is also a gap against the original scope. Needs a NEW part.
+- A3 BLOCKER: no Terms of Use or Privacy Policy link in the app (register screen has none).
+- A4 BLOCKER: no privacy policy document or public URL exists; it must match the data-practices inventory in checklist section D (deletion and retention are not defined yet).
+- A5 FIXED in STEP 3-FIX (targetSdk 36), verified at build level only.
+- A6 OPEN: Apple requires Xcode 26 / iOS 26 SDK builds since 2026-04-28; Flutter 3.29.3 is older, so a Flutter upgrade and a regression run on a Mac may be needed.
+- A8 OPEN: a new PERSONAL Play account needs 12 testers for 14 continuous days in closed testing before production access (organization accounts are exempt); depends on the account type chosen.
+- A9 OPEN: demo accounts for reviewers (Customer, Business, optionally Moderator) and a live backend (Section 7 items 6 and 9).
+- A10 OPEN owner risk: ADR-006 payments policy (Apple 3.1.1), see implementation details.
+- A11 BLOCKED: real push delivery needs the Firebase project and APNs key (Section 7 item 4).
+- A12 BLOCKED: real brand assets (Section 7 item 5); icons are placeholders on both platforms.
+- A13, A14, A15 OPEN owner decisions: EU trader status, minimum user age and target audience, final application/bundle ids. Also open: iPad (the project targets iPad with `TARGETED_DEVICE_FAMILY = "1,2"`, so 13-inch iPad screenshots are required unless the app is made iPhone-only), primary category, export-compliance answer.
+- `flutter_01.png` (0 bytes) is still tracked at the repo root; optional cleanup.
+- The Dart/Flutter side was not re-tested, see "Not run in P-107" above.
+
+### Remaining work (the ONLY remaining steps are the ones below)
+1. Section 7 item 8 (owner): create the Apple Developer Program and Google Play Console accounts (choose personal vs organization, see A8). Section 7 item 5: real brand assets.
+2. Decide the final application id / bundle id, then follow `RELEASE_SIGNING.md` section 5 (also register Firebase with the final ids).
+3. Create the upload keystore and `android/key.properties` (`RELEASE_SIGNING.md` section 3); on a Mac with Xcode 26+ do the iOS signing, capabilities (Push Notifications, Background Modes), `PrivacyInfo.xcprivacy` decision and first `flutter build ipa --release` (`RELEASE_SIGNING.md` section 4).
+4. Close the app-level blockers A1 to A4 with new parts (account deletion, block user, in-app terms/privacy links, written privacy policy with a public URL) and give reviewers demo accounts (A9).
+5. Fill in and verify the store listings against the live consoles using `STORE_LISTING_CHECKLIST.md` sections B to G (every "(verify)" item), take screenshots with real assets and seeded demo data, then upload to internal testing / TestFlight and submit.
+
+### GitHub references
+- `cavallo-mobile` branch `develop`: baseline before P-107 `dca6683` (P-105 STEP 10); STEP 1 `2b972b9`; STEP 2 `c2faf04`; STEP 3 `c283f3c` (message "update part 107", also contained the 3 log files); STEP 3-FIX `98c8ef4` (pushed).
+- `cavallo-app`: no code changes. The commit that records this Progress section is the next documentation-only commit on the backend repo.
+
+### Definition of Done
+- [x] iOS and Android release build configurations structurally complete (Android: release AAB builds, R8 on, INTERNET fixed, target API 36; iOS: configured and statically verified, NOT built, no Mac)
+- [x] Store-listing checklist created against the CURRENT official requirements as read on 2026-10-04; items not confirmed are marked "(verify)" and must be re-checked in the consoles
+- [x] Every remaining gap (accounts, signing, submission) documented as pending Section 7 item 8, with exact steps in `RELEASE_SIGNING.md`
+- [ ] NOT part of this DoD but found: app-level store blockers A1 to A4 need new parts before any submission
+
+### Phase 22 status
+IN PROGRESS. P-106 configuration complete (genuine deploy pending Section 7 items 6 and 9); P-107 groundwork complete (accounts, signing and submission pending Section 7 item 8); next P-108 (final completion checklist), the very last part of the plan.
+
+### Exact next starting point
+P-108 (final completion checklist). It must carry forward as open items: Section 7 items 4, 5, 6, 8 and 9, the store blockers A1 to A4 from `STORE_LISTING_CHECKLIST.md`, the unverified R8/API 36 runtime checks, and the iOS build that has never been run. Start P-108 on `cavallo-mobile` `develop` at `98c8ef4`.
+
+### Edits to existing sections
+- In the Part status index/table add: `P-107 | App Store / Play Store Release Prep | Phase 22 | GROUNDWORK COMPLETE (Android AAB builds with R8, INTERNET fix and targetSdk 36; iOS configured, not built; RELEASE_SIGNING.md and STORE_LISTING_CHECKLIST.md written); accounts, signing and submission PENDING (Section 7 item 8); store blockers A1 to A4 found (account deletion, block user, terms/privacy links, privacy policy)`.
+- Set the Phase 22 summary line to: "IN PROGRESS (P-106 configuration complete, genuine deploy pending Section 7 items 6 and 9; P-107 groundwork complete, submission pending Section 7 item 8 and store blockers A1 to A4; next P-108)".
+- Leave Section 7 items 4, 5, 6, 8 and 9 marked OPEN.
+- In the P-106 section's "Remaining work" item 4, no text change is needed; P-107 is now done as described above.
