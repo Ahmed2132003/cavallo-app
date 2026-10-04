@@ -12800,3 +12800,13 @@ There is no next part in this plan. Start a new plan from the Remaining work lis
 ### Edits to existing sections
 - In the Part status index/table add: P-108 | Final Completion-Checklist Verification | Phase 22 | AUDIT COMPLETE, MVP NOT FULLY COMPLETE (see FINAL_COMPLETION_REPORT.md).
 - Leave Section 7 items 1-6, 8, 9 marked OPEN; item 7 RESOLVED.
+
+### P-108 record of the commit (addendum)
+
+- cavallo-app `develop`: P-108 report + Progress section committed and pushed as `e6c90c4` (parent `931a569`). cavallo-mobile: unchanged at `98c8ef4`.
+- Correction to the P-108 section above: the "no existing byte changed" statement is accurate except for one line. The previous last line of this file had no trailing newline, so it appears as 1 deleted + 1 re-added line in `git diff` (whitespace only). Total diff of that commit for this file: 59 insertions, 1 deletion.
+- Final tally in FINAL_COMPLETION_REPORT.md: 12 boxes checked, 10 open. Sign-off scan: Phase 17 and Phase 20 still show open markers; 0 "Deviations From The Master Plan" register headings; 15 scattered deviation sub-headings; no PROJECT_PROGRESS.md in the mobile repo.
+- Integration re-run on 2026-10-05 inside docker (core/tests/test_integration_phase17.py, test_integration_phase17_step4.py, monetization/tests/test_featured_ranking_integration.py): 24 passed in 73.23s.
+- Backend suite on 2026-10-05 inside docker: 1682 passed, 1 skipped, 1 xfailed (16:54).
+- Not committed on purpose: `celerybeat-schedule` (runtime file, P-106 M-6), `p108_*_evidence.txt`, `p108_idempotency_check.py`, `*.bak` files.
+- Exact next starting point: none in this plan. Start a new plan from the "Remaining work" list of the P-108 section, beginning with the block-user part.
