@@ -64,3 +64,7 @@ pytest-asyncio==1.4.*
 # them — added here so `black`/`flake8` exist inside the container).
 black==25.*
 flake8==7.*
+
+# Part P-106: production WSGI server for the HTTP side (Nginx -> web service).
+# WebSocket traffic stays on daphne (asgi service); Gunicorn cannot serve it.
+gunicorn==23.0.*
