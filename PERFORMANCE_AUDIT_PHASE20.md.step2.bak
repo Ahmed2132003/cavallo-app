@@ -1,0 +1,78 @@
+# PERFORMANCE_AUDIT_PHASE20.md
+
+Part P-101 - Query/Index Audit + Cache-Hit-Rate Spot Check (Phase 20).
+Status: IN PROGRESS - Step 1 of 3 done (data + index existence). Step 2 (EXPLAIN ANALYZE) and Step 3 (cache hit rates, conclusions) pending.
+
+## Part A - Method and audit data (Step 1)
+
+PostgreSQL version: 16.15 (Debian 16.15-1.pgdg13+2). Seed: `p101_seed.py` (fixed random seed 101, idempotent, ANALYZE run afterwards).
+Audit rows are identifiable by username `p101_*`, business name `P101 *`, category slug `p101-*` and are removed by `p101_cleanup.py`.
+
+| Data | Rows |
+|---|---|
+| BusinessProfile (8 cities, 3 countries, ~10% featured) | 300 |
+| Product | 6000 |
+| Post | 6000 |
+| Reel | 3000 |
+| Story (of which active: published and not expired) | 3000 (146) |
+
+Business activity is skewed (some businesses have many items), created_at spread over 90 days, statuses mixed (published / pending_review / rejected), ~2-3% soft-deleted.
+
+## Part B - Index existence vs Section 9 (Step 1)
+
+Existence only. Whether the planner USES an index is Part C (Step 2). `FOUND-PREFIX` means an index exists whose leading columns match.
+
+| Code | Expected index | Result | Existing index |
+|---|---|---|---|
+| A1 | Post (business_id,status,created_at) [Sec.9 literal] | MISSING | - |
+| A2 | Reel (business_id,status,created_at) [Sec.9 literal] | MISSING | - |
+| A3 | Story (business_id,status,created_at) [Sec.9 literal] | MISSING | - |
+| A4 | Story (business_id,status,expires_at) [as built, P-046] | FOUND-EXACT | story_biz_status_exp_idx |
+| B1 | BusinessProfile (category_id,city) [Sec.9 literal] | MISSING | - |
+| B2 | Product (category_id,business_id) [as built, P-031] | FOUND-EXACT | products_category_business |
+| C1 | GIN Product.search_vector | FOUND-EXACT | products_search_vector_gin |
+| C2 | GIN BusinessProfile.search_vector | FOUND-EXACT | business_search_vector_gin |
+| D1 | ModerationQueue (status) | FOUND-EXACT | moderation__status_731a97_idx |
+| D2 | ModerationQueue (content_type_id,object_id) | FOUND-EXACT | moderation__content_095806_idx |
+
+All indexes found on the audited tables:
+
+| Table | Index | Type | Columns |
+|---|---|---|---|
+| businesses_businessprofile | business_search_vector_gin | gin | search_vector |
+| businesses_businessprofile | businesses_businessprofile_category_id_c58d642a | btree | category_id |
+| businesses_businessprofile | businesses_businessprofile_pkey | btree | id |
+| businesses_businessprofile | businesses_businessprofile_user_id_key | btree | user_id |
+| categories_category | categories_category_parent_id_f141de59 | btree | parent_id |
+| categories_category | categories_category_parent_id_name_893f7987_uniq | btree | parent_id,name |
+| categories_category | categories_category_pkey | btree | id |
+| categories_category | categories_category_slug_6fddebb1_like | btree | slug |
+| categories_category | categories_category_slug_key | btree | slug |
+| content_post | content_post_business_id_73a35f6c | btree | business_id |
+| content_post | content_post_business_idx | btree | business_id |
+| content_post | content_post_pkey | btree | id |
+| content_reel | content_reel_business_id_90883a0e | btree | business_id |
+| content_reel | content_reel_business_idx | btree | business_id |
+| content_reel | content_reel_pkey | btree | id |
+| moderation_moderationqueue | moderation__content_095806_idx | btree | content_type_id,object_id |
+| moderation_moderationqueue | moderation__status_731a97_idx | btree | status |
+| moderation_moderationqueue | moderation_moderationqueue_content_type_id_bee39315 | btree | content_type_id |
+| moderation_moderationqueue | moderation_moderationqueue_pkey | btree | id |
+| products_product | products_category_business | btree | category_id,business_id |
+| products_product | products_product_business_id_f19d872e | btree | business_id |
+| products_product | products_product_category_id_9b594869 | btree | category_id |
+| products_product | products_product_pkey | btree | id |
+| products_product | products_search_vector_gin | gin | search_vector |
+| social_follow | social_follow_business_id_9ee0a423 | btree | business_id |
+| social_follow | social_follow_follower_id_a92b1c63 | btree | follower_id |
+| social_follow | social_follow_follower_id_business_id_e4bcf737_uniq | btree | follower_id,business_id |
+| social_follow | social_follow_pkey | btree | id |
+| stories_story | stories_story_business_id_3e0ad509 | btree | business_id |
+| stories_story | stories_story_pkey | btree | id |
+| stories_story | story_biz_status_exp_idx | btree | business_id,status,expires_at |
+
+## Part C - EXPLAIN ANALYZE per query path (Step 2 - pending)
+
+## Part D - Cache hit rates: Feed first page, Business Profile, Categories tree (Step 3 - pending)
+
+## Part E - Gaps found, fixes made, conclusions (Step 3 - pending)
