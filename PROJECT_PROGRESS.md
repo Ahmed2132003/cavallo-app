@@ -12340,3 +12340,79 @@ Owner decision between: (a) open a separate CI-cleanup part (recommended), then 
 - Set the Phase 21 summary line to: "IN PROGRESS (P-103 built; genuine deploy pending Section 7 items 6 and 9; next P-104)". Keep Phase 20 as IN PROGRESS.
 - In the P-002 section, the line saying neither workflow has a deploy step stays true for `main`; add: "Superseded on `develop` by P-103 (deploy jobs added; `lint-and-test` unchanged)."
 - Leave Section 7 items 6 and 9 marked OPEN.
+
+## PART P-104 - Staging Environment Deployment (Shared VPS, Resource Limits Enforced) (Phase 21) - STATUS: LIMITS BUILT AND ENFORCEMENT PROVEN LOCALLY (2026-10-04); GENUINE VPS DEPLOYMENT BLOCKED (Section 7 items 6 and 9)
+
+### What was implemented
+- `docker-compose.staging.yml` (the P-103 baseline, extended in place; no second file) now gives EVERY container an explicit limit: `deploy.resources.limits` (cpus, memory) plus `memswap_limit` equal to the memory limit (no swap spill, Docker kills the process at the limit). Each limit carries the comment "Conservative placeholder pending real sibling-project usage data (Section 7 item 6) - revisit once known." The header of the file explains the change.
+- Limits (all PROVISIONAL placeholders): db 1.00 CPU / 1G; redis 0.25 / 256M; web 0.50 / 512M; celery_worker 0.50 / 512M; celery_beat 0.25 / 256M. Worst case total 2.5 CPU / 2560 MB. There is no separate ASGI service: daphne runs inside `web`.
+- `celery_worker` command now ends with `--concurrency=2` (default would start one process per host core and could exceed 512M by itself). Staging file only.
+- `STAGING_DEPLOYMENT_NOTES.md` (new, repo root): limits, reasoning, test results, how to re-run, what is provisional.
+- This is the concrete, enforced mitigation for the architecture's named operational risk (Section 22): this project must not starve Eduvia / Managora / Shark / 2ROOTS on the shared VPS.
+
+### Files created
+- `cavallo-app`: `STAGING_DEPLOYMENT_NOTES.md`.
+- Outside the repos (not committed): `D:\Cavallo\_scripts\p104_step1.ps1`, `p104_step2.ps1`, `p104_step3.ps1`, evidence `D:\Cavallo\_scripts\p104_step2_evidence.txt`, backups in `D:\Cavallo\_scripts\backups\` (`docker-compose.staging.yml.p104_step1.bak`, `PROJECT_PROGRESS.md.p104_step3.bak`).
+- Full file contents: the two repo files listed under "Files modified" and `STAGING_DEPLOYMENT_NOTES.md` are the source of truth.
+
+### Files modified
+- `cavallo-app/docker-compose.staging.yml` (limits, comments, `--concurrency=2`; line endings stay CRLF).
+- `cavallo-app/PROJECT_PROGRESS.md` (this section, appended; no existing byte changed).
+- `cavallo-mobile`: no changes.
+
+### Important implementation details
+- Limit syntax is `deploy.resources.limits`, which Docker Compose v2 applies to plain `docker compose up` (not only Swarm). `scripts/deploy/deploy.sh` already uses `docker compose`.
+- The baseline was verified by SHA-256 before editing (script refuses to run on a different file). Written as UTF-8 without BOM, ASCII only, same line endings as the original (the P-103 encoding problem did not repeat).
+- Local proof used an isolated compose project `scd-p104` and port 8010, so the developer's dev stack and sibling containers were not touched; only that project's containers and volumes are removed at the end.
+- The memory proof runs the memory hog INSIDE the container: the kernel kills that process (exit 137 from an inner `sh -c '...; echo EXITCODE=$?'`), the container itself keeps running with 0 restarts. Evidence = exit 137 + cgroup `memory.events` `oom_kill` counter increasing + allocation stopping near the limit.
+- The first two runs of the Step 2 script reported FAIL for the four OOM checks. Cause was a script bug, not Docker: PowerShell variable names are case-insensitive, so `$code` and `$script:Code` were the same variable and a later helper call overwrote the exit code with 0. The kernel kill evidence (oom_kill 0 -> 1, allocation stopped at 416 / 320 MB) was already valid in those runs. Fixed (variable renamed) and the third run passed fully. Lesson for later parts: do not reuse a name differing only by case.
+
+### Architecture decisions
+- Resource limits are mandatory and enforced, not optional or deferred (Section 22 mitigation). Numbers may be revised; the existence of limits may not.
+- Limits are added to the existing `docker-compose.staging.yml`; `docker-compose.prod.yml` is NOT changed here (production is P-106).
+- `memswap_limit` equals the memory limit on purpose so a limit means a kill, not silent swapping.
+
+### Commands
+- Validate (from `D:\Cavallo\scd-backend`): `docker compose -f docker-compose.staging.yml config -q`. Do not print the full config (it inlines `.env` values).
+- Re-run the enforcement proof: `& D:\Cavallo\_scripts\p104_step2.ps1` (about 2 minutes with a warm build cache, 9 minutes cold; add `-KeepUp` to leave the stack running).
+- Manual spot check of one container: `docker inspect <container> --format "{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.NanoCpus}}"`.
+
+### Tests and verification results
+- PASS (local Docker Desktop, Docker 29.7.2, Compose 5.5.1, cgroup v2, 12 CPUs, about 16 GB): `docker compose config -q`; resolved config shows the 5 limit sets; all 5 services start with 0 restarts, db and redis healthy, worker "ready", worker banner `concurrency: 2`, beat started, web answers HTTP 404 on `/` (daphne serving).
+- PASS: limits as enforced on the running containers: db 1073741824 / 1073741824 / 1000000000, redis 268435456 / 268435456 / 250000000, web and celery_worker 536870912 / 536870912 / 500000000, celery_beat 268435456 / 268435456 / 250000000 (Memory / MemorySwap / NanoCpus).
+- PASS: CPU throttle on web: two busy processes measured 49.4% and 51.5% (about 200% unlimited), `nr_throttled` 64 -> 247.
+- PASS: OOM kill on four container types: web (stopped at 416 MB of a 1536 MB target), celery_worker (320 MB), db (`tail /dev/zero`), redis (`tail /dev/zero`): inner exit 137, `oom_kill` 0 -> 1 in each, no restarts, db healthy afterwards.
+- Idle usage seen locally (NOT VPS data): web 84 MiB, worker 172 MiB, beat 101 MiB, db 30 MiB, redis 3.6 MiB. Sibling workers with default Celery concurrency used 600-760 MiB on the same developer machine, which is why `--concurrency=2` matters.
+- NOT tested: any of this on the real VPS; reel transcoding (ffmpeg, P-042) under the worker limit; sustained load or real WebSocket connections; the production compose file.
+
+### Known issues
+- L-1 (blocking for a genuine deploy): Section 7 item 6 (VPS specifics, existing container inventory) and item 9 (domain) are still OPEN. All limits are placeholders until the real sibling usage is known.
+- L-2: Enforcement was proven on Docker Desktop, not on the VPS. On the VPS verify: Docker Compose v2 plugin (legacy docker-compose v1 ignores `deploy.resources.limits` without --compatibility) and kernel swap-limit support (`docker info` warns if missing; then `memswap_limit` is not enforced). Repeat the proof there.
+- L-3: `docker-compose.prod.yml` still has NO limits. P-106 must apply the same limits; production must never ship unlimited containers.
+- L-4: Redis has no `maxmemory`. At 256M it is OOM-killed and (no persistence) loses its data; one Redis serves Celery broker, cache and Channels layer. Choosing `maxmemory` and an eviction policy is an owner decision; not changed.
+- L-5: Reel transcoding (ffmpeg) was not exercised under 0.5 CPU / 512M; a large video may be slow or OOM-killed. Test with a realistic video before trusting the numbers.
+- L-6: `--concurrency=2` exists only in the staging compose file; prod and dev files unchanged.
+- L-7: celery_beat idles at about 39% of its 256M limit (101 MiB), the tightest margin of the five.
+- P-103 known issues K-1..K-7 are unchanged. In particular K-1 (CI on `main` is red from pre-existing lint debt) is still open; P-104 changed no Python, so it neither fixes nor worsens it.
+
+### Remaining work
+1. Provide VPS and domain details (Section 7 items 6 and 9). Then replace the placeholder limits with sizes based on the real container inventory, and repeat the enforcement proof on the VPS (L-2).
+2. P-105 (monitoring go-live): add visibility for containers hitting their limits (restarts, OOM kills, CPU throttling).
+3. P-106 (production): carry the limits into `docker-compose.prod.yml` (L-3), decide Redis `maxmemory` (L-4), decide worker concurrency for prod (L-6).
+4. Test reel transcoding under the limits (L-5).
+5. Separate CI-cleanup part (K-1) before the first merge to `main`; also re-run and record check 4b of P-102 to close Phase 20.
+
+### GitHub references
+- `cavallo-app` branch `develop`: P-104 commit (fill in after commit). Baseline before P-104: `5a3e647` (develop head when the part started).
+- `cavallo-mobile`: no changes.
+
+### Phase 21 status
+IN PROGRESS. P-103 built; P-104 limits built and enforcement proven locally; genuine VPS deploy still PENDING Section 7 items 6 and 9; next P-105.
+
+### Exact next starting point
+P-105 (monitoring go-live) per the P-104 handoff note. It depends on P-104 and, like P-104, its live part needs the VPS (Section 7 item 6) and domain (item 9). Open owner decisions: Redis `maxmemory` (L-4) and the CI-cleanup part (K-1).
+
+### Edits to existing sections
+- In the Part status index/table add: `P-104 | Staging Environment Deployment (Shared VPS, Resource Limits Enforced) | Phase 21 | LIMITS BUILT, ENFORCEMENT PROVEN LOCALLY (all 5 containers; CPU throttle + OOM kill verified); VPS deploy BLOCKED (Section 7 items 6 and 9); limits are placeholders; prod compose still unlimited (L-3)`.
+- Set the Phase 21 summary line to: "IN PROGRESS (P-103 built; P-104 limits enforced locally, genuine deploy pending Section 7 items 6 and 9; next P-105)".
+- Leave Section 7 items 6 and 9 marked OPEN.

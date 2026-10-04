@@ -4,6 +4,15 @@
 # pipeline has something real to build and restart. P-104 (staging deployment on the shared VPS) adds the per-container Docker resource limits and any VPS-specific wiring.
 # Extend this file in that part; do not create a second one.
 #
+# P-104 STEP 1: every container below now has an explicit CPU and memory limit
+# (deploy.resources.limits) plus memswap_limit equal to the memory limit, so the
+# container cannot spill into swap and Docker kills it (OOM) at the limit instead.
+# This is the concrete mitigation for the architecture's named operational risk
+# (Section 22): this project must not starve Eduvia / Managora / Shark / 2ROOTS
+# on the shared VPS. ALL numbers are conservative PLACEHOLDERS until Section 7
+# item 6 (existing container inventory / real sibling usage) is known.
+# Total budget if every container hit its limit: 2.5 CPU / 2560 MB.
+#
 # Differences from the dev docker-compose.yml, on purpose:
 #   - no source bind mount: the image built from the checked-out commit is
 #     what runs
@@ -50,6 +59,13 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    # Conservative placeholder pending real sibling-project usage data (Section 7 item 6) - revisit once known.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 1G
+    memswap_limit: 1G
 
   redis:
     image: redis:7
@@ -59,22 +75,50 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    # Conservative placeholder pending real sibling-project usage data (Section 7 item 6) - revisit once known.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+    memswap_limit: 256M
 
   web:
     <<: *app
     command: daphne -b 0.0.0.0 -p 8000 config.asgi:application
     ports:
       - "127.0.0.1:${WEB_HOST_PORT:-8000}:8000"
+    # Conservative placeholder pending real sibling-project usage data (Section 7 item 6) - revisit once known.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+    memswap_limit: 512M
 
   celery_worker:
     <<: *app
-    command: celery -A config worker --loglevel=info
+    command: celery -A config worker --loglevel=info --concurrency=2
+    # Conservative placeholder pending real sibling-project usage data (Section 7 item 6) - revisit once known.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 512M
+    memswap_limit: 512M
 
   celery_beat:
     <<: *app
     command: celery -A config beat --loglevel=info --schedule /var/lib/celerybeat/celerybeat-schedule
     volumes:
       - celerybeat_data:/var/lib/celerybeat
+    # Conservative placeholder pending real sibling-project usage data (Section 7 item 6) - revisit once known.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 256M
+    memswap_limit: 256M
 
 volumes:
   postgres_data:
