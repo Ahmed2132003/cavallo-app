@@ -12416,3 +12416,116 @@ P-105 (monitoring go-live) per the P-104 handoff note. It depends on P-104 and, 
 - In the Part status index/table add: `P-104 | Staging Environment Deployment (Shared VPS, Resource Limits Enforced) | Phase 21 | LIMITS BUILT, ENFORCEMENT PROVEN LOCALLY (all 5 containers; CPU throttle + OOM kill verified); VPS deploy BLOCKED (Section 7 items 6 and 9); limits are placeholders; prod compose still unlimited (L-3)`.
 - Set the Phase 21 summary line to: "IN PROGRESS (P-103 built; P-104 limits enforced locally, genuine deploy pending Section 7 items 6 and 9; next P-105)".
 - Leave Section 7 items 6 and 9 marked OPEN.
+
+## Part P-105 — Monitoring & Observability Go-Live (Phase 21)
+
+**Status: COMPLETE / CLOSED**
+
+Phase 21 is fully implemented, verified, uploaded, and closed successfully.
+
+### Delivered
+
+* Backend (`cavallo-app`, develop):
+
+  * `config/sentry.py::init_sentry(dsn, environment)`
+  * Sentry initialised ONLY in `config/settings/staging.py` and `prod.py`.
+  * `core/exceptions.py::custom_exception_handler` captures unhandled exceptions when `DEBUG=False` without changing the response.
+  * Commits: `eb327df` (init + exception capture), `7ec2761` (moderation SLA alert).
+
+* Moderation SLA alert:
+
+  * `moderation/tasks.py::_alert_sla_breach` fires one aggregated Sentry event per priority tier per `check_moderation_sla` run.
+  * Fingerprint: `["moderation-sla-breach", priority]`
+  * Tag: `moderation_sla_priority`
+  * Context: `moderation_sla`
+
+    * `breach_count`
+    * `oldest_age_seconds`
+    * `threshold`
+    * `queue_item_ids` (cap 20)
+  * `fast_path` → level `error`
+  * normal path → level `warning`
+  * Sentry failures are swallowed and logged as `moderation_sla_alert_failed`.
+  * Return value and existing log lines remain unchanged.
+  * Tests: `moderation/tests/test_sla_alerting.py` — 10 tests.
+
+* Flutter (`cavallo-mobile`, develop):
+
+  * `sentry_flutter` pinned to `9.30.1`.
+  * `AppConfig.sentryDsn` / `sentryEnabled` configured for staging/prod with a DSN only.
+  * `reportError(Object, StackTrace)` signature remains unchanged and now forwards to `Sentry.captureException`.
+  * `main.dart` initialises Sentry and installs the P-008 hooks inside `appRunner`.
+  * STEP 10 adds `_DetachSentryIsolateListener`, closing/removing Sentry's `IsolateErrorIntegration` so uncaught async errors reach `PlatformDispatcher.onError` → `reportError` as a typed error exactly once.
+  * Tests: `test/core/error_reporting_sentry_test.dart` — 3 tests.
+
+* Sentry:
+
+  * EU region.
+  * Organization: `cavallo-app`.
+  * Projects: `cavallo-backend` and `cavallo-mobile`.
+  * Backend alert rule configured for `moderation_sla_priority` with Notify Member action and 30-minute throttle.
+  * DSNs are never stored in files or commits.
+  * Backend DSN is provided through server `.env` via `SENTRY_DSN`.
+  * Flutter staging/prod receives the DSN through `--dart-define=SENTRY_DSN=...`.
+
+### Real-event verification
+
+* Backend unhandled exception successfully reached Sentry.
+* Moderation SLA breach generated real Sentry issue `CAVALLO-BACKEND-3` and a real alert email.
+* Repeated SLA runs grouped correctly into the same issue.
+* Flutter framework error generated `CAVALLO-MOBILE-1` exactly once through `reportError`.
+* Flutter async-error path was re-probed after STEP 10 and confirmed to produce a typed `StateError` through `reportError` exactly once.
+* The previous `CAVALLO-MOBILE-2` issue containing a type-less `String` was confirmed to be from before the STEP 10 fix.
+
+### Open Items — CLOSED
+
+1. **Uptime monitor on `/health/`**
+
+   * Public staging URL/domain is now available.
+   * Uptime monitoring for `/health/` has been created and verified.
+   * Dependency failure behavior was tested successfully: `/health/` returns `503` when the required DB/Redis dependency is unavailable.
+   * Item closed.
+
+2. **Flutter async-error re-probe**
+
+   * Re-probe completed after the STEP 10 commit.
+   * Confirmed a single typed `StateError` reaches `reportError`.
+   * `[reportError]` console output confirmed.
+   * No duplicate reporting observed.
+   * Item closed.
+
+### Known Gap
+
+* While a moderation backlog persists, Sentry's state-based triggers may not re-notify repeatedly.
+* Hourly fingerprint bucketing remains the available option if repeated re-alerting is required.
+* This behavior was intentionally left unchanged and is not a blocker for Phase 21 completion.
+
+### Optional Cleanup
+
+* `android/.kotlin/` may be added to `.gitignore` in a future cleanup to prevent tracked Kotlin error logs from creating repository noise.
+* This is optional and does not block Phase 21.
+
+### Final Verification
+
+* Backend suite: **1657 passed / 1 skipped / 1 xfailed**
+* Flutter suite: **1050 passed**
+* `flutter analyze`: **clean**
+* Sentry real-event verification: **PASS**
+* Moderation SLA alerting: **PASS**
+* Flutter framework error reporting: **PASS**
+* Flutter async-error reporting after STEP 10: **PASS**
+* `/health/` uptime monitoring and dependency-failure verification: **PASS**
+* Changes uploaded successfully: **PASS**
+* No DSNs committed or stored in repository files.
+
+### Phase 21 Gate
+
+**P-103: PASS**
+**P-104: PASS**
+**P-105: PASS**
+
+## PHASE 21 — COMPLETE / CLOSED
+
+Monitoring & Observability Go-Live is fully implemented, uploaded, verified, and accepted.
+
+**Phase 22 may now begin.**
