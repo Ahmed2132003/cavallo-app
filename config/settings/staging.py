@@ -7,7 +7,9 @@ the staging environment's .env (or however env vars are injected there).
 """
 
 from .base import *  # noqa: F401,F403
-from .base import env
+from .base import SENTRY_DSN, env
+
+from config.sentry import init_sentry
 
 DEBUG = False
 
@@ -18,7 +20,5 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
 
 CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 
-# SENTRY_DSN is already read and (if non-empty) initialized in base.py.
-# Staging is expected to actually set SENTRY_DSN once real Sentry
-# credentials exist (see P-003's handoff note — full sentry_sdk tuning is
-# P-024's job, not this part's).
+# Part P-105: real Sentry initialization. An empty SENTRY_DSN disables Sentry.
+init_sentry(SENTRY_DSN, environment="staging")

@@ -8,7 +8,9 @@ left for a later, dedicated hardening part rather than guessed at here.
 """
 
 from .base import *  # noqa: F401,F403
-from .base import env
+from .base import SENTRY_DSN, env
+
+from config.sentry import init_sentry
 
 DEBUG = False
 
@@ -20,3 +22,6 @@ CORS_ALLOWED_ORIGINS = env.list("CORS_ALLOWED_ORIGINS", default=[])
 SECURE_SSL_REDIRECT = True
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
+
+# Part P-105: real Sentry initialization. An empty SENTRY_DSN disables Sentry.
+init_sentry(SENTRY_DSN, environment="prod")

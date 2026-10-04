@@ -18,6 +18,7 @@ AuthenticationFailed, NotAuthenticated, Throttled, MethodNotAllowed,
 part should build its own custom error response.
 """
 
+import sentry_sdk
 from django.conf import settings
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.http import Http404
@@ -215,6 +216,14 @@ def custom_exception_handler(exc, context):
             # debugging isn't made harder — let it propagate exactly
             # as DRF's default handler would.
             return None
+
+        # Part P-105: DRF gets a Response back from this handler, so Django's
+        # got_request_exception signal never fires and sentry-sdk's Django
+        # integration would not see this exception. Report it explicitly,
+        # then return the same safe generic response as before (the response
+        # is unchanged). capture_exception is a no-op when Sentry is not
+        # initialized (dev, tests, empty SENTRY_DSN).
+        sentry_sdk.capture_exception(exc)
 
         # DEBUG=False: never let a stack trace leak to the client.
         # Return the same envelope shape as every other error, with a

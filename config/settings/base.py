@@ -386,17 +386,13 @@ LOGGING = {
 
 
 # ---------------------------------------------------------------------------
-# Sentry — no-op unless SENTRY_DSN is set. Already env-gated, so it's safe
-# to leave here rather than duplicating the init call in staging.py/prod.py;
-# dev stays a no-op (SENTRY_DSN is blank in .env.example), staging/prod
-# activate it once a real SENTRY_DSN value is provided (see P-003 handoff —
-# the real sentry_sdk configuration/tuning happens in P-024).
+# Sentry (Part P-105) - this file only READS the values. sentry_sdk.init()
+# is called from staging.py and prod.py (via config.sentry.init_sentry),
+# never here, so dev and the pytest run (config.settings.test inherits dev)
+# can never send events even if .env holds a real SENTRY_DSN. An empty
+# SENTRY_DSN means Sentry is disabled.
 # ---------------------------------------------------------------------------
 SENTRY_DSN = env("SENTRY_DSN", default="")
-if SENTRY_DSN:
-    import sentry_sdk
-
-    sentry_sdk.init(dsn=SENTRY_DSN, traces_sample_rate=0.0)
 
 
 # ---------------------------------------------------------------------------

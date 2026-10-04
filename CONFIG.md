@@ -48,7 +48,7 @@ for token lifetimes — it just reads these.
 
 | Variable | Consumed by | Required to run locally? |
 | --- | --- | --- |
-| `SENTRY_DSN` | Monitoring part (P-024) — `sentry_sdk.init()` is skipped entirely if this is unset | No — dev works fine with it blank; you simply get no error reporting |
+| `SENTRY_DSN` | Backend monitoring (P-105) - `config/sentry.py` calls `sentry_sdk.init()` only from the staging and prod settings; empty = Sentry disabled | No - dev never initializes Sentry, even if the value is set |
 
 Blocked on: a real Sentry project/DSN. See architecture Section 7, item covering
 monitoring.
