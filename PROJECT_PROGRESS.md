@@ -12742,3 +12742,61 @@ P-108 (final completion checklist). It must carry forward as open items: Section
 - Set the Phase 22 summary line to: "IN PROGRESS (P-106 configuration complete, genuine deploy pending Section 7 items 6 and 9; P-107 groundwork complete, submission pending Section 7 item 8 and store blockers A1 to A4; next P-108)".
 - Leave Section 7 items 4, 5, 6, 8 and 9 marked OPEN.
 - In the P-106 section's "Remaining work" item 4, no text change is needed; P-107 is now done as described above.
+
+## PART P-108 - Final Completion-Checklist Verification (Phase 22) - STATUS: AUDIT COMPLETE (2026-10-05); MVP NOT FULLY COMPLETE AGAINST SECTION 12 (see FINAL_COMPLETION_REPORT.md)
+
+This is the LAST part of the 111-part plan. It produced an honest, evidence-based audit; it fixed nothing (by design). Executed in 3 steps, one PowerShell script per step in D:\Cavallo\_scripts (p108_step1.ps1, p108_step1b_patch.ps1, p108_step2.ps1, p108_step3.ps1), run from D:\Cavallo\scd-backend on branch develop.
+
+### Overall finding
+Feature-built and well tested where a developer machine can reach, but NOT MVP-complete against Section 12 and NOT launch-ready. Report tally: 12 boxes checked, 10 open. Full detail with cited evidence for every item: FINAL_COMPLETION_REPORT.md (repo root).
+
+### What was implemented
+- Part A/B (STEP 1): static evidence checks over both repos for every Product-scope and Architecture-fidelity item (ADR-001..006, moderation gate, comments, counters, cursor pagination, payment data, IAP, Celery, tokens, IDOR, webhook, K8S).
+- Part C/D (STEP 2): operational readiness (health, moderation alert, Sentry, resource limits, backup ordering) and the final status of the nine Section 7 items.
+- Part E/F (STEP 3): sign-off scan of this Progress file, live re-run of the P-094 integration tests (PASS: 24 passed in 73.23s (0:01:13)), overall finding, remaining work.
+
+### Files created
+- cavallo-app: FINAL_COMPLETION_REPORT.md (committed). Also generated, NOT meant for commit: p108_step1_evidence.txt, p108_step2_evidence.txt, p108_step3_evidence.txt, p108_idempotency_check.py, FINAL_COMPLETION_REPORT.md.step1.bak / .step2.bak / .step3.bak.
+- Outside the repos: D:\Cavallo\_scripts\p108_step1.ps1, p108_step1b_patch.ps1, p108_step2.ps1, p108_step3.ps1 and their backups.
+
+### Files modified
+- cavallo-app/PROJECT_PROGRESS.md (this section appended; no existing byte changed). cavallo-mobile: no changes.
+
+### Important implementation details
+- Scripts read secrets never: .env is parsed only to report set/empty/absent. Report boxes are ticked only with code evidence plus a real check or an owner attestation.
+- Backend tests must run inside docker (host Python has no pytest): docker compose exec web python -m pytest -q. Result today: 1682 passed, 1 skipped, 1 xfailed. flutter analyze: no issues; flutter test: exit 0.
+- Owner attestations recorded (2026-10-05): Sentry backend and mobile show real events; the moderation alert issue and e-mail were real; Business Console shows no Subscribe/Upgrade/Pay control.
+- Method lesson: an owner switch or parameter must never be run with a placeholder value; the script cannot tell. Twice a placeholder staging URL was passed and had to be re-run.
+
+### Open findings (all OPEN GAP by default; owner gave no other decision)
+- F-108-1 No block-user feature (presentation slide 10; P-107 A2).
+- F-108-2 No account deletion; also no Terms/Privacy links or privacy-policy URL (P-107 A1, A3, A4).
+- F-108-3a Story view_count is a live COUNT (stories/views.py), spec-mandated by P-049 but never an approved exception to Section 5.4.
+- F-108-3b Chat unread_count is a live COUNT per conversation (chat/serializers.py).
+- F-108-4 Contradiction: P-105 reports a public staging URL and verified uptime monitor; P-104/P-106/P-107 report no VPS or domain. What the monitored URL is remains unanswered.
+- F-108-5 Naming only: manager is published_objects, not .objects.published(); same gating, not a violation.
+- Sign-off: Phase 17 (D-1, D-2, G-1), Phase 20 (check 4b), P-096 S-1..S-3, P-097 F-1 never formally closed; no consolidated deviations register exists; Phase 21 recorded COMPLETE although its genuine deploy is pending.
+- Celery idempotency box left open: the manual re-run archived 0 rows (proved a stable no-op only).
+
+### Section 7 final status
+1 PARTIAL (API contract done, dashboard stack undecided; Featured activated manually by an Admin). 2 UNRESOLVED (no production object storage). 3 UNRESOLVED (no Paymob credentials; webhook proven only with synthetic signatures). 4 UNRESOLVED (no Firebase project; no real push). 5 UNRESOLVED (placeholder icons/brand). 6 UNRESOLVED (VPS and sibling inventory; limits are placeholders). 7 RESOLVED (admin UI in Flutter). 8 UNRESOLVED (no store accounts; com.example application id). 9 UNRESOLVED (no domain/TLS).
+
+### Commands
+- Re-run the audit: powershell -ExecutionPolicy Bypass -File D:\Cavallo\_scripts\p108_step1.ps1 -DockerPytestSummary "<pytest summary line>" -MobilePassed, then p108_step2.ps1 (owner switches only for things actually checked today), then p108_step3.ps1 -RunIntegration -IapManualConfirmed.
+- Backend suite: docker compose exec web python -m pytest -q -p no:cacheprovider (about 17 minutes).
+
+### Remaining work (exact order)
+1. New part: block user (backend + Flutter). 2. New part: account deletion + public deletion URL + Terms/Privacy links + privacy policy. 3. Owner decision on F-108-3a/3b. 4. Close or formally accept Phase 17 D-1/D-2/G-1, Phase 20 check 4b, P-096 S-1..S-3, P-097 F-1; run the full flutter test on main; CI cleanup (K-1). 5. Owner supplies Section 7 items 2, 3, 4, 5, 6, 8, 9 (and decides item 1). 6. First genuine deployment with the P-106 M-3 checks, the real backup upload and the resource-limit proof on the VPS. 7. Answer F-108-4.
+
+### GitHub references
+- cavallo-app develop: the commit that records FINAL_COMPLETION_REPORT.md and this section is the next commit on develop after 931a569. cavallo-mobile: unchanged at 98c8ef4.
+
+### Phase 22 status
+P-108 audit COMPLETE. Plan complete as written (111 parts); the project is NOT launch-ready. Phase 22 summary line: "COMPLETE as a plan (P-106 config + dry-run, P-107 groundwork, P-108 audit); launch blocked by the open findings and Section 7 inputs listed above".
+
+### Exact next starting point
+There is no next part in this plan. Start a new plan from the Remaining work list above, beginning with the block-user part.
+
+### Edits to existing sections
+- In the Part status index/table add: P-108 | Final Completion-Checklist Verification | Phase 22 | AUDIT COMPLETE, MVP NOT FULLY COMPLETE (see FINAL_COMPLETION_REPORT.md).
+- Leave Section 7 items 1-6, 8, 9 marked OPEN; item 7 RESOLVED.
