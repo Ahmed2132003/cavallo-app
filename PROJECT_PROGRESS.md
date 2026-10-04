@@ -12325,9 +12325,9 @@ In the Part status index add: `P-102 | Flutter Offline/Resilience Audit | Phase 
 4. Merge `develop` to `main` in both repos after CI is green.
 
 ### GitHub references
-- `cavallo-app` branch `develop` @ `22a258a` (not merged to `main`; `main` baseline `01de50f`).
+- `cavallo-app` branch `develop`: P-103 code @ `22a258a`; this Progress section @ `4aa1bc1` (documentation only). Not merged to `main`; `main` baseline `01de50f`.
 - `cavallo-mobile` branch `develop` @ `b157836` (not merged to `main`).
-- This Progress section: commit on `main` of the backend repo (fill in the SHA after commit).
+- This Progress section: commit `4aa1bc1` on `develop` (reaches `main` when `develop` is merged, see K-3).
 
 ### Phase 21 status
 IN PROGRESS. P-103 built and statically validated; genuine deploy execution PENDING Section 7 items 6 and 9 (and a green CI, K-1).
