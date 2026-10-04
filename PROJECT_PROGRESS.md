@@ -12255,3 +12255,88 @@ Re-run and verify 4b, then update this section. After P-101 is recorded COMPLETE
 
 ### Edits to existing sections
 In the Part status index add: `P-102 | Flutter Offline/Resilience Audit | Phase 20 | PARTIAL (5 of 6 recorded; 4b chat video UNVERIFIED; OFFLINE_RESILIENCE_AUDIT_PHASE20.md)`. Keep the Phase 20 summary line as IN PROGRESS.
+
+
+## PART P-103 - CI/CD Pipeline Completion (Staging Auto-Deploy + Production Manual Approval) (Phase 21) - STATUS: PIPELINE BUILT AND STATICALLY VALIDATED (2026-10-04); NOT LIVE-PROVEN (no VPS/domain); CI on main is RED from pre-existing lint debt
+
+### What was implemented
+- Backend (`cavallo-app`): two deploy jobs added to `.github/workflows/backend-ci.yml`. `lint-and-test` is unchanged.
+  - `deploy-staging`: runs only on a push to `develop`, only after `lint-and-test` succeeds, targets GitHub Environment `staging`.
+  - `deploy-production`: runs only on a push to `main`, only after `lint-and-test` succeeds, targets GitHub Environment `production`, which has a required-reviewers rule (the manual approval gate, Architecture Section 23).
+  - Both jobs: `concurrency` group per environment with `cancel-in-progress: false`, `permissions: contents: read`, a first step that fails with a clear `::error::` if any deploy secret is empty, then SSH (key + pinned known_hosts, `StrictHostKeyChecking=yes`) into the VPS, `git checkout --detach <sha>`, `scripts/deploy/deploy.sh <env> <sha>`, and a final `if: always()` step that removes the key.
+- `scripts/deploy/deploy.sh` (runs on the VPS) order is fixed and is a safety requirement: 1 checkout exact SHA, 2 `docker compose build`, 3 `up -d --wait db redis`, 4 PRE-MIGRATION BACKUP, 5 `migrate --noinput`, 6 `up -d --remove-orphans`. It uses `flock` (one deploy per environment), validates the SHA format, and refuses to migrate if the backup step did not print `BACKUP_OBJECT_KEY=`. An ERR trap prints the last backup key.
+- `scripts/deploy/backup_db.sh`: `pg_dump --format=custom` inside the `db` container to `backups/` (timestamped `<env>-<UTC timestamp>.dump`), integrity check with `pg_restore --list`, upload to object storage, local copies older than 7 days deleted. `scripts/deploy/upload_backup.py` uploads with boto3 using the P-013 `OBJECT_STORAGE_*` variables, forces the key prefix `backups/`, and succeeds only if the remote object size equals the local size.
+- `docker-compose.staging.yml` and `docker-compose.prod.yml` created as BASELINES (daphne for HTTP + WebSocket, no source bind mount, no MinIO, `config.settings.staging` / `config.settings.prod`, db/redis publish no ports, web only on `127.0.0.1:${WEB_HOST_PORT:-8000}`). Headers state that P-104 (staging resource limits / VPS wiring) and P-106 (Nginx/TLS, hardening) must extend these files, not create new ones.
+- `.gitattributes` forces `*.sh` to LF (scripts run on Linux).
+- Mobile (`cavallo-mobile`): job `build-android-artifact` added to `.github/workflows/flutter-ci.yml` (`analyze-and-test` unchanged). Runs on push to `develop` or `main` after tests pass, builds `flutter build apk --release` with `--dart-define=ENVIRONMENT` and `--dart-define=API_BASE_URL`, uploads the APK as an artifact (14 days). It is skipped with a warning annotation while the repository variables `STAGING_API_BASE_URL` / `PRODUCTION_API_BASE_URL` do not exist. The APK is signed with the debug key: internal testing only. Store distribution is NOT automated (depends on Phase 22 / P-107).
+- GitHub Environments configured via script `p103_env_setup.ps1` (idempotent): `production` = required reviewer `Ahmed2132003`, deployment branch `main` only, `can_admins_bypass: false`; `staging` = deployment branch `develop` only, no reviewers.
+
+### Files created
+- `cavallo-app`: `scripts/deploy/deploy.sh` (mode 100755), `scripts/deploy/backup_db.sh` (100755), `scripts/deploy/upload_backup.py`, `docker-compose.staging.yml`, `docker-compose.prod.yml`, `.gitattributes`.
+- Outside the repos (not committed): `D:\Cavallo\_scripts\p103_step1.ps1`, `p103_step2.ps1`, `p103_step3.ps1`, `p103_env_setup.ps1`, backups in `D:\Cavallo\_scripts\backups\`.
+- Full file contents are in `P103_FINAL_HANDOFF.md` section 3.
+
+### Files modified
+- `cavallo-app/.github/workflows/backend-ci.yml` (added `deploy-staging`, `deploy-production`).
+- `cavallo-mobile/.github/workflows/flutter-ci.yml` (added `build-android-artifact`).
+- `PROJECT_PROGRESS.md` (this section).
+- Line endings: the `.yml` files are CRLF in the repos (like the originals); `.sh` files are LF.
+
+### Important implementation details
+- Secrets are Environment secrets. Staging: `STAGING_HOST`, `STAGING_USER`, `STAGING_APP_DIR`, `STAGING_SSH_KEY`, `STAGING_SSH_KNOWN_HOSTS`, optional `STAGING_SSH_PORT` (default 22). Production: the same six with the `PRODUCTION_` prefix. Filling in VALUES is the only remaining pipeline step; no logic change is expected. Get `*_SSH_KNOWN_HOSTS` with `ssh-keyscan -p <port> <host>` from a trusted network and compare the fingerprint with the server's.
+- The workflow does the checkout over SSH BEFORE running `deploy.sh`, so bash never reads a script that git is replacing underneath it. `deploy.sh` checks out the same SHA again (harmless).
+- `backup_db.sh` expands `POSTGRES_USER` / `POSTGRES_DB` inside the db container, so it never reads or sources `.env`.
+- A first version of `backend-ci.yml` contained a corrupted em-dash (BOM-less .ps1 wrote the wrong encoding). It was repaired in STEP 3; `git diff -U0` now shows one hunk (line 74 onward).
+- The production approval gate lives in GitHub Environment settings, not in the YAML. The YAML only names the environment. Verified through the GitHub API, not through a live waiting run.
+
+### Architecture decisions
+- Deploy by SSH + docker compose on the VPS (the "SSH into the staging VPS" option of the part spec), not registry push + webhook.
+- Compose files created here under the exact names P-104 / P-106 need, as baselines to extend. No duplicate files should be created later.
+- The backup is a hard precondition of migrate: the deploy aborts if the backup, its integrity check, its upload, or the size check fails.
+- The production approval gate must never be removed or bypassed without an explicit owner decision (Section 23). `can_admins_bypass` stays false.
+
+### Commands
+- Validate workflows (PowerShell, repo root): `docker run --rm -v "${PWD}:/repo" -w /repo rhysd/actionlint:1.7.7 -color .github/workflows/backend-ci.yml` and `docker run --rm -v "D:\Cavallo\social_commerce_app:/repo" -w /repo rhysd/actionlint:1.7.7 -color .github/workflows/flutter-ci.yml`.
+- Validate compose (from `D:\Cavallo\scd-backend`): `docker compose -f docker-compose.staging.yml config -q` and `docker compose -f docker-compose.prod.yml config -q`. Do not print the full config (it inlines `.env` values).
+- Scripts: `docker compose run --rm --no-deps web sh -c "pip install -q flake8 black && flake8 scripts/deploy && black --check scripts/deploy"`; `docker run --rm -v "${PWD}:/w" -w /w bash:5 sh -c "bash -n scripts/deploy/backup_db.sh && bash -n scripts/deploy/deploy.sh && echo BASH_OK"`.
+- Approval gate check: `$e = gh api repos/Ahmed2132003/cavallo-app/environments/production | ConvertFrom-Json` then `$e.protection_rules | Where-Object { $_.type -eq 'required_reviewers' } | ForEach-Object { $_.reviewers.reviewer.login }` and `$e.can_admins_bypass`.
+- Re-run environment setup (idempotent): `& D:\Cavallo\_scripts\p103_env_setup.ps1`.
+
+### Tests and verification results
+- PASS: 4 scripts written with 0 CR bytes; flake8 + black on `scripts/deploy`; `bash -n` on both shell scripts (`BASH_OK`); `upload_backup.py x wrong/key` rejected (exit 1); actionlint on `backend-ci.yml` (exit 0) and `flutter-ci.yml` (exit 0); `docker compose config -q` for staging and prod (exit 0); prod compose services `db, redis, web, celery_worker, celery_beat`, `config.settings.prod`, `127.0.0.1:8000->8000`; Git modes `100755` / `100755` / `100644`; Environments via API (see above).
+- Backup ordering verified by structural review: in `deploy.sh`, step 4/6 (backup) precedes step 5/6 (migrate), and migrate is unreachable if the backup fails (`set -Eeuo pipefail`, plus the explicit empty-key check).
+- Live run on `cavallo-mobile` `develop` @ `b157836`: PASS. `analyze-and-test` success; APK job success with the "Skipping the staging APK build" warning (variables not set yet).
+- Live run on `cavallo-app` `develop` @ `22a258a`: `lint-and-test` FAILED, `deploy-staging` and `deploy-production` SKIPPED. This proves only that deploy is gated by `needs: lint-and-test`.
+- NOT tested: `deploy.sh` / `backup_db.sh` on a real host; `upload_backup.py` against a real bucket (only the guard paths); SSH steps with real secrets; the "missing secrets" failure message in a real run; the production `waiting` state in a real run; any push to `main`.
+
+### Known issues
+- K-1 (blocking for any live deploy): CI on `main` is RED, and was red BEFORE P-103 (re-run on `main` @ `01de50f`): flake8 322 violations in 74 files (187 in the one-off `p101_*.py` scripts committed in the repo root; 135 in 67 app/test files: E501, E402, W292, F811, F405), black `--check` 84 files need reformatting (7 are `p101_*`). `scripts/deploy` itself is clean. Decision: do NOT use `continue-on-error` or disable flake8 (that would break the P-002 guarantee P-103 relies on). Fix in a separate CI-cleanup part: (1) untrack the `p101_*` scripts and evidence files, (2) run `black .` then the full pytest, (3) fix the rest by hand.
+- K-2: Flutter full `flutter test` has an open item F-1 (see P-097); if `analyze-and-test` fails, the APK job is skipped.
+- K-3: Neither repo's `develop` is merged to `main`. Until it is, `main` has no deploy jobs. The first merge to `main` should wait until CI is green so the first production run (`waiting` state) can be observed deliberately.
+- K-4: The compose files are baselines. Missing until P-104 / P-106: per-container resource limits, Nginx/TLS, worker tuning, a verified `.env` key list on a real VPS.
+- K-5 (minor, not changed): `backup_db.sh` writes local dumps to `$PWD/backups` on the VPS checkout. Add `backups/` to `.gitignore` (or set `BACKUP_DIR` outside the checkout) when the VPS is set up.
+- K-6: Section 7 item 9 (domain) is still OPEN. Section 7 item 6 (VPS specifics) was not confirmed in this part. Both are required for any real deploy.
+- K-7: Phase 20 gate is NOT met (P-102 is PARTIAL, check 4b unverified) and Phase 21 work started anyway at the owner's instruction. Phase 20 stays IN PROGRESS.
+
+### Remaining work
+1. Separate CI-cleanup part (see K-1) so `lint-and-test` is green on `develop` and `main`.
+2. Provide VPS and domain details (Section 7 items 6 and 9). Then: prepare the VPS (Docker + compose plugin, `flock`, repo clone at `*_APP_DIR`, real `.env`, deploy user), add the Environment secrets for staging and production, add the repository variables `STAGING_API_BASE_URL` and `PRODUCTION_API_BASE_URL`.
+3. Push to `develop`: confirm `[deploy] 4/6 pre-migration backup` appears BEFORE `[deploy] 5/6 running migrations`, and that `backups/staging/staging-<timestamp>.dump` exists in the bucket. Merge to `main`: confirm `Deploy to production` stays in `waiting` until approved.
+4. Merge `develop` to `main` in both repos after CI is green.
+
+### GitHub references
+- `cavallo-app` branch `develop` @ `22a258a` (not merged to `main`; `main` baseline `01de50f`).
+- `cavallo-mobile` branch `develop` @ `b157836` (not merged to `main`).
+- This Progress section: commit on `main` of the backend repo (fill in the SHA after commit).
+
+### Phase 21 status
+IN PROGRESS. P-103 built and statically validated; genuine deploy execution PENDING Section 7 items 6 and 9 (and a green CI, K-1).
+
+### Exact next starting point
+Owner decision between: (a) open a separate CI-cleanup part (recommended), then P-104 (staging deployment) once the VPS details exist; or (b) clean CI first. P-104 is the first part with a real target for this pipeline: it extends `docker-compose.staging.yml` (do not create a second file) and fills the staging secrets. Also re-run and record check 4b of P-102 to close Phase 20.
+
+### Edits to existing sections
+- In the Part status index/table add: `P-103 | CI/CD Pipeline Completion (Staging Auto-Deploy + Production Manual Approval) | Phase 21 | BUILT AND STATICALLY VALIDATED (actionlint + compose config + approval gate verified via GitHub API; no live deploy: VPS/domain pending; CI red from pre-existing lint debt, see K-1)`.
+- Set the Phase 21 summary line to: "IN PROGRESS (P-103 built; genuine deploy pending Section 7 items 6 and 9; next P-104)". Keep Phase 20 as IN PROGRESS.
+- In the P-002 section, the line saying neither workflow has a deploy step stays true for `main`; add: "Superseded on `develop` by P-103 (deploy jobs added; `lint-and-test` unchanged)."
+- Leave Section 7 items 6 and 9 marked OPEN.
