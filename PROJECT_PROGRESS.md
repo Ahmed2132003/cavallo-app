@@ -12194,3 +12194,64 @@ In the Part status index/table add: `P-101 | Query/Index Audit + Cache-Hit-Rate 
 - Re-measure result: Post, Reel and BusinessProfile new indexes are chosen by the planner (Post 0.569 -> 0.052 ms, Reel 0.432 -> 0.067 ms, business search 0.048 -> 0.020 ms). The new Story index `story_biz_status_created_idx` was NOT usable for the one-business public list query (that query filters on expires_at, not ordered by it), so it currently serves no audited query; kept because Section 9 names it, review it together with F-2.
 - Cache check: Feed first page returned `identical=False` between the 5 responses while Business Profile and Categories were identical. Cache hit itself is proven (1 compute, 0 queries on repeats, TTL 90 to 86), so this is informational only; likely per-request data in the feed response, not investigated.
 - Step 3 evidence: `p101_step3.ps1` first run stopped at a script bug (wrong migration path in the "AddIndex only" check, no migration applied); the fixed script was re-run and passed 27/27 checks, targeted pytest `content stories businesses feed search moderation`: 507 passed. Full backend suite not re-run.
+
+## PART P-102 - Flutter Offline/Resilience Audit - STATUS: PARTIAL (5 of 6 checks recorded; chat-video check 4b UNVERIFIED; no code changed in either repo)
+
+### What was implemented
+An audit of the Architecture Section 27 failure scenarios on an Android emulator with real network cuts (airplane mode). No feature was built and no code was changed. The deliverable is `OFFLINE_RESILIENCE_AUDIT_PHASE20.md` in the backend repo root.
+
+### Results
+- Scenario 1 (Story upload recovers after connection loss, P-051): PASS, operator-reported only (no log, no story count).
+- Scenario 2 (silent token refresh, P-022): PASS for one cycle, proven by backend log on 2026-10-04 at 00:19:10 UTC (feed/home 401, auth/refresh 200, feed/home 200). Second cycle (rotation) and single refresh under parallel requests: NOT evidenced.
+- Scenario 3a (rapid Follow taps, P-052): PASS, DB shows exactly one Follow row (id 1523, test-cust to business 6). UI behavior operator-reported.
+- Scenario 3b (rapid Report submit, P-057): PASS, DB shows exactly one Report row (id 11, post:2). UI behavior operator-reported.
+- Scenario 4a (Story failed state, manual Retry and Discard, P-051): PASS, operator-reported only.
+- Scenario 4b (chat video failed state, manual Retry and Discard, P-075/P-076): UNVERIFIED. The operator reported success, but DB snapshots at 00:21:50 and 00:33:31 UTC show no new chat message (newest is id 13, dated 2026-09-30).
+
+### Files created
+- Backend repo root: `OFFLINE_RESILIENCE_AUDIT_PHASE20.md`.
+- Outside the repos (not committed): `D:\Cavallo\_scripts\` p102_step1.ps1, p102_step1_evidence.txt, p102_step2_ttl.ps1, p102_step2_db.ps1, p102_step2_db_v2.ps1, p102_step3_db.ps1, p102_refresh_log.txt.
+
+### Files modified
+- `PROJECT_PROGRESS.md` (this section). Backend `.env` was changed temporarily (JWT_ACCESS_TTL_MINUTES) and restored; its hash matches the original backup, which was then deleted. `cavallo-mobile`: no changes.
+
+### Important implementation details
+- The implemented retry cap is 5 attempts (Story queue and chat queue), with delays 2s/4s/8s/16s. The master plan row says 3. The audit tested the implemented 5 and did not change it.
+- Token expiry was forced by setting `JWT_ACCESS_TTL_MINUTES=1` in the backend `.env` (script `p102_step2_ttl.ps1 -Mode Lower`, then `-Mode Restore`), recreating only the `web` container.
+- Rapid-tap tests used `docker compose pause web` / `unpause web` to hold the request in flight. The FollowButton `_busy` guard and the Report dialog `_submitting` guard make later taps no-ops while a request is pending; taps after the response are real toggles.
+- Test data left in the development database: Follow id 1523, Report id 11. The password of `test-cust@example.com` was set to a known test value (development only).
+
+### Architecture decisions
+None. Section 27 requirements were re-verified, not changed.
+
+### Commands
+Run from PowerShell on Windows, from `D:\Cavallo\scd-backend`, in the existing session (opening many new `powershell.exe` processes once failed with error 800705af, paging file too small): `& D:\Cavallo\_scripts\p102_step2_ttl.ps1 -Mode Lower -Minutes 1` / `-Mode Restore`, `& D:\Cavallo\_scripts\p102_step2_db_v2.ps1 -Email <email> -BusinessId <id>`, `& D:\Cavallo\_scripts\p102_step3_db.ps1`. Commit: `git add OFFLINE_RESILIENCE_AUDIT_PHASE20.md PROJECT_PROGRESS.md` then commit and push. Never `git add .` here.
+
+### Tests and verification results
+Preflight: all checks PASS except `adb` not on PATH (adb commands were not used). Tests 1 to 12 and cleanup are listed in the report. Cleanup: `.env` hash equals the backup, mobile repo clean at `87cbcbb`.
+
+### Known issues
+- 4b unverified (see Results).
+- Evidence for Scenarios 1 and 4a and for the UI behavior of 3a/3b is operator-reported only.
+- `p102_step2_db.ps1` failed with "unknown shorthand flag: 'T' in -T" when run as a file; the cause was not diagnosed. `p102_step2_db_v2.ps1` (copies a Python file into the container) replaced it and works.
+- The Follow id jumped from 2 to 1523; not explained (the development database is shared with P-101 test data, unverified).
+- The Flutter `CONFIG.md` lists the emulator URL with port 8090 while the code uses 8095. Stale documentation, not fixed.
+- The development database and backend are shared between P-101 and P-102; pausing `web` affects both.
+
+### Remaining work
+1. Re-run 4b (send a video in a chat thread as test-cust with the network cut, wait for "Failed to send - Tap to retry", restore the network, tap the bubble) and confirm exactly one new video message row from test-cust in the DB; then update the 4b row and this section's status.
+2. Optional: capture a second token-refresh cycle and the single-refresh-under-parallel-requests case with logs.
+3. Phase 20 closes only when P-101 and 4b are both recorded.
+
+### GitHub references
+- `cavallo-app` `main`: commit of this section and the report (fill in after commit; baseline before it: `fdee107`).
+- `cavallo-mobile` `main`: `87cbcbb`, unchanged.
+
+### Phase 20 status
+IN PROGRESS. P-102 PARTIAL. Gate for Phase 21 NOT met (P-101 pending, 4b unverified). Phase 21 depends on Section 7 items 6 (VPS specifics) and 9 (domain). Item 9 is still OPEN per the P-100 record; the state of item 6 was not checked in this part and must be confirmed before Phase 21 starts.
+
+### Exact next starting point
+Re-run and verify 4b, then update this section. After P-101 is recorded COMPLETE and 4b is verified, set Phase 20 to COMPLETE, confirm Section 7 items 6 and 9, and start the first part of Phase 21 (Staging/Release Preparation).
+
+### Edits to existing sections
+In the Part status index add: `P-102 | Flutter Offline/Resilience Audit | Phase 20 | PARTIAL (5 of 6 recorded; 4b chat video UNVERIFIED; OFFLINE_RESILIENCE_AUDIT_PHASE20.md)`. Keep the Phase 20 summary line as IN PROGRESS.
