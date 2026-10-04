@@ -12403,7 +12403,7 @@ Owner decision between: (a) open a separate CI-cleanup part (recommended), then 
 5. Separate CI-cleanup part (K-1) before the first merge to `main`; also re-run and record check 4b of P-102 to close Phase 20.
 
 ### GitHub references
-- `cavallo-app` branch `develop`: P-104 commit `1e296e3`. Baseline before P-104: `5a3e647` (develop head when the part started).
+- `cavallo-app` branch `develop`: P-104 code + notes + this Progress section: `1e296e3`; SHA-recording commit (documentation only): `bc5f09e`. Baseline before P-104: `5a3e647` (develop head when the part started).
 - `cavallo-mobile`: no changes.
 
 ### Phase 21 status
