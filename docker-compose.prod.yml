@@ -1,0 +1,81 @@
+# Part P-103: production Docker Compose stack, used by scripts/deploy/deploy.sh.
+#
+# BASELINE ONLY. P-103 needs a compose file with this exact name so the deploy
+# pipeline has something real to build and restart. P-106 (production deployment configuration) adds Nginx/TLS in front of web, worker tuning and the rest of the production hardening.
+# Extend this file in that part; do not create a second one.
+#
+# Differences from the dev docker-compose.yml, on purpose:
+#   - no source bind mount: the image built from the checked-out commit is
+#     what runs
+#   - no MinIO / createbuckets: media and backups use the real object storage
+#     (OBJECT_STORAGE_* in the VPS .env)
+#   - DJANGO_SETTINGS_MODULE=config.settings.prod
+#   - web runs daphne (HTTP + WebSocket chat, see requirements.txt), not
+#     runserver
+#   - db and redis publish no ports; web publishes only on 127.0.0.1 so a
+#     reverse proxy on the VPS can reach it and nothing else can
+#
+# Required in the .env that lives next to this file on the VPS (never in git):
+#   POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, SECRET_KEY, ALLOWED_HOSTS,
+#   CORS_ALLOWED_ORIGINS, DATABASE_URL (host "db"), REDIS_URL (host "redis"),
+#   OBJECT_STORAGE_* (including OBJECT_STORAGE_ENDPOINT_URL if not AWS S3).
+# Optional: WEB_HOST_PORT (default 8000) to avoid clashing with the other
+# projects on the shared VPS.
+
+x-app: &app
+  build: .
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    DJANGO_SETTINGS_MODULE: config.settings.prod
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    <<: *app
+    command: daphne -b 0.0.0.0 -p 8000 config.asgi:application
+    ports:
+      - "127.0.0.1:${WEB_HOST_PORT:-8000}:8000"
+
+  celery_worker:
+    <<: *app
+    command: celery -A config worker --loglevel=info
+
+  celery_beat:
+    <<: *app
+    command: celery -A config beat --loglevel=info --schedule /var/lib/celerybeat/celerybeat-schedule
+    volumes:
+      - celerybeat_data:/var/lib/celerybeat
+
+volumes:
+  postgres_data:
+  celerybeat_data:

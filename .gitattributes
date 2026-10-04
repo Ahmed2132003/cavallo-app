@@ -1,0 +1,2 @@
+# P-103: shell scripts must stay LF - they run on a Linux VPS
+*.sh text eol=lf

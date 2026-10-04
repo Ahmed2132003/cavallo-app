@@ -72,3 +72,153 @@ jobs:
 
       - name: pytest
         run: pytest
+
+# ---------------------------------------------------------------------------
+# Part P-103: deployment. Both jobs run only on a push (never on a pull
+# request), only after lint-and-test succeeded, and only from the branch that
+# maps to the environment:  develop -> staging,  main -> production.
+#
+# The deploy job targets a GitHub Environment. For "production" that
+# Environment MUST have a required-reviewers protection rule (Settings ->
+# Environments -> production). That rule is the manual approval gate required
+# by architecture Section 23. The workflow file alone cannot enforce it.
+# ---------------------------------------------------------------------------
+
+  deploy-staging:
+    name: Deploy to staging (automatic)
+    needs: lint-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+    # Never two deploys of the same environment at once, and never cancel a
+    # deploy that is already running (a half-finished migrate is worse than
+    # waiting).
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    env:
+      DEPLOY_ENV: staging
+      DEPLOY_SHA: ${{ github.sha }}
+      DEPLOY_HOST: ${{ secrets.STAGING_HOST }}
+      DEPLOY_USER: ${{ secrets.STAGING_USER }}
+      DEPLOY_PORT: ${{ secrets.STAGING_SSH_PORT || '22' }}
+      DEPLOY_APP_DIR: ${{ secrets.STAGING_APP_DIR }}
+      DEPLOY_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.STAGING_SSH_KNOWN_HOSTS }}
+
+    steps:
+      # Until the real VPS/domain details exist (architecture Section 7 items
+      # 6 and 9) these secrets are empty. Fail early with a clear message
+      # instead of a confusing ssh error.
+      - name: Verify staging deploy secrets are configured
+        run: |
+          missing=0
+          check() {
+            if [ -z "$2" ]; then
+              echo "::error::Missing staging deploy secret: $1"
+              missing=1
+            fi
+          }
+          check STAGING_HOST "$DEPLOY_HOST"
+          check STAGING_USER "$DEPLOY_USER"
+          check STAGING_APP_DIR "$DEPLOY_APP_DIR"
+          check STAGING_SSH_KEY "$DEPLOY_SSH_KEY"
+          check STAGING_SSH_KNOWN_HOSTS "$DEPLOY_KNOWN_HOSTS"
+          exit "$missing"
+
+      - name: Configure SSH
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      # deploy.sh then runs: build -> db/redis up -> PRE-MIGRATION BACKUP
+      # (pg_dump to object storage, backups/ prefix) -> migrate -> restart.
+      # The checkout happens here, before deploy.sh starts, so bash never
+      # reads a script file that git is replacing underneath it.
+      - name: Deploy to staging (backup, then migrate, then restart)
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -p "$DEPLOY_PORT" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd '$DEPLOY_APP_DIR' && git fetch --prune origin && git checkout --detach '$DEPLOY_SHA' && ./scripts/deploy/deploy.sh '$DEPLOY_ENV' '$DEPLOY_SHA'"
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key ~/.ssh/known_hosts
+
+  deploy-production:
+    name: Deploy to production (manual approval)
+    # Pauses here until a required reviewer approves the "production" Environment.
+    needs: lint-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    # Never two deploys of the same environment at once, and never cancel a
+    # deploy that is already running (a half-finished migrate is worse than
+    # waiting).
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      DEPLOY_ENV: production
+      DEPLOY_SHA: ${{ github.sha }}
+      DEPLOY_HOST: ${{ secrets.PRODUCTION_HOST }}
+      DEPLOY_USER: ${{ secrets.PRODUCTION_USER }}
+      DEPLOY_PORT: ${{ secrets.PRODUCTION_SSH_PORT || '22' }}
+      DEPLOY_APP_DIR: ${{ secrets.PRODUCTION_APP_DIR }}
+      DEPLOY_SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+
+    steps:
+      # Until the real VPS/domain details exist (architecture Section 7 items
+      # 6 and 9) these secrets are empty. Fail early with a clear message
+      # instead of a confusing ssh error.
+      - name: Verify production deploy secrets are configured
+        run: |
+          missing=0
+          check() {
+            if [ -z "$2" ]; then
+              echo "::error::Missing production deploy secret: $1"
+              missing=1
+            fi
+          }
+          check PRODUCTION_HOST "$DEPLOY_HOST"
+          check PRODUCTION_USER "$DEPLOY_USER"
+          check PRODUCTION_APP_DIR "$DEPLOY_APP_DIR"
+          check PRODUCTION_SSH_KEY "$DEPLOY_SSH_KEY"
+          check PRODUCTION_SSH_KNOWN_HOSTS "$DEPLOY_KNOWN_HOSTS"
+          exit "$missing"
+
+      - name: Configure SSH
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      # deploy.sh then runs: build -> db/redis up -> PRE-MIGRATION BACKUP
+      # (pg_dump to object storage, backups/ prefix) -> migrate -> restart.
+      # The checkout happens here, before deploy.sh starts, so bash never
+      # reads a script file that git is replacing underneath it.
+      - name: Deploy to production (backup, then migrate, then restart)
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -p "$DEPLOY_PORT" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "cd '$DEPLOY_APP_DIR' && git fetch --prune origin && git checkout --detach '$DEPLOY_SHA' && ./scripts/deploy/deploy.sh '$DEPLOY_ENV' '$DEPLOY_SHA'"
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key ~/.ssh/known_hosts
