@@ -12594,7 +12594,7 @@ Monitoring & Observability Go-Live is fully implemented, uploaded, verified, and
 - Evidence files: `D:\Cavallo\_scripts\p106_step1_evidence.txt`, `p106_step2_evidence.txt`, `p106_step3_evidence.txt` (JWT tokens are redacted).
 
 ### Known issues
-- M-1 (UNVERIFIED, check before closing Phase 22): the part Objective asks for the pre-migration automatic backup step (P-103) to be wired into the PRODUCTION deploy path, not only staging. P-106 did not inspect or change `scripts/deploy/deploy.sh` or the production workflow. Confirm that the production path runs the backup step before `migrate`; if not, add it in a small follow-up.
+- M-1 (RESOLVED by static review, 2026-10-04; not executed against a real VPS): the pre-migration backup (P-103) IS wired into the production deploy path. `scripts/deploy/deploy.sh <staging|production> <git-sha>` is one script for both environments and `production` selects `docker-compose.prod.yml`. Order: build; `up -d --wait db redis`; step 4/6 `backup_db.sh` (pg_dump through `exec -T db`, dump checked with `pg_restore --list`, then a one-off `web` container with the backup directory mounted, per the script header an upload to the object storage `backups/` prefix); the script refuses to migrate if no `BACKUP_OBJECT_KEY` is reported; then `run --rm -T web python manage.py migrate --noinput`; then `up -d --remove-orphans` with NO service names, so the new `asgi`, `nginx` and `certbot` services are started and updated automatically. The service names the scripts use (`db`, `web`) exist in the production compose file. No code change was needed. Still to prove on the first genuine deploy: the backup upload to object storage with the production OBJECT_STORAGE_* values.
 - M-2 (blocking for a genuine deploy): Section 7 item 6 (VPS specifics, sibling container inventory) and item 9 (domain) are still OPEN. All limits, Gunicorn workers, Celery concurrency and Redis maxmemory are placeholders until real VPS data exists. Live execution is HONESTLY PENDING; only VALUES (domain, e-mail, sizes) are missing, not configuration.
 - M-3: Not exercised: a real TLS handshake and real certificate issuance/renewal (dry-run is non-TLS by design), the 6-hour Nginx reload, a redeploy that recreates `web`/`asgi` (the per-request DNS fix is applied and syntax-checked but the 502-after-recreate scenario was not reproduced), a 100 MB reel upload through the 105m body limit, reel transcoding under the worker limit (P-104 L-5), sustained load, and a chat message round trip through Nginx beyond the handshake and ping.
 - M-4: HSTS is not configured (`security.W004` from P-010 remains; out of scope here). Enabling HSTS is safe only after a working HTTPS deployment.
@@ -12605,7 +12605,7 @@ Monitoring & Observability Go-Live is fully implemented, uploaded, verified, and
 
 ### Remaining work
 1. Provide VPS and domain details (Section 7 items 6 and 9); then set DOMAIN, LETSENCRYPT_EMAIL and the real sizes, issue the first certificate with the documented one-time command, and run the first genuine production deploy (including the M-3 checks).
-2. Resolve M-1 (backup step in the production deploy path).
+2. (done) M-1 resolved by static review; prove the backup upload on the first genuine deploy.
 3. Optional cleanup M-6; run the full suite once (M-5).
 4. P-107 (store release prep) and P-108 (final checklist) are the last two parts of the plan.
 
@@ -12618,16 +12618,16 @@ Monitoring & Observability Go-Live is fully implemented, uploaded, verified, and
 - [x] Local dry-run: all services start; HTTP and WebSocket traffic proxy correctly through Nginx
 - [x] Production security settings (SSL redirect, secure cookies) confirmed active
 - [x] Genuine deployment onto real infrastructure honestly flagged as pending Section 7 items 6 and 9
-- [ ] Backup step in the production deploy path confirmed (M-1)
+- [x] Backup step in the production deploy path confirmed (M-1, static review of scripts/deploy/deploy.sh and backup_db.sh)
 
 ### Phase 22 status
-IN PROGRESS. P-106 configuration complete and dry-run proven; genuine deploy pending Section 7 items 6 and 9; M-1 to confirm; next P-107, then P-108.
+IN PROGRESS. P-106 configuration complete and dry-run proven; genuine deploy pending Section 7 items 6 and 9; next P-107, then P-108.
 
 ### Exact next starting point
-P-107 (store release prep), then P-108 (final checklist). Before or inside P-108, close M-1 and, once the VPS and domain exist, run the first real production deploy. Open owner decisions: whether to keep the placeholder sizes and the Redis `maxmemory`/`volatile-lru` and concurrency choices made here, and the CI-cleanup part (K-1).
+P-107 (store release prep), then P-108 (final checklist). Once the VPS and domain exist, run the first real production deploy (this also proves the backup upload, M-1). Open owner decisions: whether to keep the placeholder sizes and the Redis `maxmemory`/`volatile-lru` and concurrency choices made here, and the CI-cleanup part (K-1).
 
 ### Edits to existing sections
-- In the Part status index/table add: `P-106 | Production Deployment Configuration | Phase 22 | CONFIG COMPLETE, LOCAL DRY-RUN PASS (8 services, HTTP + WebSocket through Nginx, prod security settings active); VPS deploy PENDING (Section 7 items 6 and 9); limits and sizes are placeholders; backup step in prod deploy path to confirm (M-1)`.
+- In the Part status index/table add: `P-106 | Production Deployment Configuration | Phase 22 | CONFIG COMPLETE, LOCAL DRY-RUN PASS (8 services, HTTP + WebSocket through Nginx, prod security settings active); VPS deploy PENDING (Section 7 items 6 and 9); limits and sizes are placeholders; backup step wired into the prod deploy path (M-1, static review)`.
 - Set the Phase 22 summary line to: "IN PROGRESS (P-106 configuration complete and dry-run proven, genuine deploy pending Section 7 items 6 and 9; next P-107)".
 - In the P-104 section, known issues L-3 (prod compose had no limits), L-4 (Redis maxmemory) and L-6 (prod worker concurrency) are addressed by P-106 as described above; the text of P-104 is left unchanged.
 - Leave Section 7 items 6 and 9 marked OPEN.
