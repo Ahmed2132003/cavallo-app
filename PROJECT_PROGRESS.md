@@ -12810,3 +12810,62 @@ There is no next part in this plan. Start a new plan from the Remaining work lis
 - Backend suite on 2026-10-05 inside docker: 1682 passed, 1 skipped, 1 xfailed (16:54).
 - Not committed on purpose: `celerybeat-schedule` (runtime file, P-106 M-6), `p108_*_evidence.txt`, `p108_idempotency_check.py`, `*.bak` files.
 - Exact next starting point: none in this plan. Start a new plan from the "Remaining work" list of the P-108 section, beginning with the block-user part.
+
+## PART P-111 - Flutter: Design System Foundation (Phase 23) - STATUS: CODE COMPLETE, AUTOMATED CHECKS GREEN (2026-10-05); NOT MARKED COMPLETE: golden tests and the manual Light/Dark walk-through are still OPEN
+
+### What was implemented
+- Cavallo Blue tokens as a ThemeExtension in lib/core/theme/app_colors.dart: AppColors with light and dark instances, value equality (== and hashCode, needed because MaterialApp copies the extension through AnimatedTheme), copyWith, lerp, and context.appColors (falls back to AppColors.light/dark by ambient brightness when a bare MaterialApp has no AppTheme). Tokens: brand, onBrand, brandText, background, surface, surfaceVariant, outline, textPrimary, textSecondary, danger, onDanger, featured, onFeatured, storyRing gradient, plus computed storyRingSeen and brandSubtle.
+- STEP 3 added successText, warningText, dangerText and the computed successSubtle, warningSubtle, dangerSubtle (tint = the text colour at 10% over surface). Values: Light 187A37 / 8A5A00 / C4232F, Dark 4ADE80 / FFC94D / FF6B74. Light dangerText is deliberately deeper than danger (D92D3A gives only 4.24:1 on its own tint). Measured ratios on the tint: 4.73, 5.13, 4.93 (Light) and 8.47, 9.48, 5.72 (Dark).
+- AppTheme.light and AppTheme.dark in lib/core/theme/app_theme.dart, typography in app_typography.dart, bundled font under assets/ declared in pubspec.yaml (no google_fonts). lib/core/config/app_theme.dart was deleted; the legacy AppTheme.theme alias still points at light.
+- ThemeMode: lib/core/theme/theme_mode_provider.dart. One cache key app.theme_mode through the existing CacheStorage, stored as the string system|light|dark; any other value means system. preloadThemeMode() never throws. themeModeProvider (Notifier) is the only owner of theme state; initialThemeModeProvider carries the preloaded value.
+- main.dart wiring (the real main.dart differs from the shape the master plan assumed): main() was already Future<void> and runApp lives inside _installErrorHooksAndRunApp(), reached through SentryFlutter.init(appRunner: ...). A top-level private _initialThemeMode is set in main() right after WidgetsFlutterBinding.ensureInitialized() via await preloadThemeMode(), and injected with initialThemeModeProvider.overrideWithValue(_initialThemeMode) in the single ProviderScope overrides list, so there is no light-to-dark flash. Both MaterialApp constructors (bootstrap spinner and router) now get theme: AppTheme.light, darkTheme: AppTheme.dark, themeMode: themeMode.
+- Core widgets restyled to the tokens: AppButton, AppTextField, FeaturedBadge, EmptyStateWidget, ErrorStateWidget, LoadingIndicator. New shared widgets: AppAvatar (optional unseen/seen story ring, 44 px minimum tap target) and AppShimmerBox (skeleton, stops animating under reduced motion).
+- Hardcoded-colour replacement in features: 17 replacements (content_list_screen 10, moderation_widgets 6 with QueueAgeChip _styleFor now taking AppColors, content_action_row 1 like icon -> danger). Processing badge -> surfaceVariant + textSecondary. 13 hits kept on purpose (see audit record).
+
+### Hardcoded-colour audit record
+- STEP 1 audit file p111_step1_audit.txt (not committed): 58 hits, 27 in the new theme files, 31 in features. The 30 feature lines re-listed in STEP 3 were classified: 17 replaceable (done) and 13 intentional and kept: message_bubble_widget 2, reel_card 2, reel_detail_screen 2 (black 45% play scrim + white icon), notification_center_screen 1 (Colors.transparent), story_viewer_screen 6 (forced dark theme, black/white/white24/white54).
+- Final authority is the guard test test/core/theme/status_tokens_test.dart: it scans all of lib/ outside core/theme and fails on any Colors.<name> other than black, white, white24, white54, transparent, and on any Color(0x literal. Its regex has a lookbehind so identifiers such as appColors are not matched.
+
+### Files created (cavallo-mobile)
+- lib/core/theme/app_colors.dart, app_theme.dart, app_typography.dart, theme_mode_provider.dart; assets/ (bundled font files); lib/core/widgets/app_avatar.dart, app_shimmer_box.dart.
+- Tests: test/core/theme/app_theme_foundation_test.dart, theme_mode_provider_test.dart, status_tokens_test.dart; test/core/widgets/core_widgets_theming_test.dart, app_avatar_test.dart, app_shimmer_box_test.dart.
+
+### Files modified (cavallo-mobile)
+- pubspec.yaml, lib/main.dart, lib/core/widgets/{app_button, app_text_field, featured_badge, empty_state_widget, error_state_widget, loading_indicator}.dart, lib/features/content/presentation/content_list_screen.dart, lib/features/moderation/presentation/moderation_widgets.dart, lib/features/social/presentation/content_action_row.dart.
+- Tests updated: test/core/integration_test.dart, test/core/widgets/widget_gallery_demo_test.dart, test/features/business_console/presentation/business_console_shell_test.dart (STEP 1); test/features/moderation/presentation/moderation_widgets_test.dart and moderation_queue_screen_test.dart (STEP 3: expectations moved from Colors.green/amber/red shades to AppColors.light.successText/warningText/dangerText, because a bare MaterialApp falls back to the light tokens).
+- Deleted: lib/core/config/app_theme.dart.
+
+### Important implementation details and architecture decisions
+- Colour values live only in app_colors.dart; features read context.appColors. The three status text tokens and their computed tints exist because the design tokens table had no success or warning colour and Colors.green/amber shades are unreadable in Dark.
+- PowerShell 5.1 reads BOM-less scripts as ANSI, so scripts stay ASCII; an Arabic literal in a Dart test was written as \u escapes.
+- flutter analyze scans every .dart file under the project root, so script backups must live outside the repo (a backup folder inside it produced 54 false errors and was auto-restored).
+- There is no UI to change ThemeMode yet (P-113 builds the Settings screen). Live switching is covered by widget tests; manually only System mode (OS dark-mode setting) can be exercised until a temporary debug toggle or P-113 exists.
+
+### Commands
+- Analyze: flutter analyze (from D:\Cavallo\social_commerce_app). Tests: flutter test (full suite).
+- Scripts (outside the repo history, not committed): p111_step1*.ps1, p111_step2.ps1, p111_step2b.ps1, p111_step3.ps1, p111_step3_fix.ps1 and their *_evidence.txt files, all in D:\Cavallo\social_commerce_app.
+
+### Tests and verification results (2026-10-05)
+- flutter analyze: No issues found. flutter test (full suite): 1097 tests, All tests passed.
+- New tests cover: ThemeMode round-trip and junk-means-system, preload persistence across restarts, provider persisting one string key, live switching in a MaterialApp and System mode following the OS brightness, core widgets rendering in both themes, AppTextField 12 px radius from the theme, AppAvatar sizes/rings/tap target, AppShimmerBox, status text contrast >= 4.5:1 on tint (both themes), processing chip textSecondary on surfaceVariant >= 4.5:1, like icon >= 3:1, copyWith/equality/lerp of the new tokens, and the hardcoded-colour guard.
+
+### Known issues and OPEN Definition-of-Done items
+- OPEN: golden tests (light and dark) for AppButton, AppTextField, FeaturedBadge and AppAvatar. Goldens must be generated on the owner's machine (flutter test --update-goldens) and committed.
+- OPEN: manual walk-through of Login, Register, Home, Search, Business Console and Chat in Light, Dark and System, with restart persistence, on a device or emulator. Not done.
+- OPEN, to confirm: the spec contrast assertions textPrimary/background, textSecondary/surface, white/brand and brandText/surface; check whether test/core/theme/app_theme_foundation_test.dart already asserts them and add them if not. Also confirm a test asserts that every token of AppColors.light and AppColors.dark is non-null.
+- No unit/golden test exists for the story viewer's forced dark theme; it was left untouched on purpose.
+
+### Remaining work (exact order)
+1. Close the three OPEN items above, then mark P-111 COMPLETE.
+2. Decide whether to merge branch part-111 into cavallo-mobile main (not done by this part).
+3. P-112 (localization and the Language setting next to the theme setting), then P-113 (navigation and the real Settings screen that hosts theme and language), P-114, P-115. P-114 and P-115 must use AppAvatar, AppShimmerBox and context.appColors instead of local variants.
+
+### GitHub references
+- cavallo-mobile: branch part-111, commit e5b6693 (parent 98c8ef4), pushed and verified equal to origin/part-111.
+- cavallo-app develop: the commit that records this section is the next commit on develop after 36e3ec6.
+
+### Exact next starting point
+Finish the OPEN items (goldens, manual walk-through, contrast/non-null test confirmation), then start P-112 from PHASE_23_UI_UX_PARTS_P-111_to_P-115.docx on top of branch part-111.
+
+### Edits to existing sections
+- In the Part status index/table add: P-111 | Flutter Design System Foundation | Phase 23 | CODE COMPLETE; goldens and manual walk-through OPEN. Set the Phase 23 summary line to "IN PROGRESS (P-111 code complete with open DoD items, P-112 next)".
