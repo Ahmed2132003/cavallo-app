@@ -10,7 +10,12 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from accounts import services
-from accounts.serializers import LoginSerializer, LogoutSerializer, RegisterSerializer
+from accounts.serializers import (
+    LoginSerializer,
+    LogoutSerializer,
+    MePreferencesSerializer,
+    RegisterSerializer,
+)
 from accounts.throttles import LoginRateThrottle
 
 
@@ -194,6 +199,28 @@ class MeView(APIView):
                 "account_type": user.account_type,
                 "is_moderator": user.is_moderator,
                 "is_staff": user.is_staff,
+                "preferred_language": user.preferred_language,
             },
             status=status.HTTP_200_OK,
         )
+
+    def patch(self, request, *args, **kwargs):
+        """
+        PATCH /api/v1/auth/me/ (Part P-112)
+
+        Lets the caller change their own preferences. Today that is only
+        ``preferred_language`` (``ar`` or ``en``). Responds with the same
+        shape as GET so the client can refresh its state in one call.
+        """
+        serializer = MePreferencesSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        changed = []
+        for field, value in serializer.validated_data.items():
+            setattr(user, field, value)
+            changed.append(field)
+        if changed:
+            user.save(update_fields=changed + ["updated_at"])
+
+        return self.get(request, *args, **kwargs)

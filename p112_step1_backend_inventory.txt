@@ -1,0 +1,43 @@
+P-112 STEP 1 - BACKEND INVENTORY (2026-10-05 04:32)
+
+[1] Any existing use of Accept-Language / LocaleMiddleware / LANGUAGES / LOCALE_PATHS / gettext (must be empty or understood):
+  (none)
+
+[2] Latest migrations per touched app:
+  accounts: 0001_initial, 0002_alter_user_options, 0003_seed_authorization_groups, 0004_user_following_count
+  categories: 0001_initial
+  devices: 0001_initial
+  notifications: 0001_initial, 0002_backfill_notification_preferences
+
+[3] Consumers of Category.name / category name (these keep working: the name column is untouched):
+  categories\models.py:81: while Category.objects.exclude(pk=self.pk).filter(slug=slug).exists():
+  categories\services.py:4: def build_category_tree():
+  categories\services.py:13: Deliberately a single flat query (`Category.objects.filter(...)`)
+  categories\services.py:20: Category.objects.filter(is_active=True)
+  categories\signals.py:6: from categories.views import CATEGORY_TREE_CACHE_KEY
+  categories\signals.py:30: cache.delete(CATEGORY_TREE_CACHE_KEY)
+  categories\views.py:5: from categories.services import build_category_tree
+  categories\views.py:8: CATEGORY_TREE_CACHE_KEY = "categories:tree"
+  categories\views.py:26: CATEGORY_TREE_CACHE_KEY,
+  categories\views.py:27: build_category_tree,
+  chat\test_shared_content.py:90: "category": Category.objects.create(name=f"Fashion-{uuid4().hex[:6]}"),
+
+[4] Notification dispatch (used by STEP 2): functions in notifications/services.py and tasks.py:
+  notifications\services.py:31: def create_notification(
+  notifications\services.py:82: def _get_firebase_app():
+  notifications\services.py:115: def _stringify_data(data: dict) -> dict[str, str]:
+  notifications\services.py:126: def send_push_notification(user_id: int, title: str, body: str, data: dict) -> None:
+  notifications\tasks.py:86: def _is_category_enabled(recipient_id, preference_field):
+  notifications\tasks.py:104: def dispatch_notification(
+  notifications\tasks.py:169: def enqueue_notification(**kwargs):
+
+[5] Device registration (used by STEP 2): devices/serializers.py + views.py fields:
+  devices\serializers.py:16: class DeviceRegisterSerializer(serializers.Serializer):
+  devices\serializers.py:17: token = serializers.CharField(max_length=512, trim_whitespace=True)
+  devices\serializers.py:18: platform = serializers.ChoiceField(
+  devices\views.py:34: class DeviceRegisterView(APIView):
+  devices\views.py:37: def post(self, request):
+  devices\models.py:20: class DeviceToken(TimestampedModel):
+  devices\models.py:43: token = models.CharField(max_length=512, unique=True)
+  devices\models.py:44: platform = models.CharField(max_length=10, choices=PLATFORM_CHOICES)
+  devices\models.py:49: def __str__(self) -> str:

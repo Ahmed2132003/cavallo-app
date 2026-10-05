@@ -29,7 +29,12 @@ class Category(TimestampedModel):
     Flag for Ahmed if this reasoning doesn't hold going forward.
     """
 
+    # ``name`` is kept as the English/fallback value so nothing that
+    # already reads it breaks (Part P-112). ``name_en`` / ``name_ar`` are
+    # the per-language values; the API picks one from Accept-Language.
     name = models.CharField(max_length=100)
+    name_en = models.CharField(max_length=100, blank=True, default="")
+    name_ar = models.CharField(max_length=100, blank=True, default="")
     slug = models.SlugField(max_length=140, unique=True, blank=True)
     parent = models.ForeignKey(
         "self",
@@ -66,7 +71,20 @@ class Category(TimestampedModel):
     def __str__(self):
         return self.name
 
+    def localized_name(self, language):
+        """Name in ``language`` (``ar`` / ``en``), falling back to English."""
+        english = self.name_en or self.name
+        if language == "ar":
+            return self.name_ar or english
+        return english
+
     def save(self, *args, **kwargs):
+        # Part P-112: keep the legacy ``name`` column and ``name_en`` in
+        # step when only one of them is provided.
+        if not self.name_en and self.name:
+            self.name_en = self.name
+        elif not self.name and self.name_en:
+            self.name = self.name_en
         if not self.slug:
             self.slug = self._generate_unique_slug()
         super().save(*args, **kwargs)

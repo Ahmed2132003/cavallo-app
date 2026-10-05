@@ -1,7 +1,20 @@
 from categories.models import Category
+from core.i18n import DEFAULT_LANGUAGE, LANGUAGE_AR
 
 
-def build_category_tree():
+def localized_category_name(row, language):
+    """Pick the display name from a ``.values()`` row (Part P-112).
+
+    Arabic falls back to English, and English falls back to the legacy
+    ``name`` column, so a category without translations still shows up.
+    """
+    english = row.get("name_en") or row["name"]
+    if language == LANGUAGE_AR:
+        return row.get("name_ar") or english
+    return english
+
+
+def build_category_tree(language=DEFAULT_LANGUAGE):
     """Build the full active category tree as nested plain dicts:
     ``[{"id", "name", "slug", "children": [...]}, ...]``.
 
@@ -19,13 +32,13 @@ def build_category_tree():
     categories = list(
         Category.objects.filter(is_active=True)
         .order_by("name")
-        .values("id", "name", "slug", "parent_id")
+        .values("id", "name", "name_ar", "name_en", "slug", "parent_id")
     )
 
     nodes_by_id = {
         row["id"]: {
             "id": row["id"],
-            "name": row["name"],
+            "name": localized_category_name(row, language),
             "slug": row["slug"],
             "children": [],
         }

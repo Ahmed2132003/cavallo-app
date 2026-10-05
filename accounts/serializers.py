@@ -131,3 +131,18 @@ class LogoutSerializer(serializers.Serializer):
     """
 
     refresh = serializers.CharField()
+
+
+class MePreferencesSerializer(serializers.Serializer):
+    """
+    Validates PATCH /api/v1/auth/me/ (Part P-112).
+
+    Only the fields a user may change about themselves live here. Role
+    flags such as ``is_staff`` or ``account_type`` are deliberately not
+    declared, so a forged value in the request body is ignored.
+    """
+
+    preferred_language = serializers.ChoiceField(
+        choices=[value for value, _label in User.LANGUAGE_CHOICES],
+        required=False,
+    )

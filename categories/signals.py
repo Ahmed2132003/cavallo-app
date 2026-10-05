@@ -3,7 +3,7 @@ from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
 from categories.models import Category
-from categories.views import CATEGORY_TREE_CACHE_KEY
+from categories.views import CATEGORY_TREE_CACHE_KEYS
 
 
 @receiver(post_save, sender=Category)
@@ -27,4 +27,4 @@ def invalidate_category_tree_cache(sender, **kwargs):
     probably worth adding a proper ``cache_delete(key)`` helper to
     core/cache.py instead of repeating this same justification.
     """
-    cache.delete(CATEGORY_TREE_CACHE_KEY)
+    cache.delete_many(CATEGORY_TREE_CACHE_KEYS)

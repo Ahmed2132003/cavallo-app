@@ -1,0 +1,76 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20261005043227
+Username: DESKTOP-N2TD0ON\HP
+RunAs User: DESKTOP-N2TD0ON\HP
+Configuration Name: 
+Machine: DESKTOP-N2TD0ON (Microsoft Windows NT 10.0.26200.0)
+Host Application: C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -File .\p112_step1.ps1
+Process ID: 22664
+PSVersion: 5.1.26100.9444
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9444
+BuildVersion: 10.0.26100.9444
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+
+=== PART A: inventories ===
+Backend inventory written: D:\Cavallo\scd-backend\p112_step1_backend_inventory.txt
+Flutter inventory written: D:\Cavallo\social_commerce_app\p112_step1_flutter_inventory.txt
+Flutter totals: Text(literal)=171  hintText=4  labelText=7  tooltip=19  SnackBar=52
+
+=== PART B/C: backend edits ===
+accounts migration   : 0005_user_preferred_language (depends on 0004_user_following_count)
+categories migration : 0002_category_localized_names (depends on 0001_initial) then 0003_copy_name_to_name_en
+
+Pass 1: verifying anchors...
+  all anchors OK
+Backups: D:\Cavallo\p112_backups\step1_20261005_043235
+
+Pass 2: applying...
+  edited  accounts/models.py
+  edited  accounts/views.py
+  edited  accounts/views.py
+  edited  accounts/admin.py
+  edited  accounts/tests/test_me.py
+  edited  categories/models.py
+  edited  categories/models.py
+  edited  categories/services.py
+  edited  categories/services.py
+  edited  categories/services.py
+  edited  categories/services.py
+  edited  categories/views.py
+  edited  categories/views.py
+  edited  categories/views.py
+  edited  categories/views.py
+  edited  categories/signals.py
+  edited  categories/signals.py
+  edited  categories/admin.py
+  edited  categories/admin.py
+  edited  categories/admin.py
+  edited  categories/admin.py
+  appended accounts/serializers.py
+  created core/i18n.py
+  created core/tests/test_i18n.py
+  created accounts/migrations/0005_user_preferred_language.py
+  created accounts/tests/test_preferred_language.py
+  created categories/migrations/0002_category_localized_names.py
+  created categories/migrations/0003_copy_name_to_name_en.py
+  created categories/tests/test_localized_names.py
+
+=== STEP 1 files applied ===
+Backend inventory : D:\Cavallo\scd-backend\p112_step1_backend_inventory.txt
+Flutter inventory : D:\Cavallo\social_commerce_app\p112_step1_flutter_inventory.txt
+Evidence log      : D:\Cavallo\scd-backend\p112_step1_evidence.txt
+Backups           : D:\Cavallo\p112_backups\step1_20261005_043235
+
+Now run the checks from the message (docker compose exec web ...).
+Accounts migration name   : 0005_user_preferred_language
+Categories migration names: 0002_category_localized_names , 0003_copy_name_to_name_en
+**********************
+Windows PowerShell transcript end
+End time: 20261005043235
+**********************

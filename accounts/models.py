@@ -128,6 +128,22 @@ class User(AbstractUser, TimestampedModel):
     # inside social/views.py's FollowToggleView.
     following_count = models.PositiveIntegerField(default=0)
 
+    # Part P-112: language for the UI and for server-rendered text such
+    # as push notifications. Default "ar" per the Phase 23 overview.
+    # Exposed on GET/PATCH /api/v1/auth/me/.
+    LANGUAGE_AR = "ar"
+    LANGUAGE_EN = "en"
+    LANGUAGE_CHOICES = [
+        (LANGUAGE_AR, "Arabic"),
+        (LANGUAGE_EN, "English"),
+    ]
+    preferred_language = models.CharField(
+        max_length=2,
+        choices=LANGUAGE_CHOICES,
+        default=LANGUAGE_AR,
+        help_text="UI and notification language (ar or en).",
+    )
+
     class Meta:
         db_table = "accounts_user"
         # Part P-019: initial capability set, defined here (on User)

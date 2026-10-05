@@ -94,7 +94,7 @@ class TestMe(APITestCase):
 
         self.assertEqual(
             set(response.data.keys()),
-            set(registered.keys()) | {"is_moderator", "is_staff"},
+            set(registered.keys()) | {"is_moderator", "is_staff", "preferred_language"},
         )
         self.assertEqual(response.data["id"], registered["id"])
         self.assertEqual(response.data["email"], registered["email"])

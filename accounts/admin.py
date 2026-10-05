@@ -27,6 +27,7 @@ class UserAdmin(DjangoUserAdmin):
         "is_business_verified",
     )
     fieldsets = DjangoUserAdmin.fieldsets + (
+        ("Language (Part P-112)", {"fields": ("preferred_language",)}),
         (
             "Account type & roles (Part P-016)",
             {
