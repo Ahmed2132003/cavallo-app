@@ -105,7 +105,6 @@ class FollowToggleView(APIView):
                 body="Someone started following your business.",
                 deep_link_type="business_profile",
                 target_id=business.pk,
-                params={},
             )
 
         _invalidate_home_feed_cache(request.user.id)
@@ -419,7 +418,6 @@ class CommentCreateView(APIView):
                     data["content_type"]
                 ],
                 target_id=obj.pk,
-                params={"text": data["text"][:100]},
             )
 
         return Response(CommentSerializer(comment).data, status=201)

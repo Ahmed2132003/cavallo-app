@@ -112,10 +112,6 @@ MIDDLEWARE = [
     "core.middleware.RequestIdMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
-    # Part P-112: activates ar/en per request from Accept-Language so
-    # gettext (Django/DRF's own messages and our catalogs) follows the
-    # client. Must sit after SessionMiddleware and before CommonMiddleware.
-    "django.middleware.locale.LocaleMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
@@ -415,14 +411,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # ---------------------------------------------------------------------------
 # Internationalization
 # ---------------------------------------------------------------------------
-LANGUAGE_CODE = "en"
-LANGUAGES = [
-    ("en", "English"),
-    ("ar", "Arabic"),
-]
-# Part P-112: project catalogs (compiled .mo files are committed - the
-# Docker image has no GNU gettext; see core/i18n_tools.py).
-LOCALE_PATHS = [BASE_DIR / "locale"]
+LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True

@@ -35,7 +35,6 @@ def create_notification(
     body: str,
     deep_link_type: str | None = None,
     target_id: int | None = None,
-    params: dict | None = None,
 ) -> Notification:
     """
     Persist one in-app Notification for ``recipient`` and return it.
@@ -77,7 +76,6 @@ def create_notification(
         body=body,
         deep_link_type=deep_link_type,
         target_id=target_id,
-        params=params or {},
     )
 
 
@@ -125,13 +123,7 @@ def _stringify_data(data: dict) -> dict[str, str]:
     return {str(key): str(value) for key, value in data.items() if value is not None}
 
 
-def send_push_notification(
-    user_id: int,
-    title: str,
-    body: str,
-    data: dict,
-    localized: dict | None = None,
-) -> None:
+def send_push_notification(user_id: int, title: str, body: str, data: dict) -> None:
     """
     Push-sending seam. Signature frozen since Part P-072 (called by
     notifications.tasks.dispatch_notification) - do not change it.
@@ -146,15 +138,9 @@ def send_push_notification(
     * Firebase not configured -> logged and skipped;
     * one token fails (invalid / expired) -> logged, and the remaining
       tokens are still tried.
-
-    Part P-112: ``localized`` is an optional ``{"ar": (title, body),
-    "en": (title, body)}`` map. A token whose registered ``locale`` is
-    in the map is sent that language's text; every other token gets
-    ``title`` / ``body`` (the recipient's preferred language). The
-    four-argument call keeps working unchanged.
     """
     tokens = list(
-        DeviceToken.objects.filter(user_id=user_id).values_list("token", "locale")
+        DeviceToken.objects.filter(user_id=user_id).values_list("token", flat=True)
     )
     if not tokens:
         logger.info("send_push_notification: user %s has no device tokens.", user_id)
@@ -171,13 +157,12 @@ def send_push_notification(
         return
 
     payload = _stringify_data(data)
-    localized = localized or {}
+    notification = messaging.Notification(title=title, body=body)
     sent = 0
-    for token, locale in tokens:
-        token_title, token_body = localized.get(locale, (title, body))
+    for token in tokens:
         message = messaging.Message(
             token=token,
-            notification=messaging.Notification(title=token_title, body=token_body),
+            notification=notification,
             data=payload,
             android=messaging.AndroidConfig(priority="high"),
         )

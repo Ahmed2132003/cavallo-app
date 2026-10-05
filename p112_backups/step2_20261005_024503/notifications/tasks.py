@@ -56,8 +56,6 @@ import logging
 from celery import shared_task
 from django.contrib.auth import get_user_model
 
-from core.i18n import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES
-from notifications.messages import render_for_all_languages
 from notifications.models import Notification, NotificationPreference
 from notifications.services import create_notification, send_push_notification
 
@@ -106,20 +104,11 @@ def _is_category_enabled(recipient_id, preference_field):
 def dispatch_notification(
     recipient_id,
     notification_type,
-    title="",
-    body="",
+    title,
+    body,
     deep_link_type=None,
     target_id=None,
-    params=None,
 ):
-    """
-    Part P-112: when ``params`` is given, title and body are RENDERED here
-    from the gettext catalogs in the recipient's ``preferred_language``
-    (the in-app row) and, per device, in each token's registered locale
-    (the push). ``title`` / ``body`` are then only the English fallback
-    used if rendering is impossible for this type/params. Without
-    ``params`` the supplied text is stored and pushed as before.
-    """
     recipient = User.objects.filter(pk=recipient_id).first()
     if recipient is None:
         logger.warning(
@@ -142,15 +131,6 @@ def dispatch_notification(
         )
         return
 
-    localized = {}
-    if params is not None:
-        localized = render_for_all_languages(notification_type, params)
-        language = getattr(recipient, "preferred_language", DEFAULT_LANGUAGE)
-        if language not in SUPPORTED_LANGUAGES:
-            language = DEFAULT_LANGUAGE
-        if language in localized:
-            title, body = localized[language]
-
     # Raises ValueError (nothing written, no push) for an unknown
     # notification_type / deep_link_type - a programming error that
     # must be loud, not swallowed.
@@ -161,12 +141,7 @@ def dispatch_notification(
         body,
         deep_link_type=deep_link_type,
         target_id=target_id,
-        params=params,
     )
-
-    push_kwargs = {}
-    if localized:
-        push_kwargs["localized"] = localized
 
     try:
         send_push_notification(
@@ -179,7 +154,6 @@ def dispatch_notification(
                 "deep_link_type": notification.deep_link_type,
                 "target_id": notification.target_id,
             },
-            **push_kwargs,
         )
     except Exception:
         # Best-effort: the in-app row already exists. Re-raising would

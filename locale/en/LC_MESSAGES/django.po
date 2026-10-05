@@ -1,0 +1,97 @@
+# English source catalog (Part P-112). msgstr is intentionally empty:
+# gettext falls back to the msgid, which IS the English text.
+
+msgid ""
+msgstr ""
+"Project-Id-Version: cavallo-app\n"
+"Language: en\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "New follower"
+msgstr ""
+
+msgid "Someone started following your business."
+msgstr ""
+
+msgid "New comment"
+msgstr ""
+
+msgid "New message"
+msgstr ""
+
+msgid "Sent a photo"
+msgstr ""
+
+msgid "Sent a video"
+msgstr ""
+
+msgid "Shared a post"
+msgstr ""
+
+msgid "Shared a reel"
+msgstr ""
+
+msgid "Shared a product"
+msgstr ""
+
+msgid "New like"
+msgstr ""
+
+msgid "Someone liked your content."
+msgstr ""
+
+msgid "New share"
+msgstr ""
+
+msgid "Someone shared your content."
+msgstr ""
+
+msgid "New rating"
+msgstr ""
+
+msgid "Someone rated your business."
+msgstr ""
+
+msgid "Your post was approved"
+msgstr ""
+
+msgid "Your post is now published."
+msgstr ""
+
+msgid "Your post was rejected"
+msgstr ""
+
+msgid "Your reel was approved"
+msgstr ""
+
+msgid "Your reel is now published."
+msgstr ""
+
+msgid "Your reel was rejected"
+msgstr ""
+
+msgid "Your story was approved"
+msgstr ""
+
+msgid "Your story is now published."
+msgstr ""
+
+msgid "Your story was rejected"
+msgstr ""
+
+msgid "Your content was approved"
+msgstr ""
+
+msgid "Your content is now published."
+msgstr ""
+
+msgid "Your content was rejected"
+msgstr ""
+
+#, python-format
+msgid "Reason: %(reason)s"
+msgstr ""
+

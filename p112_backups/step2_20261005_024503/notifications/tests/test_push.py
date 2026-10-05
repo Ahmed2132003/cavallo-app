@@ -56,13 +56,9 @@ def _push(user_id, data=None):
 
 
 def test_signature_is_unchanged_from_p072_and_p079():
-    # The four P-072 parameters are frozen. Part P-112 added ONE optional
-    # trailing keyword (``localized``); existing four-argument callers
-    # must keep working.
-    parameters = inspect.signature(send_push_notification).parameters
+    parameters = list(inspect.signature(send_push_notification).parameters)
 
-    assert list(parameters) == ["user_id", "title", "body", "data", "localized"]
-    assert parameters["localized"].default is None
+    assert parameters == ["user_id", "title", "body", "data"]
 
 
 def test_sends_one_message_per_registered_token_with_correct_payload():

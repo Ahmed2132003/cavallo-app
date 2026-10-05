@@ -52,7 +52,6 @@ def test_notify_offline_recipient_resolves_other_participant_not_sender(
         body="hello offline user",
         deep_link_type="chat_thread",
         target_id=conversation.id,
-        params={"text": "hello offline user"},
     )
 
 

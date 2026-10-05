@@ -1,8 +1,7 @@
 """
 Views for Part P-081 - device-token registration.
 
-POST /api/v1/devices/register/  {"token": "...", "platform": "ios"|"android",
-                                 "locale": "ar"|"en" (optional, Part P-112)}
+POST /api/v1/devices/register/  {"token": "...", "platform": "ios"|"android"}
 
 Upsert semantics (the whole point of this endpoint):
 
@@ -40,19 +39,11 @@ class DeviceRegisterView(APIView):
         serializer.is_valid(raise_exception=True)
         token = serializer.validated_data["token"]
         platform = serializer.validated_data["platform"]
-        # Part P-112: always overwritten (blank when an older client
-        # sends none) so a token that changes hands never keeps the
-        # previous owner's language.
-        locale = serializer.validated_data.get("locale", "")
 
         with transaction.atomic():
             device, created = DeviceToken.objects.update_or_create(
                 token=token,
-                defaults={
-                    "user": request.user,
-                    "platform": platform,
-                    "locale": locale,
-                },
+                defaults={"user": request.user, "platform": platform},
             )
 
         return Response(

@@ -10,7 +10,6 @@ device). Uniqueness is handled by the upsert in the view instead.
 
 from rest_framework import serializers
 
-from core.i18n import SUPPORTED_LANGUAGES, parse_accept_language
 from devices.models import DeviceToken
 
 
@@ -19,15 +18,3 @@ class DeviceRegisterSerializer(serializers.Serializer):
     platform = serializers.ChoiceField(
         choices=[value for value, _label in DeviceToken.PLATFORM_CHOICES]
     )
-    # Part P-112: the app's active language. Deliberately lenient - any
-    # string is accepted and normalised ("ar-EG" -> "ar"; anything
-    # unsupported -> "") so a locale quirk can never fail a registration.
-    locale = serializers.CharField(
-        max_length=16, required=False, allow_blank=True, trim_whitespace=True
-    )
-
-    def validate_locale(self, value):
-        for tag in parse_accept_language(value):
-            if tag in SUPPORTED_LANGUAGES:
-                return tag
-        return ""

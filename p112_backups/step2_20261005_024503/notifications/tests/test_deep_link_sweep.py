@@ -125,9 +125,7 @@ class TestModerationDeepLinks:
 
         row = _only_notification(owner)
         _assert_row(row, "moderation_rejected", "post_detail", post.pk)
-        # Part P-112: users default to preferred_language="ar", so the
-        # label is Arabic; the moderator's own words are inserted as written.
-        assert row["body"] == "السبب: Blurry image"
+        assert row["body"] == "Reason: Blurry image"
         detail = _open_detail(owner, "post", row["target_id"])
         assert detail["id"] == post.pk
         assert detail["status"] == "rejected"

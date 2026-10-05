@@ -55,15 +55,6 @@ def _push_body(message):
     return _SHARED_PUSH_BODIES.get(shared_content_type_label(message), "")
 
 
-def _push_params(message):
-    """Language-neutral description of what _push_body() describes (P-112)."""
-    if message.text:
-        return {"text": message.text[:120]}
-    if message.media_type:
-        return {"media": str(message.media_type)}
-    return {"shared": shared_content_type_label(message)}
-
-
 @shared_task(name="chat.notify_offline_recipient", ignore_result=True)
 def notify_offline_recipient(message_id):
     message = (
@@ -105,5 +96,4 @@ def notify_offline_recipient(message_id):
         body=_push_body(message),
         deep_link_type="chat_thread",
         target_id=message.conversation_id,
-        params=_push_params(message),
     )

@@ -148,11 +148,6 @@ def _notify_content_owner(content, approved, reason=""):
             body=body,
             deep_link_type=deep_link_type,
             target_id=target_id,
-            params=(
-                {"item": model_name}
-                if approved
-                else {"item": model_name, "reason": reason}
-            ),
         )
     except Exception:
         logger.exception(

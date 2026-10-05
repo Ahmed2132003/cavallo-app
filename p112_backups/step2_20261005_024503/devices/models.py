@@ -42,14 +42,6 @@ class DeviceToken(TimestampedModel):
     # generous headroom without risking an index-size problem.
     token = models.CharField(max_length=512, unique=True)
     platform = models.CharField(max_length=10, choices=PLATFORM_CHOICES)
-    # Part P-112: the app language active on this installation when it
-    # registered ("ar" / "en"), so a push can be rendered in the right
-    # language even if the account's preferred_language differs. Blank
-    # means "unknown" (older clients) and the account preference is used.
-    LOCALE_CHOICES = [("ar", "Arabic"), ("en", "English")]
-    locale = models.CharField(
-        max_length=2, choices=LOCALE_CHOICES, blank=True, default=""
-    )
 
     class Meta:
         ordering = ["-created_at"]

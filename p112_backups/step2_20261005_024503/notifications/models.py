@@ -93,12 +93,6 @@ class Notification(TimestampedModel):
         default="",
     )
     target_id = models.PositiveIntegerField(null=True, blank=True)
-    # Part P-112: the language-neutral inputs the title/body were
-    # rendered from (for example {"item": "post"}). Stored next to the
-    # rendered text so a future client-side re-render stays possible.
-    # Empty for notifications created before P-112 and for any event
-    # source that still passes literal text.
-    params = models.JSONField(default=dict, blank=True)
     is_read = models.BooleanField(default=False)
 
     class Meta:

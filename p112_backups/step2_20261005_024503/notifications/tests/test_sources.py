@@ -140,7 +140,6 @@ class TestModerationSource:
             body="Your post is now published.",
             deep_link_type="post_detail",
             target_id=post.pk,
-            params={"item": "post"},
         )
 
     def test_reject_post_notifies_owner_with_reason(self, dispatch_delay):
@@ -155,7 +154,6 @@ class TestModerationSource:
             body="Reason: Blurry image",
             deep_link_type="post_detail",
             target_id=post.pk,
-            params={"item": "post", "reason": "Blurry image"},
         )
 
     def test_approve_reel_uses_reel_detail(self, dispatch_delay):
@@ -170,7 +168,6 @@ class TestModerationSource:
             body="Your reel is now published.",
             deep_link_type="reel_detail",
             target_id=reel.pk,
-            params={"item": "reel"},
         )
 
     def test_content_without_detail_screen_links_to_business_profile(
@@ -192,7 +189,6 @@ class TestModerationSource:
             body="Your story is now published.",
             deep_link_type="business_profile",
             target_id=9,
-            params={"item": "story"},
         )
 
     def test_second_decision_does_not_notify_again(self, dispatch_delay):
@@ -254,7 +250,6 @@ class TestFollowSource:
             body="Someone started following your business.",
             deep_link_type="business_profile",
             target_id=business.pk,
-            params={},
         )
 
     def test_repeat_follow_does_not_notify_again(self, dispatch_delay):
@@ -317,7 +312,6 @@ class TestCommentSource:
             body="Great post",
             deep_link_type="post_detail",
             target_id=post.pk,
-            params={"text": "Great post"},
         )
 
     def test_comment_on_reel_uses_reel_detail(self, dispatch_delay):

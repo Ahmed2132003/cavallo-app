@@ -180,10 +180,8 @@ def test_send_push_notification_without_tokens_does_not_raise_and_logs(caplog):
 
 
 def test_send_push_notification_signature_is_frozen():
-    # The four P-072 parameters are frozen. Part P-112 added ONE optional
-    # trailing keyword (``localized``); existing four-argument callers
-    # must keep working.
-    parameters = inspect.signature(send_push_notification).parameters
+    # chat.tasks.notify_offline_recipient (P-072) depends on this
+    # exact signature. Do not change it.
+    parameters = list(inspect.signature(send_push_notification).parameters)
 
-    assert list(parameters) == ["user_id", "title", "body", "data", "localized"]
-    assert parameters["localized"].default is None
+    assert parameters == ["user_id", "title", "body", "data"]

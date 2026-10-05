@@ -1,0 +1,96 @@
+# Arabic catalog (Part P-112) - PENDING NATIVE REVIEW (see PROJECT_PROGRESS.md).
+# Wording follows the P-112 glossary: منشور / ريل / قصة / نشاط تجاري.
+
+msgid ""
+msgstr ""
+"Project-Id-Version: cavallo-app\n"
+"Language: ar\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=6; plural=(n==0 ? 0 : n==1 ? 1 : n==2 ? 2 : n%100>=3 && n%100<=10 ? 3 : n%100>=11 ? 4 : 5);\n"
+
+msgid "New follower"
+msgstr "متابع جديد"
+
+msgid "Someone started following your business."
+msgstr "بدأ شخص ما بمتابعة نشاطك التجاري."
+
+msgid "New comment"
+msgstr "تعليق جديد"
+
+msgid "New message"
+msgstr "رسالة جديدة"
+
+msgid "Sent a photo"
+msgstr "أرسل صورة"
+
+msgid "Sent a video"
+msgstr "أرسل مقطع فيديو"
+
+msgid "Shared a post"
+msgstr "شارك منشورًا"
+
+msgid "Shared a reel"
+msgstr "شارك ريل"
+
+msgid "Shared a product"
+msgstr "شارك منتجًا"
+
+msgid "New like"
+msgstr "إعجاب جديد"
+
+msgid "Someone liked your content."
+msgstr "أعجب شخص ما بمحتواك."
+
+msgid "New share"
+msgstr "مشاركة جديدة"
+
+msgid "Someone shared your content."
+msgstr "شارك شخص ما محتواك."
+
+msgid "New rating"
+msgstr "تقييم جديد"
+
+msgid "Someone rated your business."
+msgstr "قيّم شخص ما نشاطك التجاري."
+
+msgid "Your post was approved"
+msgstr "تمت الموافقة على منشورك"
+
+msgid "Your post is now published."
+msgstr "تم نشر منشورك."
+
+msgid "Your post was rejected"
+msgstr "تم رفض منشورك"
+
+msgid "Your reel was approved"
+msgstr "تمت الموافقة على الريل الخاص بك"
+
+msgid "Your reel is now published."
+msgstr "تم نشر الريل الخاص بك."
+
+msgid "Your reel was rejected"
+msgstr "تم رفض الريل الخاص بك"
+
+msgid "Your story was approved"
+msgstr "تمت الموافقة على قصتك"
+
+msgid "Your story is now published."
+msgstr "تم نشر قصتك."
+
+msgid "Your story was rejected"
+msgstr "تم رفض قصتك"
+
+msgid "Your content was approved"
+msgstr "تمت الموافقة على المحتوى الخاص بك"
+
+msgid "Your content is now published."
+msgstr "تم نشر المحتوى الخاص بك."
+
+msgid "Your content was rejected"
+msgstr "تم رفض المحتوى الخاص بك"
+
+#, python-format
+msgid "Reason: %(reason)s"
+msgstr "السبب: %(reason)s"
