@@ -1,0 +1,13 @@
+P-108 STEP 2 evidence - 2026-10-05 02:00
+OPS1 local health http://localhost:8095/health/ -> 200 {"status": "ok", "db": "ok", "redis": "ok"} 
+OPS2 fingerprint=1 tag=1 beat=2 slaTests=10
+OPS3 backend staging=2 prod=2 handler=3; flutter pkg=1 report=3
+OPS4 docker-compose.staging.yml: services=5 cpus-lines=5 memory-lines=5 memswap_limit-lines=5 -> every service has limits
+OPS4 docker-compose.prod.yml: services=8 cpus-lines=8 memory-lines=8 memswap_limit-lines=8 -> every service has limits
+OPS4 STAGING_DEPLOYMENT_NOTES.md enforcement-proof lines=9
+OPS5 deploy.sh backup line=63 migrate line=72 refuseGuard=1
+S7 object storage: provider=empty; endpoint=local-dev (MinIO); key=set; secret=set
+S7 paymob: api key=empty; webhook secret=empty
+S7 firebase: FCM_PROJECT_ID=empty; service account path=empty; google-services.json=False; GoogleService-Info.plist=False
+S7 store: android key.properties present=False; applicationId is com.example placeholder=True
+S7 admin UI in Flutter present=True; monetization/admin.py present=True; admin activation hits=6

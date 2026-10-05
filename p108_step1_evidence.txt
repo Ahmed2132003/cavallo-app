@@ -1,0 +1,250 @@
+P-108 STEP 1 evidence - generated 2026-10-04 16:42
+Backend: develop @ 931a569 (uncommitted files: 4)
+Mobile : develop @ 98c8ef4 (uncommitted files: 0)
+Tests  : backend=PASS  flutter analyze=PASS  flutter test=PASS
+
+[PASS] P2a item=P2 kind=ZERO hits=0  No Cart/Order/Checkout/Wallet/Shipment/LiveStream/Recommendation model in backend
+[PASS] P2b item=P2 kind=ZERO hits=0  No sklearn/tensorflow/torch/elasticsearch/stripe/agora import in backend code
+[PASS] P2c item=P2 kind=ZERO hits=0  No elasticsearch/opensearch/stripe/agora/ML package in requirements.txt
+[PASS] P2d item=P2 kind=ZERO hits=0  No IAP/Stripe/live-streaming/webview package in pubspec.yaml
+[PASS] P2e item=P2 kind=ZERO hits=0  No Cart/Checkout/Wallet/Purchase/LiveStream class declared in Flutter lib/
+[FAIL] P1b item=P1 kind=MIN hits=0  Block-user capability exists in backend (presentation slide 10 lists "Block & Report" for chat)
+[FAIL] P1c item=P1 kind=MIN hits=0  Account-deletion capability exists in backend (store policy blocker A1 from P-107)
+[PASS] ADR2a item=ADR kind=MIN hits=1  ADR-002: Story is its own model in stories/models.py
+      stories\models.py:58: class Story(Moderatable, TimestampedModel, SoftDeleteModel):
+[PASS] ADR2b item=ADR kind=ZERO hits=0  ADR-002: no story_type discriminator anywhere in content app
+[PASS] ADR3 item=ADR kind=MIN hits=10  ADR-003: search app uses Postgres full-text primitives
+      search\cursor.py:20: mode == "relevance"  ->  secondary key is Postgres's SearchRank
+      search\cursor.py:29: SearchRank value against a different (or absent) full-text query would
+      search\services.py:65: from django.contrib.postgres.search import SearchQuery, SearchRank
+      search\services.py:214: rank=SearchRank(F("search_vector"), search_query)
+      search\services.py:252: rank=SearchRank(F("search_vector"), search_query)
+      search\services.py:308: search_query = SearchQuery(normalized_q) if normalized_q else None
+      search\signals.py:7: A naive handler that did `instance.search_vector = SearchVector(...)`
+      search\signals.py:23: from django.contrib.postgres.search import SearchVector
+      search\signals.py:34: search_vector=SearchVector("name", "description")
+      search\signals.py:41: search_vector=SearchVector("business_name", "description")
+[PASS] ADR4a item=ADR kind=MIN hits=1  ADR-004: flutter_riverpod is a dependency
+      pubspec.yaml:15: flutter_riverpod: 3.3.2
+[PASS] ADR4b item=ADR kind=ZERO hits=0  ADR-004: no bloc / flutter_bloc dependency
+[PASS] MOD1 item=MOD kind=MIN hits=3  Post, Reel, Story all inherit Moderatable (exactly 3 content models)
+      content\models.py:41: class Post(Moderatable, TimestampedModel, SoftDeleteModel):
+      content\models.py:109: class Reel(Moderatable, TimestampedModel, SoftDeleteModel):
+      stories\models.py:58: class Story(Moderatable, TimestampedModel, SoftDeleteModel):
+[PASS] MOD2 item=MOD kind=MIN hits=1  moderation/services.py is the gate (isinstance Moderatable check present)
+      moderation\services.py:104: if not isinstance(content, Moderatable):
+[INFO] MOD3 item=MOD kind=INFO hits=0  INFO: direct status = published/approved/rejected assignments outside moderation/ (review for bespoke logic)
+[INFO] MOD4 item=MOD kind=INFO hits=5  INFO: .published() manager usage in feed/ and search/
+      feed\serializers.py:5: (only `published_objects` ever reaches the feed), so item-level fields
+      feed\services.py:6: - Post and Reel are read ONLY through `published_objects` (P-043), never
+      feed\services.py:188: queryset = model.published_objects.filter(business_id__in=business_ids)
+      feed\services.py:220: queryset = model.published_objects.exclude(business_id__in=excluded_ids)
+      search\services.py:11: `published_objects`-style manager to route through here.
+[PASS] CMT1 item=CMT kind=ZERO hits=0  Comment does NOT inherit Moderatable
+[PASS] CMT2 item=CMT kind=MIN hits=5  COMMENT_AUTO_HIDE_THRESHOLD is defined/used
+      reports\throttles.py:9: P-055's COMMENT_AUTO_HIDE_THRESHOLD). Override it without touching code by
+      social\models.py:125: once that reaches COMMENT_AUTO_HIDE_THRESHOLD
+      social\services.py:23: COMMENT_AUTO_HIDE_THRESHOLD = 5
+      social\services.py:29: COMMENT_AUTO_HIDE_THRESHOLD.
+      social\services.py:49: reports_count__gte=COMMENT_AUTO_HIDE_THRESHOLD,
+[PASS] CMT3 item=CMT kind=MIN hits=1  check_and_hide_if_threshold_exceeded exists
+      social\services.py:26: def check_and_hide_if_threshold_exceeded(comment: Comment) -> bool:
+[PASS] CNT1 item=CNT kind=MIN hits=14  Denormalized *_count fields exist on models
+      accounts\models.py:129: following_count = models.PositiveIntegerField(default=0)
+      analytics\models.py:50: new_ratings_count = models.PositiveIntegerField(default=0)
+      analytics\models.py:56: active_products_count = models.PositiveIntegerField(default=0)
+      analytics\models.py:57: published_posts_count = models.PositiveIntegerField(default=0)
+      analytics\models.py:58: published_reels_count = models.PositiveIntegerField(default=0)
+      businesses\models.py:102: follower_count = models.PositiveIntegerField(default=0)
+      businesses\models.py:132: ratings_count = models.PositiveIntegerField(default=0)
+      content\models.py:62: likes_count = models.PositiveIntegerField(default=0)
+      content\models.py:63: comments_count = models.PositiveIntegerField(default=0)
+      content\models.py:64: shares_count = models.PositiveIntegerField(default=0)
+      content\models.py:180: likes_count = models.PositiveIntegerField(default=0)
+      content\models.py:181: comments_count = models.PositiveIntegerField(default=0)
+      content\models.py:182: shares_count = models.PositiveIntegerField(default=0)
+      social\models.py:150: reports_count = models.PositiveIntegerField(default=0)
+[PASS] CNT2 item=CNT kind=MIN hits=2  Atomic F() updates in social/services.py
+      social\services.py:9: `.filter(pk=...).update(reports_count=F("reports_count") + 1)`) and
+      social\services.py:39: with F(), which never touches the caller's in-memory instance),
+[REVIEW] CNT3 item=CNT kind=REVIEW hits=7  REVIEW: live .count() in non-task backend code (each hit needs a human decision)
+      chat\serializers.py:349: .count()
+      chat\tests.py:35: assert Conversation.objects.count() == 1
+      chat\tests.py:36: assert ConversationParticipant.objects.count() == 2
+      chat\tests.py:58: assert Conversation.objects.count() == 1
+      stories\models.py:188: this part's own spec text verbatim (`story.storyview_set.count()`).
+      stories\views.py:147: story.storyview_set.count() uses the model's default reverse
+      stories\views.py:161: return Response({"view_count": story.storyview_set.count()})
+[PASS] PAG1 item=PAG kind=ZERO hits=0  No LimitOffset/PageNumber pagination wired anywhere in backend
+[PASS] PAG2 item=PAG kind=MIN hits=41  CursorPagination used by list endpoints
+      analytics\pagination.py:1: from core.pagination import StandardCursorPagination
+      analytics\pagination.py:4: class DailyStatsCursorPagination(StandardCursorPagination):
+      analytics\pagination.py:8: StandardCursorPagination orders by ``-created_at``; for daily stats the
+      analytics\pagination.py:16: ``?page_size=`` up to StandardCursorPagination's max_page_size (100).
+      analytics\views.py:5: from analytics.pagination import DailyStatsCursorPagination
+      analytics\views.py:36: pagination_class = DailyStatsCursorPagination
+      chat\views.py:27: from core.pagination import StandardCursorPagination
+      chat\views.py:365: page first (StandardCursorPagination's own convention). The Flutter
+      chat\views.py:373: pagination_class = StandardCursorPagination
+      content\views.py:12: from core.pagination import StandardCursorPagination
+      content\views.py:47: pagination_class = StandardCursorPagination
+      content\views.py:114: ?business_id= filter and StandardCursorPagination both copy
+      content\views.py:121: pagination_class = StandardCursorPagination
+      content\views.py:146: pagination_class = StandardCursorPagination
+      content\views.py:204: StandardCursorPagination.
+      content\views.py:209: pagination_class = StandardCursorPagination
+      core\pagination.py:6: StandardCursorPagination is the required pagination class for those
+      core\pagination.py:11: from rest_framework.pagination import CursorPagination
+      core\pagination.py:14: class StandardCursorPagination(CursorPagination):
+      core\pagination.py:19: inheriting TimestampedModel. DRF's CursorPagination handles rows that
+      feed\cursor.py:4: Why a custom cursor (and not core.pagination.StandardCursorPagination)
+      feed\cursor.py:6: StandardCursorPagination orders ONE queryset by ONE field. The Home
+      moderation\views.py:25: from core.pagination import StandardCursorPagination
+      moderation\views.py:77: pagination_class = StandardCursorPagination
+      notifications\views.py:29: from core.pagination import StandardCursorPagination
+      notifications\views.py:42: pagination_class = StandardCursorPagination
+      products\views.py:40: from core.pagination import StandardCursorPagination
+      products\views.py:62: so it adopts core.pagination.StandardCursorPagination per that
+      products\views.py:68: pagination_class = StandardCursorPagination
+      products\views.py:172: Uses the same StandardCursorPagination as ProductListCreateView,
+      products\views.py:179: pagination_class = StandardCursorPagination
+      ratings\views.py:16: from core.pagination import StandardCursorPagination
+      ratings\views.py:78: pagination_class = StandardCursorPagination
+      search\cursor.py:6: core.pagination.StandardCursorPagination orders ONE queryset by ONE
+      social\views.py:300: from core.pagination import StandardCursorPagination
+      social\views.py:322: pagination_class = StandardCursorPagination
+      social\views.py:449: pagination_class = StandardCursorPagination
+      stories\views.py:7: from core.pagination import StandardCursorPagination
+      stories\views.py:19: StandardCursorPagination's built-in `-created_at` ordering (no extra
+      stories\views.py:38: pagination_class = StandardCursorPagination
+[PASS] PAG3 item=PAG kind=ZERO hits=0  Flutter sends no offset= / page= query parameters
+[PASS] PAY1 item=PAY kind=ZERO hits=0  No card/CVV/expiry/token/PAN field on any backend model
+[PASS] PAY2 item=PAY kind=ZERO hits=0  No card number / CVV identifiers in Flutter code
+[INFO] PAY3 item=PAY kind=INFO hits=1  INFO: Paymob gateway redacts source_data.pan before persisting
+      payments\gateways\paymob.py:63: "source_data.pan",
+[PASS] IAP1 item=IAP kind=ZERO hits=0  No IAP/Stripe/webview package in pubspec.yaml
+[PASS] IAP2 item=IAP kind=ZERO hits=0  No IAP / Paymob / Fawry / iframe identifiers in Flutter code
+[PASS] IAP3 item=IAP kind=ZERO hits=0  No Play Billing permission/library in Android manifest or gradle
+[INFO] IAP4 item=IAP kind=INFO hits=0  INFO: url_launcher / launchUrl usage (review: must not open a purchase page)
+[INFO] IAP5 item=IAP kind=INFO hits=2  INFO: payments/urls.py routes (review: web-dashboard contract only)
+      payments\urls.py:16: path("webhook/paymob/", PaymobWebhookView.as_view(), name="paymob-webhook"),
+      payments\urls.py:17: path("initiate/", PaymentInitiateView.as_view(), name="payment-initiate"),
+[INFO] CEL1 item=CEL kind=INFO hits=8  INFO: all Celery tasks (each must be idempotent)
+      analytics\tasks.py:123: @shared_task(name="analytics.compute_daily_stats", ignore_result=True)
+      chat\tasks.py:58: @shared_task(name="chat.notify_offline_recipient", ignore_result=True)
+      content\tasks.py:49: @shared_task(name="content.transcode_reel")
+      moderation\tasks.py:96: @shared_task(name="moderation.check_moderation_sla", ignore_result=True)
+      monetization\tasks.py:49: @shared_task(name="monetization.expire_featured_subscriptions", ignore_result=True)
+      notifications\tasks.py:103: @shared_task(name="notifications.dispatch_notification", ignore_result=True)
+      payments\tasks.py:105: @shared_task(name="payments.reconcile_pending_transactions", ignore_result=True)
+      stories\tasks.py:36: @shared_task(name="stories.expire_stale_stories", ignore_result=True)
+[INFO] CEL2 item=CEL kind=INFO hits=36  INFO: tests that mention idempotency / re-running
+      analytics\tests\test_tasks.py:251: class TestIdempotency:
+      analytics\tests\test_tasks.py:495: class TestRatingAndCatalogIdempotency:
+      content\tests\test_tasks.py:92: def test_running_twice_does_not_create_a_second_queue_row(self):
+      devices\tests\test_api.py:99: def test_same_user_same_token_is_idempotent(self, api_client):
+      moderation\tests\test_api.py:226: def test_approving_twice_returns_409_and_keeps_one_log(self, client, moderator):
+      moderation\tests\test_services.py:133: def test_approving_twice_raises_and_creates_no_second_log(
+      moderation\tests\test_services.py:145: def test_rejecting_twice_raises_and_creates_no_second_log(
+      moderation\tests\test_tasks.py:129: class TestCheckModerationSlaIdempotency:
+      moderation\tests\test_tasks.py:130: def test_running_twice_logs_the_same_still_breaching_item_both_times(
+      moderation\tests\test_tasks.py:134: Section 5 rule 8 / the part's explicit idempotency requirement:
+      monetization\tests\test_expiry_task.py:18: 3. Idempotency (re-runs, renewal after expiry).
+      monetization\tests\test_expiry_task.py:300: class TestIdempotency:
+      monetization\tests\test_expiry_task.py:301: def test_running_twice_deactivates_once_and_does_not_error(self):
+      monetization\tests\test_expiry_task.py:302: business = make_business("Twice Co")
+      notifications\tests\test_api.py:175: def test_is_idempotent(self, api_client):
+      notifications\tests\test_api.py:176: user = _make_user("p082-read-twice@example.com")
+      payments\tests\test_reconciliation.py:227: class TestIdempotency:
+      payments\tests\test_reconciliation.py:228: def test_second_run_does_not_activate_again(self, monkeypatch):
+      payments\tests\test_webhook_idempotency.py:2: Part P-090 (STEP 3): the critical idempotency proofs.
+      payments\tests\test_webhook_idempotency.py:63: def test_same_payload_twice_activates_exactly_once(self, client, activate_spy):
+      reports\tests\test_api.py:46: def test_duplicate_report_is_idempotent(self, business):
+      social\tests\test_api.py:73: def test_follow_is_idempotent(self, api_client):
+      social\tests\test_api.py:118: def test_unfollow_twice_does_not_double_decrement_or_go_negative(self, api_client):
+      social\tests\test_api.py:255: def test_like_post_is_idempotent(self, api_client):
+      social\tests\test_api.py:301: def test_unlike_twice_does_not_go_negative(self, api_client):
+      social\tests\test_api.py:483: def test_save_post_is_idempotent(self, api_client):
+      social\tests\test_api.py:1237: def test_sharing_same_content_twice_is_not_deduplicated(self, api_client):
+      social\tests\test_api.py:1240: idempotency test (P-052 Follow, P-053 Like, P-054 Save).
+      social\tests\test_api.py:1246: ever fails because someone "fixed" Share into an idempotent
+      social\tests\test_api.py:1437: Share has no idempotency concern, but the atomicity of the
+      social\tests\test_models.py:438: user = _make_sharer("sharer-twice")
+      social\tests\test_permission_sweep.py:152: assert response.status_code == 200  # idempotent no-op for them
+      stories\tests\test_api.py:315: Part P-049. Covers StoryViewRecordView (idempotent recording) and
+      stories\tests\test_api.py:335: def test_viewing_story_twice_as_same_user_creates_exactly_one_row(self):
+      stories\tests\test_tasks.py:125: class TestExpireStaleStoriesIdempotency:
+      stories\tests\test_tasks.py:126: def test_running_twice_in_a_row_is_a_no_op_the_second_time(self):
+[PASS] TOK1 item=TOK kind=MIN hits=1  secure_token_storage.dart uses flutter_secure_storage
+      lib\core\storage\secure_token_storage.dart:2: import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+[PASS] TOK2 item=TOK kind=ZERO hits=0  Files importing shared_preferences/hive/sqflite never mention access/refresh tokens in code
+[PASS] IDOR1 item=IDOR kind=MIN hits=16  test_permission_sweep.py files exist (P-096 sweep)
+      analytics\tests\test_permission_sweep.py
+      businesses\tests\test_permission_sweep.py
+      chat\test_permission_sweep.py
+      content\tests\test_permission_sweep.py
+      devices\tests\test_permission_sweep.py
+      feed\tests\test_permission_sweep.py
+      moderation\tests\test_permission_sweep.py
+      monetization\tests\test_permission_sweep.py
+      notifications\tests\test_permission_sweep.py
+      payments\tests\test_permission_sweep.py
+      products\tests\test_permission_sweep.py
+      ratings\tests\test_permission_sweep.py
+      reports\tests\test_permission_sweep.py
+      search\tests\test_permission_sweep.py
+      social\tests\test_permission_sweep.py
+      stories\tests\test_permission_sweep.py
+[PASS] IDOR2 item=IDOR kind=MIN hits=1  Backend test suite result from this run (-RunTests)
+      backend pytest PASS
+[PASS] WEB1 item=WEB kind=MIN hits=1  hmac.compare_digest used in Paymob gateway
+      payments\gateways\paymob.py:254: return hmac.compare_digest(expected, str(signature).lower())
+[PASS] WEB2 item=WEB kind=MIN hits=4  Webhook view reads the signature (hmac query param) and verifies
+      payments\views.py:8: cannot carry a user's JWT), so its whole security rests on verifying the
+      payments\views.py:40: SIGNATURE_QUERY_PARAM = "hmac"
+      payments\views.py:104: signature = request.query_params.get(SIGNATURE_QUERY_PARAM, "")
+      payments\views.py:107: if not get_gateway().verify_webhook_signature(raw_body, signature):
+[PASS] WEB3 item=WEB kind=MIN hits=1  Transaction id is UNIQUE (idempotency key) in payments/models.py
+      payments\models.py:97: unique=True,
+[PASS] WEB4 item=WEB kind=MIN hits=1  process_webhook_event defined in payments/webhooks.py
+      payments\webhooks.py:100: def process_webhook_event(event: "WebhookEvent") -> str:
+[INFO] WEB5 item=WEB kind=INFO hits=33  INFO: payments tests that mention signature / duplicate
+      payments\tests\test_gateways.py:213: class TestVerifyWebhookSignature:
+      payments\tests\test_gateways.py:214: def test_valid_signature(self, paymob_settings):
+      payments\tests\test_gateways.py:215: assert PaymobGateway().verify_webhook_signature(
+      payments\tests\test_gateways.py:222: assert not PaymobGateway().verify_webhook_signature(
+      payments\tests\test_gateways.py:229: assert not PaymobGateway().verify_webhook_signature(
+      payments\tests\test_gateways.py:234: assert not PaymobGateway().verify_webhook_signature(
+      payments\tests\test_gateways.py:240: assert not PaymobGateway().verify_webhook_signature(
+      payments\tests\test_gateways.py:244: @pytest.mark.parametrize("signature", ["", "not-hex", "0" * 128])
+      payments\tests\test_gateways.py:245: def test_bad_signatures_rejected(self, paymob_settings, signature):
+      payments\tests\test_gateways.py:246: assert not PaymobGateway().verify_webhook_signature(_payload(), signature)
+      payments\tests\test_gateways.py:250: assert PaymobGateway().verify_webhook_signature(payload, "abc") is False
+      payments\tests\test_gateway_status.py:252: def verify_webhook_signature(self, payload, signature):
+      payments\tests\test_permission_sweep.py:6: unauthenticated BY NECESSITY and secured by the HMAC signature instead).
+      payments\tests\test_permission_sweep.py:18: signature (400, nothing changes, nothing is activated), and
+      payments\tests\test_permission_sweep.py:24: Category 3: n/a - no capability-gated route; the signature is the only
+      payments\tests\test_permission_sweep.py:117: def test_business_owner_jwt_cannot_replace_the_webhook_signature():
+      payments\tests\test_reconciliation.py:227: class TestIdempotency:
+      payments\tests\test_webhook.py:2: Part P-090 (STEP 1): webhook signature gate + payload parsing.
+      payments\tests\test_webhook.py:4: The single most important test here: an invalid signature is rejected
+      payments\tests\test_webhook.py:44: signature = sign(payload)
+      payments\tests\test_webhook.py:46: return payload, signature
+      payments\tests\test_webhook.py:49: class TestInvalidSignatureIsRejectedWithZeroSideEffects:
+      payments\tests\test_webhook.py:62: tampered, signature = _tampered_after_signing()
+      payments\tests\test_webhook.py:63: response = post_webhook(client, tampered, hmac_value=signature)
+      payments\tests\test_webhook.py:74: def test_unconfigured_secret_rejects_even_a_well_formed_signature(
+      payments\tests\test_webhook.py:95: def test_signature_is_checked_before_the_payload_is_parsed(
+      payments\tests\test_webhook_idempotency.py:2: Part P-090 (STEP 3): the critical idempotency proofs.
+      payments\tests\test_webhook_idempotency.py:4: Duplicates are proven with a SPY on activate_subscription (call count),
+      payments\tests\test_webhook_idempotency.py:62: class TestDuplicateDelivery:
+      payments\tests\test_webhook_idempotency.py:76: def test_duplicate_changes_nothing(self, client, activate_spy):
+      payments\tests\test_webhook_idempotency.py:138: stolen_signature = sign(payload)
+      payments\tests\test_webhook_idempotency.py:142: response = post_webhook(client, tampered, hmac_value=stolen_signature)
+      payments\tests\test_webhook_idempotency.py:148: def test_invalid_signature_never_reaches_processing(self, client):
+[PASS] K8S1 item=K8S kind=ZERO hits=0  No Kubernetes / swarm / autoscaling config in compose, nginx, scripts, CI, requirements (both repos)
+
+== backend: docker compose exec web python -m pytest -q (summary supplied by owner, run inside docker) ==
+1682 passed, 1 skipped, 1 xfailed in 1014.59s (0:16:54)
+
+== mobile: flutter analyze = No issues found; flutter test = exit 0 (supplied by owner from the earlier -RunTests run) ==
