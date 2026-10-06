@@ -12979,3 +12979,45 @@ Remaining work for P-113 (exact order)
 GitHub: cavallo-mobile, branch part-111: STEP 4A = de5d234; STEP 4B = commit of this push (add hash after pushing).
 
 Exact next starting point: P-113 STEP 5 - Home top bar with unread badges.
+
+### P-113 - STEP 5 + STEP 6 + CLOSE - COMPLETE
+
+Status: P-113 (Flutter app shell, role-aware navigation, Profile and Settings hub, Saved, create sheet, reachability guarantee) is COMPLETE. Steps 1-4 are recorded in the sections above; this section covers STEP 5, STEP 6 (6A and 6B) and the close.
+
+STEP 5 + STEP 6A (mobile commit f173430, branch part-111)
+- New: lib/core/shell/home_top_bar.dart (wordmark at the start; Notifications and Chats icons at the end with unread badges; optional extraActions, nothing uses it today).
+- New: lib/features/chat/presentation/chat_unread_provider.dart (chatUnreadCountProvider, reuses the existing chat data, no new polling).
+- New: lib/features/discover/presentation/discover_search_bar.dart (Explore search bar; replaces the temporary "Search (debug)" entry of the Home debug menu).
+- HomeFeedScreen adopts HomeTopBar and shows the stories tray (_HomeStoriesTray: draws nothing when signed out). Pull to refresh also invalidates notificationListProvider, chatUnreadCountProvider and activeStoryGroupsProvider.
+- Tests: test/core/shell/home_top_bar_test.dart, test/features/chat/presentation/chat_unread_provider_test.dart, test/features/discover/presentation/discover_search_bar_test.dart.
+- Fix inside 6A: test/routing/app_router_test.dart had a default notificationRepositoryProvider override in _pumpRouter. Riverpod rejects overriding the same provider twice in one container, which broke 3 tests that pass their own override through extraOverrides. The default override was removed (chat and story-group default overrides stay).
+
+STEP 6B (mobile commit 71debbf, branch part-111)
+- home_feed_screen.dart: _DebugMenu deleted, together with the three temporary language entries (Language: English, Arabic, follow device), the dead imports (locale_provider, business_profile_provider) and the old debug-menu documentation. The AppBar is now just const HomeTopBar().
+- home_top_bar.dart: documentation only.
+- home_feed_screen_test.dart: the "debug menu switches the app language" test was replaced by "Part P-113: the Home app bar has no debug or overflow menu" (no tooltip 'Debug menu', no PopupMenuButton).
+- New script P113-ProveReachabilityFails.ps1 (kept in the mobile repo root): temporarily points the productList manifest entry at a route named ghostRoute, runs test/routing/navigation_reachability_test.dart, always restores the manifest, then runs the test again.
+
+Important implementation details
+- The navigation manifest (lib/routing/navigation_manifest.dart) stays the single source of truth. Any new route must get a manifest entry or the reachability test fails.
+- The reachability test checks: every manifest route exists in the router, no router route exists outside the manifest, and every route allowed for an account type has at least one non-deep-link entry point.
+- Redirect guards (auth, business onboarding gate, business console gate, moderator gate) were not changed.
+
+Verification
+- flutter analyze: No issues found.
+- flutter test test\features\feed test\routing test\core\shell test\features\notifications test\features\chat test\features\profile_hub test\features\discover: +405 all passed.
+- Reachability proof: on the broken manifest the test FAILED with manifestRouteMissingInRouter (productList names ghostRoute) and routerRouteMissingInManifest (router route productList has no manifest entry); the meta test "a route removed from the router is reported" also failed there, which is expected because the broken manifest no longer names that route. On the restored manifest: +16 all passed.
+- Manual check of Test 3 (Explore search bar and Home stories tray): passed (reported by the developer).
+- Manual three-account walk-through (Customer, Business, Staff): reported as passed by the developer. Per-row details (Light/Dark, Arabic/English) were not recorded in this chat.
+
+Known issues
+- Lines like "[HTTP] ... -> 400" appear in the router and gate tests. They are real requests to localhost:8095 from tests that reach Home with a signed-in user; they fail quietly and do not break tests. Improvement (not a fix): add default fakes in those tests.
+- BusinessConsoleScreen placeholder still had hardcoded English and a "Back to splash" debug button at the end of STEP 4; it was not touched by STEP 5 or STEP 6. Check it in P-114/P-115.
+- Not re-verified in this part's closing steps: the Language selector PATCHing preferred_language on /api/v1/auth/me/ (required by the P-112 handoff). Confirm it before P-115's repository-wide l10n check.
+
+Remaining work
+- None for P-113.
+
+GitHub: cavallo-mobile, branch part-111: STEP 4B = 9e34c99; STEP 5 + 6A = f173430; STEP 6B = 71debbf.
+
+Exact next starting point: P-114 (visual restyle of the destination screens inside this shell). P-114 and P-115 must keep every navigation manifest entry intact and keep test/routing/navigation_reachability_test.dart green.
