@@ -265,7 +265,9 @@ class TestPhase17Steps1To4:
         # approved Post and Story through the PUBLIC endpoints.
         assert post_id in _ids(customer_client.get("/api/v1/posts/public/"))
         assert story_id in _ids(customer_client.get("/api/v1/stories/public/"))
-        assert customer_client.get(f"/api/v1/businesses/{business_id}/").status_code == 200
+        assert (
+            customer_client.get(f"/api/v1/businesses/{business_id}/").status_code == 200
+        )
 
 
 # ===========================================================================
@@ -525,7 +527,9 @@ class TestPhase17Steps5To8:
         assert res.json()["ratings_count"] == 2
 
         # Upsert: the first customer changes 4 -> 5; count stays 2, avg 3.5.
-        res = customer.post(rate_url, {"score": 5, "review_text": "Better"}, format="json")
+        res = customer.post(
+            rate_url, {"score": 5, "review_text": "Better"}, format="json"
+        )
         assert Decimal(str(res.json()["average_rating"])) == Decimal("3.5")
         assert res.json()["ratings_count"] == 2
 
@@ -535,7 +539,9 @@ class TestPhase17Steps5To8:
         other = BusinessProfile.objects.get(pk=b2["business_id"])
         assert other.ratings_count == 0
 
-        reviews = _results(APIClient().get(f"/api/v1/businesses/{b1['business_id']}/ratings/"))
+        reviews = _results(
+            APIClient().get(f"/api/v1/businesses/{b1['business_id']}/ratings/")
+        )
         assert sorted(r["score"] for r in reviews) == [2, 5]
 
         # Seam Rating -> Search: min_rating reads the recomputed aggregate.
@@ -706,7 +712,10 @@ class TestPhase17Steps9To10Rest:
         )
         stranger = _forced_client(outsider)
         assert stranger.get(messages_url).status_code == 403
-        assert stranger.post(messages_url, {"text": "hi"}, format="json").status_code == 403
+        assert (
+            stranger.post(messages_url, {"text": "hi"}, format="json").status_code
+            == 403
+        )
 
         # ---- STEP 10b: offline push decision (Business not connected) -----------
         assert offline_notify.delay.call_count == 3
@@ -734,6 +743,7 @@ class TestPhase17Steps9To10Rest:
             body="Sent a photo",
             deep_link_type="chat_thread",
             target_id=conversation_id,
+            params={"media": "image"},
         )
 
 
@@ -797,7 +807,9 @@ class TestPhase17Steps9To10Live:
         customer_ws = await _ws_connect(conversation_id, customer_user)
 
         # ---- the Business receives the message live ---------------------------
-        sent = await sync_to_async(customer.post)(url, {"text": "Live hello"}, format="json")
+        sent = await sync_to_async(customer.post)(
+            url, {"text": "Live hello"}, format="json"
+        )
         assert sent.status_code == 201, sent.content
         message_id = sent.json()["id"]
 
@@ -819,9 +831,13 @@ class TestPhase17Steps9To10Live:
         assert json.loads(await business_ws.receive_from()) == update
         assert await _message_status(message_id) == "delivered"
 
-        customer_view = _results(await sync_to_async(customer.get)("/api/v1/conversations/"))
+        customer_view = _results(
+            await sync_to_async(customer.get)("/api/v1/conversations/")
+        )
         assert customer_view[0]["last_message"]["status"] == "delivered"
-        business_view = _results(await sync_to_async(business.get)("/api/v1/conversations/"))
+        business_view = _results(
+            await sync_to_async(business.get)("/api/v1/conversations/")
+        )
         assert business_view[0]["unread_count"] == 1  # delivered, not yet read
 
         # ---- delivered -> read --------------------------------------------------
@@ -832,11 +848,15 @@ class TestPhase17Steps9To10Live:
         assert json.loads(await customer_ws.receive_from()) == update
         assert json.loads(await business_ws.receive_from()) == update
         assert await _message_status(message_id) == "read"
-        business_view = _results(await sync_to_async(business.get)("/api/v1/conversations/"))
+        business_view = _results(
+            await sync_to_async(business.get)("/api/v1/conversations/")
+        )
         assert business_view[0]["unread_count"] == 0
 
         # ---- only the RECIPIENT may acknowledge (F-7) ----------------------------
-        second = await sync_to_async(customer.post)(url, {"text": "Second"}, format="json")
+        second = await sync_to_async(customer.post)(
+            url, {"text": "Second"}, format="json"
+        )
         second_id = second.json()["id"]
         await business_ws.receive_from()
         await customer_ws.receive_from()
@@ -851,7 +871,9 @@ class TestPhase17Steps9To10Live:
 
         # ---- Business goes offline: the next message queues an offline push ------
         await business_ws.disconnect()
-        third = await sync_to_async(customer.post)(url, {"text": "Third"}, format="json")
+        third = await sync_to_async(customer.post)(
+            url, {"text": "Third"}, format="json"
+        )
         assert third.status_code == 201
         offline_notify.delay.assert_called_once_with(third.json()["id"])
 
