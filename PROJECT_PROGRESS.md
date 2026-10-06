@@ -12869,3 +12869,113 @@ Finish the OPEN items (goldens, manual walk-through, contrast/non-null test conf
 
 ### Edits to existing sections
 - In the Part status index/table add: P-111 | Flutter Design System Foundation | Phase 23 | CODE COMPLETE; goldens and manual walk-through OPEN. Set the Phase 23 summary line to "IN PROGRESS (P-111 code complete with open DoD items, P-112 next)".
+
+## PART P-112 - Backend + Flutter: Localization Foundation (Arabic/English, True RTL, Server-Side Content Localization) - STATUS: CODE COMPLETE, AUTOMATED CHECKS GREEN, EMULATOR WALK-THROUGH DONE (2026-10-06); NOT MARKED COMPLETE: push notification received on a real device in each language and the native-speaker Arabic review are still OPEN
+
+### What was implemented
+Backend (cavallo-app, branch develop):
+- accounts: User.preferred_language (ar/en, default ar), migration 0005; exposed on GET /api/v1/auth/me/ and a new PATCH that changes ONLY the language (any other field in the body, e.g. is_staff/account_type, is ignored).
+- core/i18n.py reads Accept-Language (understands ar-EG and q= weights); core/i18n_tools.py holds the catalog tooling.
+- categories: name_ar and name_en added next to the untouched `name` (kept as the English/fallback value); data migration copies name into name_en; the tree/list serializers return ONE localized name chosen from Accept-Language, fallback English; the tree cache is per language (categories:tree for English, categories:tree:ar) and the signal clears both keys; the admin form accepts both names.
+- devices: the active locale is stored at device registration (migration devices 0002_p112_localization).
+- notifications: title and body are rendered at dispatch time inside translation.override(user.preferred_language) from Django gettext catalogs (locale/ar and locale/en, .po plus compiled .mo committed); type + params are stored next to the rendered text (migration notifications 0003_p112_localization); existing stored notifications are untouched. The producers (moderation, social, chat) pass params.
+- config/settings/base.py: LANGUAGES, LOCALE_PATHS, LocaleMiddleware.
+Flutter (cavallo-mobile, branch part-111):
+- l10n pipeline: l10n.yaml, lib/l10n/app_en.arb (template) and app_ar.arb, generated AppLocalizations committed (synthetic-package: false), delegates, supportedLocales and locale wired in main.dart; Arabic plurals define all six forms.
+- lib/core/l10n/locale_provider.dart: Locale? state (null = follow device), persisted through CacheStorage, resolved before the first frame (preloadLocale); default rule: the device language when it is ar or en, otherwise Arabic.
+- lib/core/network/interceptors/locale_interceptor.dart: Accept-Language on every request through a callback (it never holds a Ref); FcmService sends the active language ("locale") when it registers the token.
+- lib/core/l10n/error_messages.dart: localizedApiError, one function mapping error.code to localized text; raw backend sentences are never shown.
+- lib/core/l10n/formatters.dart (AppFormatters): compact counts, relative time, absolute dates, price; Western digits; one file to change digit or date style.
+- lib/core/l10n/l10n_context.dart: context.l10n (falls back to English when a widget is built without delegates, so old widget tests keep working). lib/core/l10n/rtl_helpers.dart: isRtl and DirectionalIcon.
+- Screens migrated: login, register, splash, the shared ErrorStateWidget, and a new RouteErrorScreen (go_router errorBuilder). Backend field errors are shown as FIXED localized messages per field (a flag per field; the text is built at build time), so the text also follows a live language change.
+- TEMPORARY debug control: three entries in the Home debug menu (Language: English, Language: Arabic, Language: follow device). The real selector replaces them in P-113.
+
+### Files created
+Backend: core/i18n.py, core/i18n_tools.py, core/tests/test_i18n.py, core/tests/test_locale_catalogs.py, accounts/migrations/0005_user_preferred_language.py, accounts/tests/test_preferred_language.py, categories/migrations/0002_category_localized_names.py, categories/migrations/0003_copy_name_to_name_en.py, categories/tests/test_localized_names.py, devices/migrations/0002_p112_localization.py, devices/tests/test_locale.py, notifications/messages.py, notifications/migrations/0003_p112_localization.py, notifications/tests/test_localized_dispatch.py, locale/ar/LC_MESSAGES/django.po and django.mo, locale/en/LC_MESSAGES/django.po and django.mo.
+Flutter: l10n.yaml, lib/l10n/app_en.arb, lib/l10n/app_ar.arb, lib/l10n/app_localizations.dart, lib/l10n/app_localizations_ar.dart, lib/l10n/app_localizations_en.dart, lib/core/l10n/locale_provider.dart, lib/core/l10n/error_messages.dart, lib/core/l10n/formatters.dart, lib/core/l10n/l10n_context.dart, lib/core/l10n/rtl_helpers.dart, lib/core/network/interceptors/locale_interceptor.dart, lib/routing/route_error_screen.dart, test/l10n/arb_parity_test.dart, test/l10n/arb_encoding_test.dart, test/l10n/localization_pipeline_test.dart, test/core/l10n/locale_provider_test.dart, test/core/l10n/error_messages_test.dart, test/core/l10n/locale_app_test.dart, test/core/l10n/formatters_test.dart, test/core/l10n/l10n_context_test.dart, test/core/l10n/rtl_helpers_test.dart, test/features/auth/presentation/auth_localization_test.dart, test/routing/route_error_screen_test.dart.
+
+### Files modified
+Backend: accounts/models.py, accounts/views.py, accounts/serializers.py, accounts/admin.py, accounts/tests/test_me.py (the /me/ key set now includes preferred_language), categories/models.py, categories/services.py, categories/views.py, categories/signals.py, categories/admin.py, devices/models.py, devices/serializers.py, devices/views.py, notifications/models.py, notifications/services.py, notifications/tasks.py, notifications/tests/test_services.py, notifications/tests/test_push.py, notifications/tests/test_sources.py, notifications/tests/test_deep_link_sweep.py, moderation/services.py, social/views.py, chat/tasks.py, chat/test_tasks.py, config/settings/base.py, core/tests/test_integration_phase17.py (the offline-push assertion now expects params={"media": "image"}; black reformatted the file).
+Flutter: pubspec.yaml (flutter_localizations, intl, generate: true), lib/main.dart, lib/core/network/dio_client.dart, lib/core/push/fcm_service.dart, lib/core/widgets/error_state_widget.dart, lib/features/auth/presentation/login_screen.dart, register_screen.dart, splash_screen.dart, lib/routing/app_router.dart (errorBuilder), lib/features/feed/presentation/home_feed_screen.dart (debug language entries), test/features/auth/presentation/login_screen_test.dart and register_screen_test.dart (they now expect the fixed localized field messages instead of backend sentences), test/features/feed/presentation/home_feed_screen_test.dart.
+
+### Important implementation details and architecture decisions
+- Backend changes are additive: no column removed or renamed, no endpoint contract broken, the error envelope shape is unchanged.
+- Accept-Language is read only by core/i18n.py (verified before adding that nothing else consumed it).
+- Category `name` stays as the English/fallback value; the localized name is computed in the serializer.
+- Notifications are rendered once, at dispatch time, in the recipient's preferred_language; type + params are stored so a client-side re-render stays possible. Chat messages and other user-generated content are never translated.
+- Flutter screens never display a backend message. They keep WHAT failed (a field flag or the ApiFailure) and build the text at build time. Directional widgets (EdgeInsetsDirectional etc.) are used in every file touched by P-112; no left/right remains in lib/core/widgets, lib/features/auth, lib/routing, lib/core/l10n.
+- ARB rules: semantic keys, ICU plurals, Arabic defines zero/one/two/few/many/other, no sentence concatenation. arb_parity_test fails on a key present in one file only, a missing Arabic plural form, an unused placeholder or a non-semantic key. arb_encoding_test catches garbled Arabic; values made only of placeholders and punctuation (dateFull, dateAndTime, priceDisplay) may hold no Arabic letters.
+- The Arabic glossary of the Phase 23 overview is the terminology baseline. Every Arabic string is "pending review", not final.
+- The mobile P-112 commits live on branch part-111.
+
+### Commands
+Backend (from scd-backend): docker compose exec web python manage.py makemigrations --check --dry-run; docker compose exec web python manage.py migrate; docker compose exec web pytest -q; docker compose exec web black --check <files>.
+Flutter (from social_commerce_app): flutter gen-l10n; flutter analyze; flutter test; flutter run (emulator reaches the backend at http://10.0.2.2:8095).
+
+### Tests and verification results (2026-10-06)
+- Backend: makemigrations --check: No changes detected. Migrations apply and reverse cleanly (categories back to 0001, accounts back to 0004, then forward again). Full pytest: 1762 passed, 1 skipped, 1 xfailed and 1 failed; the failure was core/tests/test_integration_phase17.py (it still expected the chat offline push without params); fixed, the file is now 4 passed and black-clean. Manual: Accept-Language ar, en and none on /api/v1/categories/tree/ returned Arabic, English, English; a manual script rendered the notification as [ar] and [en] with push in both languages; device registration stored locale ar.
+- Flutter: flutter analyze: No issues found. flutter test: 1210 passed after STEP 6; the STEP 7 full run was reported green by the owner before the commit (count not recorded; 1210 plus one new test is 1211). Coverage: Arabic plurals for 0, 1, 2, 3, 11 and 100; ARB parity; locale provider persistence; formatters in both languages; login, register and splash in both languages and both directions; the backend sentence is never shown; the unknown-route page; the debug menu switching the language.
+- Emulator walk-through (Android emulator, sdk gphone64 x86 64, owner-confirmed): the three debug entries switch the language; layout flips left-to-right and right-to-left; login, register and splash translate; the choice survives a restart. Screens outside the migrated set stay English by design (see Known issues).
+
+### Known issues and OPEN Definition-of-Done items
+- OPEN: a push notification received on a real device in each language. The emulator has no Firebase configuration (FcmService logs "Firebase not configured"). Only the server-side rendering was verified, by script.
+- OPEN: native-speaker review and sign-off of the glossary and the first-pass app_ar.arb (required before P-115 closes). Until then the Arabic is "pending review".
+- The debug language control changes the app language locally only; it does NOT PATCH preferred_language on the server. The language reaches the server only through the device-registration locale. The real selector in P-113 must also PATCH /api/v1/auth/me/.
+- Most screens outside core/, auth/ and routing still hold hardcoded English, so only direction flips there (STEP 1 inventory: 171 literal Text, 52 SnackBar, 19 tooltip, 7 labelText, 4 hintText). P-113 to P-115 migrate the screens they touch; P-115 runs the repository-wide check.
+- Pre-existing, not caused by P-112: flake8 E402 in accounts/views.py; noisy test logs (HTTP 400 on /feed/home in router tests, reportError traces); a pytest teardown warning about the test database still having a session; celerybeat-schedule changes by itself and must not be committed.
+- Housekeeping: the P-112 STEP 2 helper files and a backup folder were committed by mistake and untracked in 476dafe (the files were moved outside the repo).
+
+### Remaining work (exact order)
+1. Real-device check: register the device, change the language, trigger a notification, confirm it arrives in each language; record the result here.
+2. Native Arabic review of the glossary and app_ar.arb.
+3. P-113: real Language selector in Settings (beside the theme setting from P-111), PATCH preferred_language, remove the three debug language entries; migrate the strings of the screens it touches in the same commit as the ARB keys.
+4. P-114 and P-115: continue the migration; P-115 runs the repository-wide hardcoded-string check.
+
+### GitHub references
+cavallo-app (develop): 4ca1789 (step 1: categories and preferred_language), a0f8be7 (step 2: notifications, device locale, settings), 476dafe (untrack helper files), bda634f (Phase 17 test fix).
+cavallo-mobile (part-111): b9d8f8e (step 3: l10n pipeline), bc35223 (step 4: locale provider, interceptor, error mapping), 2d96d15 (step 5: formatters), 2403478 (step 6: auth, splash, route error page, RTL helpers), 279f0f8 (step 7: temporary debug language control).
+
+### Exact next starting point
+Close the two OPEN items above, then start P-113 (Language selector in Settings). Preconditions: both ARB files stay in parity, every new string goes into app_en.arb and app_ar.arb in the same commit, AppFormatters stays the only place for digits, dates and prices, and the selector must PATCH /api/v1/auth/me/.
+
+### Edits to existing sections
+None.
+
+### P-113 - STEP 4 (Part A + Part B) - IN PROGRESS (not complete)
+
+Status: STEP 4 done and verified. P-113 as a whole is NOT complete.
+
+STEP 4 / PART A (commit de5d234)
+- lib/core/shell/create_sheet.dart: Business "+" bottom sheet (Post, Reel, Story, Product), each pushes its existing form route. Sheet pops with the route name; showCreateSheet pushes it using the router captured before the sheet opened.
+- lib/core/shell/app_shell.dart: "+" opens the create sheet; Staff moderation tab badge reads the existing moderationQueueProvider (no new request, no polling).
+- ARB: createSheetTitle/Post/Reel/Story/Product added to both files.
+
+STEP 4 / PART B (script P113-Step4B.ps1)
+- New: lib/features/business_profile/presentation/own_business_id_provider.dart (ownBusinessIdProvider: id of the signed-in Business account's own business, else null; derived from sessionProvider + businessProfileProvider).
+- New: lib/features/business_profile/presentation/own_profile_edit_button.dart (app bar Edit icon, visible only when the shown business is the user's own; pushes RouteNames.businessProfileEdit).
+- New: lib/features/profile_hub/presentation/business_shortcuts.dart (4 icon buttons under the hub header: Products, Content, Stories, Analytics; Business audience only; tooltips instead of visible text so the hub does not duplicate the "Business tools" rows).
+- Patched: profile_hub_screen.dart (import + BusinessShortcuts after the header), business_profile_public_screen.dart (import + AppBar actions).
+- Tests: own_profile_edit_button_test.dart (7), business_shortcuts_test.dart (8).
+- No ARB change: existing hubProducts, hubContent, hubStories, hubAnalytics, hubEditBusinessProfile are reused.
+- Manifest entries now backed by real UI: "Tab 5 header shortcuts" (console destinations) and "Edit button on the Business public profile". "Add" buttons in the products/content/stories lists already existed and are wired in app_router.dart.
+
+Verification
+- flutter analyze: No issues found.
+- flutter test test\features\business_profile: +76 all passed.
+- flutter test test\core\shell test\routing test\features\profile_hub: +162 all passed.
+- Manual check of the new shortcuts and the owner Edit button: passed (reported by the developer).
+
+Known issues
+- Existing public-profile tests do not override sessionProvider; the new Edit button reads it. They pass, but if a future change makes the real session restore throw synchronously, override ownBusinessIdProvider in those tests.
+- A first run of the combined test command hung for 12 minutes per file (environment: stale dart/flutter_tester processes). Fixed by killing the processes and clearing .dart_tool\test_cache; not a code issue.
+- The Home debug menu (_DebugMenu in home_feed_screen.dart) still exists. BusinessConsoleScreen placeholder still has hardcoded English and a "Back to splash" debug button.
+
+Remaining work for P-113 (exact order)
+1. STEP 5: Home top bar (wordmark, Notifications and Chats icons with unread badges from the existing notification and chat providers, no new polling) -> lib/core/shell/home_top_bar.dart; adopt it in HomeFeedScreen.
+2. STEP 6: delete the debug menu from HomeFeedScreen and the three temporary language entries; update the tests that use the debug-menu path; make the reachability test green and prove it can fail (remove a route or manifest entry, see it fail).
+3. Three-account manual walk-through (Customer, Business, Staff), every matrix row within three taps, Light/Dark and Arabic/English; record it here.
+4. Only then mark P-113 COMPLETE.
+
+GitHub: cavallo-mobile, branch part-111: STEP 4A = de5d234; STEP 4B = commit of this push (add hash after pushing).
+
+Exact next starting point: P-113 STEP 5 - Home top bar with unread badges.
