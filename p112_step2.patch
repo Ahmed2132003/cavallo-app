@@ -1,0 +1,1436 @@
+diff --git a/.gitattributes b/.gitattributes
+index 744b15c..a967e6b 100644
+--- a/.gitattributes
++++ b/.gitattributes
+@@ -1,2 +1,5 @@
+ # P-103: shell scripts must stay LF - they run on a Linux VPS
+ *.sh text eol=lf
++
++*.mo binary
++*.po text eol=lf
+diff --git a/chat/tasks.py b/chat/tasks.py
+index 411b5d6..01a1042 100644
+--- a/chat/tasks.py
++++ b/chat/tasks.py
+@@ -55,6 +55,15 @@ def _push_body(message):
+     return _SHARED_PUSH_BODIES.get(shared_content_type_label(message), "")
+ 
+ 
++def _push_params(message):
++    """Language-neutral description of what _push_body() describes (P-112)."""
++    if message.text:
++        return {"text": message.text[:120]}
++    if message.media_type:
++        return {"media": str(message.media_type)}
++    return {"shared": shared_content_type_label(message)}
++
++
+ @shared_task(name="chat.notify_offline_recipient", ignore_result=True)
+ def notify_offline_recipient(message_id):
+     message = (
+@@ -96,4 +105,5 @@ def notify_offline_recipient(message_id):
+         body=_push_body(message),
+         deep_link_type="chat_thread",
+         target_id=message.conversation_id,
++        params=_push_params(message),
+     )
+diff --git a/chat/test_tasks.py b/chat/test_tasks.py
+index 3858b83..7cd4171 100644
+--- a/chat/test_tasks.py
++++ b/chat/test_tasks.py
+@@ -52,6 +52,7 @@ def test_notify_offline_recipient_resolves_other_participant_not_sender(
+         body="hello offline user",
+         deep_link_type="chat_thread",
+         target_id=conversation.id,
++        params={"text": "hello offline user"},
+     )
+ 
+ 
+diff --git a/config/settings/base.py b/config/settings/base.py
+index ba98176..e6783a9 100644
+--- a/config/settings/base.py
++++ b/config/settings/base.py
+@@ -112,6 +112,10 @@ MIDDLEWARE = [
+     "core.middleware.RequestIdMiddleware",
+     "corsheaders.middleware.CorsMiddleware",
+     "django.contrib.sessions.middleware.SessionMiddleware",
++    # Part P-112: activates ar/en per request from Accept-Language so
++    # gettext (Django/DRF's own messages and our catalogs) follows the
++    # client. Must sit after SessionMiddleware and before CommonMiddleware.
++    "django.middleware.locale.LocaleMiddleware",
+     "django.middleware.common.CommonMiddleware",
+     "django.middleware.csrf.CsrfViewMiddleware",
+     "django.contrib.auth.middleware.AuthenticationMiddleware",
+@@ -411,7 +415,14 @@ AUTH_PASSWORD_VALIDATORS = [
+ # ---------------------------------------------------------------------------
+ # Internationalization
+ # ---------------------------------------------------------------------------
+-LANGUAGE_CODE = "en-us"
++LANGUAGE_CODE = "en"
++LANGUAGES = [
++    ("en", "English"),
++    ("ar", "Arabic"),
++]
++# Part P-112: project catalogs (compiled .mo files are committed - the
++# Docker image has no GNU gettext; see core/i18n_tools.py).
++LOCALE_PATHS = [BASE_DIR / "locale"]
+ TIME_ZONE = "UTC"
+ USE_I18N = True
+ USE_TZ = True
+diff --git a/core/i18n_tools.py b/core/i18n_tools.py
+new file mode 100644
+index 0000000..b719aab
+--- /dev/null
++++ b/core/i18n_tools.py
+@@ -0,0 +1,124 @@
++"""
++Pure-Python .po -> .mo compiler (Part P-112).
++
++Why this exists: the Docker image (python:3.12-slim) does not ship GNU
++gettext, so ``manage.py compilemessages`` cannot run there. The compiled
++catalogs are committed instead, and this module regenerates them with no
++system dependency:
++
++    python -m core.i18n_tools    # recompile locale/*/LC_MESSAGES/django.po
++
++A test (core/tests/test_locale_catalogs.py) fails when a committed .mo
++does not match its .po, so the two can never drift apart silently.
++
++Supported .po subset (all the project uses): msgid / msgstr pairs,
++multi-line quoted strings, "#" comments, msgctxt is NOT supported,
++plural forms are NOT supported, fuzzy entries are skipped, and entries
++with an empty msgstr are skipped (gettext falls back to the msgid).
++"""
++
++import ast
++import struct
++import sys
++from pathlib import Path
++
++_MAGIC = 0x950412DE
++
++
++def _unquote(line):
++    return ast.literal_eval(line.strip())
++
++
++def parse_po(text):
++    """Return {msgid: msgstr} for the translated entries of ``text``."""
++    entries = {}
++    msgid = msgstr = None
++    section = None
++    fuzzy = False
++    flags_fuzzy = False
++
++    def flush():
++        nonlocal msgid, msgstr, fuzzy
++        if msgid is not None and msgstr is not None:
++            if (msgstr and not fuzzy) or msgid == "":
++                entries[msgid] = msgstr
++        msgid = msgstr = None
++        fuzzy = False
++
++    for raw in text.splitlines():
++        line = raw.strip()
++        if not line:
++            flush()
++            section = None
++            continue
++        if line.startswith("#"):
++            if line.startswith("#,") and "fuzzy" in line:
++                flags_fuzzy = True
++            continue
++        if line.startswith("msgid "):
++            flush()
++            fuzzy = flags_fuzzy
++            flags_fuzzy = False
++            msgid = _unquote(line[6:])
++            section = "id"
++        elif line.startswith("msgstr "):
++            msgstr = _unquote(line[7:])
++            section = "str"
++        elif line.startswith('"'):
++            if section == "id":
++                msgid += _unquote(line)
++            elif section == "str":
++                msgstr += _unquote(line)
++        else:
++            raise ValueError(f"Unsupported .po line: {raw!r}")
++    flush()
++    return entries
++
++
++def build_mo(entries):
++    """Serialise {msgid: msgstr} into GNU .mo bytes (deterministic)."""
++    keys = sorted(entries)
++    ids = b""
++    strs = b""
++    offsets = []
++    for key in keys:
++        encoded_id = key.encode("utf-8")
++        encoded_str = entries[key].encode("utf-8")
++        offsets.append((len(ids), len(encoded_id), len(strs), len(encoded_str)))
++        ids += encoded_id + b"\0"
++        strs += encoded_str + b"\0"
++
++    count = len(keys)
++    keystart = 7 * 4 + 16 * count
++    valuestart = keystart + len(ids)
++    koffsets = []
++    voffsets = []
++    for o1, l1, o2, l2 in offsets:
++        koffsets += [l1, o1 + keystart]
++        voffsets += [l2, o2 + valuestart]
++    header = struct.pack("Iiiiiii", _MAGIC, 0, count, 7 * 4, 7 * 4 + count * 8, 0, 0)
++    body = struct.pack(f"{len(koffsets + voffsets)}i", *(koffsets + voffsets))
++    return header + body + ids + strs
++
++
++def compile_po_file(po_path):
++    """Return the .mo bytes for the .po file at ``po_path``."""
++    entries = parse_po(Path(po_path).read_text(encoding="utf-8"))
++    return build_mo(entries)
++
++
++def compile_all(locale_root):
++    """Rewrite every <locale_root>/*/LC_MESSAGES/django.mo from its .po."""
++    written = []
++    for po_path in sorted(Path(locale_root).glob("*/LC_MESSAGES/django.po")):
++        mo_path = po_path.with_suffix(".mo")
++        mo_path.write_bytes(compile_po_file(po_path))
++        written.append(mo_path)
++    return written
++
++
++if __name__ == "__main__":
++    root = Path(__file__).resolve().parent.parent / "locale"
++    for path in compile_all(root):
++        print(f"compiled {path}")
++    sys.exit(0)
+diff --git a/core/tests/test_locale_catalogs.py b/core/tests/test_locale_catalogs.py
+new file mode 100644
+index 0000000..850c7f2
+--- /dev/null
++++ b/core/tests/test_locale_catalogs.py
+@@ -0,0 +1,93 @@
++"""
++Tests for the committed gettext catalogs and locale wiring (Part P-112).
++"""
++
++from pathlib import Path
++
++import pytest
++from django.conf import settings
++from django.test import Client
++from django.utils import translation
++
++from core.i18n_tools import build_mo, compile_po_file, parse_po
++
++LOCALE_ROOT = Path(settings.BASE_DIR) / "locale"
++
++
++@pytest.mark.parametrize("language", ["ar", "en"])
++def test_committed_mo_matches_its_po(language):
++    messages = LOCALE_ROOT / language / "LC_MESSAGES"
++    expected = compile_po_file(messages / "django.po")
++
++    assert (
++        messages / "django.mo"
++    ).read_bytes() == expected, (
++        "django.mo is stale: run `python -m core.i18n_tools` and commit it."
++    )
++
++
++def test_both_catalogs_list_the_same_msgids():
++    def msgids(language):
++        text = (LOCALE_ROOT / language / "LC_MESSAGES" / "django.po").read_text(
++            encoding="utf-8"
++        )
++        return {line for line in text.splitlines() if line.startswith("msgid ")}
++
++    assert msgids("ar") == msgids("en")
++
++
++def test_no_arabic_entry_is_empty_or_fuzzy():
++    text = (LOCALE_ROOT / "ar" / "LC_MESSAGES" / "django.po").read_text(
++        encoding="utf-8"
++    )
++    assert "fuzzy" not in text
++    msgid_lines = [line for line in text.splitlines() if line.startswith("msgid ")]
++    # Every msgid (the header included) must have a non-empty translation.
++    assert len(parse_po(text)) == len(msgid_lines)
++
++
++def test_parse_and_build_roundtrip_handles_multiline_and_escapes():
++    entries = parse_po(
++        'msgid ""\nmsgstr "H"\n\n'
++        'msgid "a\\nb"\nmsgstr ""\n"x"\n"y"\n\n'
++        'msgid "skip"\nmsgstr ""\n\n'
++    )
++    assert entries == {"": "H", "a\nb": "xy"}
++    assert build_mo(entries)[:4] == b"\xde\x12\x04\x95"
++
++
++def test_settings_declare_exactly_arabic_and_english():
++    assert [code for code, _name in settings.LANGUAGES] == ["en", "ar"]
++    assert settings.LANGUAGE_CODE == "en"
++    assert Path(settings.LOCALE_PATHS[0]) == LOCALE_ROOT
++    assert "django.middleware.locale.LocaleMiddleware" in settings.MIDDLEWARE
++
++
++def test_locale_middleware_runs_after_sessions_and_before_common():
++    middleware = settings.MIDDLEWARE
++    locale = middleware.index("django.middleware.locale.LocaleMiddleware")
++    assert middleware.index("django.contrib.sessions.middleware.SessionMiddleware") < (
++        locale
++    )
++    assert locale < middleware.index("django.middleware.common.CommonMiddleware")
++
++
++@pytest.mark.django_db
++def test_content_language_header_follows_accept_language():
++    client = Client()
++    arabic = client.get(
++        "/api/v1/categories/tree/", HTTP_ACCEPT_LANGUAGE="ar-EG,en;q=0.5"
++    )
++    english = client.get("/api/v1/categories/tree/", HTTP_ACCEPT_LANGUAGE="en")
++    unsupported = client.get("/api/v1/categories/tree/", HTTP_ACCEPT_LANGUAGE="fr")
++
++    assert arabic["Content-Language"] == "ar"
++    assert english["Content-Language"] == "en"
++    assert unsupported["Content-Language"] == "en"
++
++
++def test_translation_override_uses_project_catalog():
++    with translation.override("ar"):
++        assert translation.gettext("New follower") == "متابع جديد"
++    with translation.override("en"):
++        assert translation.gettext("New follower") == "New follower"
+diff --git a/devices/migrations/0002_p112_localization.py b/devices/migrations/0002_p112_localization.py
+new file mode 100644
+index 0000000..2b75665
+--- /dev/null
++++ b/devices/migrations/0002_p112_localization.py
+@@ -0,0 +1,23 @@
++# Generated by Django 5.2.17 on 2026-10-05 02:09
++
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ("devices", "0001_initial"),
++    ]
++
++    operations = [
++        migrations.AddField(
++            model_name="devicetoken",
++            name="locale",
++            field=models.CharField(
++                blank=True,
++                choices=[("ar", "Arabic"), ("en", "English")],
++                default="",
++                max_length=2,
++            ),
++        ),
++    ]
+diff --git a/devices/models.py b/devices/models.py
+index 237556d..b3533e8 100644
+--- a/devices/models.py
++++ b/devices/models.py
+@@ -42,6 +42,14 @@ class DeviceToken(TimestampedModel):
+     # generous headroom without risking an index-size problem.
+     token = models.CharField(max_length=512, unique=True)
+     platform = models.CharField(max_length=10, choices=PLATFORM_CHOICES)
++    # Part P-112: the app language active on this installation when it
++    # registered ("ar" / "en"), so a push can be rendered in the right
++    # language even if the account's preferred_language differs. Blank
++    # means "unknown" (older clients) and the account preference is used.
++    LOCALE_CHOICES = [("ar", "Arabic"), ("en", "English")]
++    locale = models.CharField(
++        max_length=2, choices=LOCALE_CHOICES, blank=True, default=""
++    )
+ 
+     class Meta:
+         ordering = ["-created_at"]
+diff --git a/devices/serializers.py b/devices/serializers.py
+index 39fc098..e7442ff 100644
+--- a/devices/serializers.py
++++ b/devices/serializers.py
+@@ -10,6 +10,7 @@ device). Uniqueness is handled by the upsert in the view instead.
+ 
+ from rest_framework import serializers
+ 
++from core.i18n import SUPPORTED_LANGUAGES, parse_accept_language
+ from devices.models import DeviceToken
+ 
+ 
+@@ -18,3 +19,15 @@ class DeviceRegisterSerializer(serializers.Serializer):
+     platform = serializers.ChoiceField(
+         choices=[value for value, _label in DeviceToken.PLATFORM_CHOICES]
+     )
++    # Part P-112: the app's active language. Deliberately lenient - any
++    # string is accepted and normalised ("ar-EG" -> "ar"; anything
++    # unsupported -> "") so a locale quirk can never fail a registration.
++    locale = serializers.CharField(
++        max_length=16, required=False, allow_blank=True, trim_whitespace=True
++    )
++
++    def validate_locale(self, value):
++        for tag in parse_accept_language(value):
++            if tag in SUPPORTED_LANGUAGES:
++                return tag
++        return ""
+diff --git a/devices/tests/test_locale.py b/devices/tests/test_locale.py
+new file mode 100644
+index 0000000..215ca1d
+--- /dev/null
++++ b/devices/tests/test_locale.py
+@@ -0,0 +1,84 @@
++"""
++Tests for the optional ``locale`` field of POST /api/v1/devices/register/
++(Part P-112).
++"""
++
++import pytest
++from django.urls import reverse
++from rest_framework.test import APIClient
++
++from accounts.models import User
++from devices.models import DeviceToken
++
++pytestmark = pytest.mark.django_db
++
++
++def _make_user(email):
++    return User.objects.create_user(
++        username=email,
++        email=email,
++        password="Str0ngPass!23",
++        account_type="customer",
++    )
++
++
++def _register(user, **body):
++    client = APIClient()
++    client.force_authenticate(user=user)
++    payload = {"token": "tok-1", "platform": "android"}
++    payload.update(body)
++    return client.post(reverse("devices:register"), payload, format="json")
++
++
++@pytest.mark.parametrize(
++    "sent, stored",
++    [
++        ("ar", "ar"),
++        ("en", "en"),
++        ("ar-EG", "ar"),
++        ("EN-us", "en"),
++        ("fr", ""),
++        ("garbage;;;", ""),
++        ("", ""),
++    ],
++)
++def test_locale_is_normalised_and_never_rejected(sent, stored):
++    response = _register(_make_user("a@example.com"), locale=sent)
++
++    assert response.status_code == 201
++    assert DeviceToken.objects.get(token="tok-1").locale == stored
++
++
++def test_missing_locale_is_stored_blank_for_older_clients():
++    response = _register(_make_user("b@example.com"))
++
++    assert response.status_code == 201
++    assert DeviceToken.objects.get(token="tok-1").locale == ""
++
++
++def test_response_shape_is_unchanged():
++    response = _register(_make_user("c@example.com"), locale="ar")
++
++    assert set(response.json()) == {"id", "platform"}
++
++
++def test_reregistering_updates_the_locale():
++    user = _make_user("d@example.com")
++    _register(user, locale="ar")
++
++    response = _register(user, locale="en")
++
++    assert response.status_code == 200
++    assert DeviceToken.objects.get(token="tok-1").locale == "en"
++
++
++def test_token_changing_hands_does_not_keep_previous_locale():
++    first = _make_user("e@example.com")
++    second = _make_user("f@example.com")
++    _register(first, locale="ar")
++
++    _register(second)  # older client: no locale
++
++    device = DeviceToken.objects.get(token="tok-1")
++    assert device.user_id == second.id
++    assert device.locale == ""
+diff --git a/devices/views.py b/devices/views.py
+index 21cb75e..3ec51d7 100644
+--- a/devices/views.py
++++ b/devices/views.py
+@@ -1,7 +1,8 @@
+ """
+ Views for Part P-081 - device-token registration.
+ 
+-POST /api/v1/devices/register/  {"token": "...", "platform": "ios"|"android"}
++POST /api/v1/devices/register/  {"token": "...", "platform": "ios"|"android",
++                                 "locale": "ar"|"en" (optional, Part P-112)}
+ 
+ Upsert semantics (the whole point of this endpoint):
+ 
+@@ -39,11 +40,19 @@ class DeviceRegisterView(APIView):
+         serializer.is_valid(raise_exception=True)
+         token = serializer.validated_data["token"]
+         platform = serializer.validated_data["platform"]
++        # Part P-112: always overwritten (blank when an older client
++        # sends none) so a token that changes hands never keeps the
++        # previous owner's language.
++        locale = serializer.validated_data.get("locale", "")
+ 
+         with transaction.atomic():
+             device, created = DeviceToken.objects.update_or_create(
+                 token=token,
+-                defaults={"user": request.user, "platform": platform},
++                defaults={
++                    "user": request.user,
++                    "platform": platform,
++                    "locale": locale,
++                },
+             )
+ 
+         return Response(
+diff --git a/locale/ar/LC_MESSAGES/django.po b/locale/ar/LC_MESSAGES/django.po
+new file mode 100644
+index 0000000..82e04ff
+--- /dev/null
++++ b/locale/ar/LC_MESSAGES/django.po
+@@ -0,0 +1,96 @@
++# Arabic catalog (Part P-112) - PENDING NATIVE REVIEW (see PROJECT_PROGRESS.md).
++# Wording follows the P-112 glossary: منشور / ريل / قصة / نشاط تجاري.
++
++msgid ""
++msgstr ""
++"Project-Id-Version: cavallo-app\n"
++"Language: ar\n"
++"MIME-Version: 1.0\n"
++"Content-Type: text/plain; charset=UTF-8\n"
++"Content-Transfer-Encoding: 8bit\n"
++"Plural-Forms: nplurals=6; plural=(n==0 ? 0 : n==1 ? 1 : n==2 ? 2 : n%100>=3 && n%100<=10 ? 3 : n%100>=11 ? 4 : 5);\n"
++
++msgid "New follower"
++msgstr "متابع جديد"
++
++msgid "Someone started following your business."
++msgstr "بدأ شخص ما بمتابعة نشاطك التجاري."
++
++msgid "New comment"
++msgstr "تعليق جديد"
++
++msgid "New message"
++msgstr "رسالة جديدة"
++
++msgid "Sent a photo"
++msgstr "أرسل صورة"
++
++msgid "Sent a video"
++msgstr "أرسل مقطع فيديو"
++
++msgid "Shared a post"
++msgstr "شارك منشورًا"
++
++msgid "Shared a reel"
++msgstr "شارك ريل"
++
++msgid "Shared a product"
++msgstr "شارك منتجًا"
++
++msgid "New like"
++msgstr "إعجاب جديد"
++
++msgid "Someone liked your content."
++msgstr "أعجب شخص ما بمحتواك."
++
++msgid "New share"
++msgstr "مشاركة جديدة"
++
++msgid "Someone shared your content."
++msgstr "شارك شخص ما محتواك."
++
++msgid "New rating"
++msgstr "تقييم جديد"
++
++msgid "Someone rated your business."
++msgstr "قيّم شخص ما نشاطك التجاري."
++
++msgid "Your post was approved"
++msgstr "تمت الموافقة على منشورك"
++
++msgid "Your post is now published."
++msgstr "تم نشر منشورك."
++
++msgid "Your post was rejected"
++msgstr "تم رفض منشورك"
++
++msgid "Your reel was approved"
++msgstr "تمت الموافقة على الريل الخاص بك"
++
++msgid "Your reel is now published."
++msgstr "تم نشر الريل الخاص بك."
++
++msgid "Your reel was rejected"
++msgstr "تم رفض الريل الخاص بك"
++
++msgid "Your story was approved"
++msgstr "تمت الموافقة على قصتك"
++
++msgid "Your story is now published."
++msgstr "تم نشر قصتك."
++
++msgid "Your story was rejected"
++msgstr "تم رفض قصتك"
++
++msgid "Your content was approved"
++msgstr "تمت الموافقة على المحتوى الخاص بك"
++
++msgid "Your content is now published."
++msgstr "تم نشر المحتوى الخاص بك."
++
++msgid "Your content was rejected"
++msgstr "تم رفض المحتوى الخاص بك"
++
++#, python-format
++msgid "Reason: %(reason)s"
++msgstr "السبب: %(reason)s"
+diff --git a/locale/en/LC_MESSAGES/django.po b/locale/en/LC_MESSAGES/django.po
+new file mode 100644
+index 0000000..6888911
+--- /dev/null
++++ b/locale/en/LC_MESSAGES/django.po
+@@ -0,0 +1,97 @@
++# English source catalog (Part P-112). msgstr is intentionally empty:
++# gettext falls back to the msgid, which IS the English text.
++
++msgid ""
++msgstr ""
++"Project-Id-Version: cavallo-app\n"
++"Language: en\n"
++"MIME-Version: 1.0\n"
++"Content-Type: text/plain; charset=UTF-8\n"
++"Content-Transfer-Encoding: 8bit\n"
++"Plural-Forms: nplurals=2; plural=(n != 1);\n"
++
++msgid "New follower"
++msgstr ""
++
++msgid "Someone started following your business."
++msgstr ""
++
++msgid "New comment"
++msgstr ""
++
++msgid "New message"
++msgstr ""
++
++msgid "Sent a photo"
++msgstr ""
++
++msgid "Sent a video"
++msgstr ""
++
++msgid "Shared a post"
++msgstr ""
++
++msgid "Shared a reel"
++msgstr ""
++
++msgid "Shared a product"
++msgstr ""
++
++msgid "New like"
++msgstr ""
++
++msgid "Someone liked your content."
++msgstr ""
++
++msgid "New share"
++msgstr ""
++
++msgid "Someone shared your content."
++msgstr ""
++
++msgid "New rating"
++msgstr ""
++
++msgid "Someone rated your business."
++msgstr ""
++
++msgid "Your post was approved"
++msgstr ""
++
++msgid "Your post is now published."
++msgstr ""
++
++msgid "Your post was rejected"
++msgstr ""
++
++msgid "Your reel was approved"
++msgstr ""
++
++msgid "Your reel is now published."
++msgstr ""
++
++msgid "Your reel was rejected"
++msgstr ""
++
++msgid "Your story was approved"
++msgstr ""
++
++msgid "Your story is now published."
++msgstr ""
++
++msgid "Your story was rejected"
++msgstr ""
++
++msgid "Your content was approved"
++msgstr ""
++
++msgid "Your content is now published."
++msgstr ""
++
++msgid "Your content was rejected"
++msgstr ""
++
++#, python-format
++msgid "Reason: %(reason)s"
++msgstr ""
++
+diff --git a/moderation/services.py b/moderation/services.py
+index e93faeb..f8caf7f 100644
+--- a/moderation/services.py
++++ b/moderation/services.py
+@@ -148,6 +148,11 @@ def _notify_content_owner(content, approved, reason=""):
+             body=body,
+             deep_link_type=deep_link_type,
+             target_id=target_id,
++            params=(
++                {"item": model_name}
++                if approved
++                else {"item": model_name, "reason": reason}
++            ),
+         )
+     except Exception:
+         logger.exception(
+diff --git a/notifications/messages.py b/notifications/messages.py
+new file mode 100644
+index 0000000..7156190
+--- /dev/null
++++ b/notifications/messages.py
+@@ -0,0 +1,142 @@
++"""
++Notification wording catalog (Part P-112).
++
++``render_notification`` turns (notification_type, params) into a
++(title, body) pair in ONE language, using Django's gettext catalogs
++(locale/<lang>/LC_MESSAGES/django.po). It is called by
++notifications.tasks.dispatch_notification inside
++``translation.override(<language>)``.
++
++Rules:
++
++* Every English string below is a literal ``gettext`` msgid so the
++  catalogs can be audited with grep. Sentences are complete (no
++  fragment concatenation), because Arabic word order and gender
++  agreement cannot be assembled from English pieces.
++* User-generated text (comment text, chat message text, a moderator's
++  rejection reason) arrives in ``params`` and is inserted AS WRITTEN -
++  it is never looked up in a catalog and never translated.
++* A builder returns None when ``params`` lack what it needs; the caller
++  then keeps the title/body the event source supplied (English), so a
++  malformed event can never lose a notification.
++"""
++
++from django.utils import translation
++from django.utils.translation import gettext as _
++
++from core.i18n import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES
++
++
++def _new_follower(params):
++    return _("New follower"), _("Someone started following your business.")
++
++
++def _comment_on_content(params):
++    text = params.get("text")
++    if text is None:
++        return None
++    return _("New comment"), str(text)
++
++
++def _chat_message(params):
++    title = _("New message")
++    text = params.get("text")
++    if text:
++        return title, str(text)
++    media = params.get("media")
++    if media == "image":
++        return title, _("Sent a photo")
++    if media == "video":
++        return title, _("Sent a video")
++    shared = params.get("shared")
++    if shared == "post":
++        return title, _("Shared a post")
++    if shared == "reel":
++        return title, _("Shared a reel")
++    if shared == "product":
++        return title, _("Shared a product")
++    return None
++
++
++def _new_like(params):
++    return _("New like"), _("Someone liked your content.")
++
++
++def _new_share(params):
++    return _("New share"), _("Someone shared your content.")
++
++
++def _new_rating(params):
++    return _("New rating"), _("Someone rated your business.")
++
++
++def _moderation_approved(params):
++    item = params.get("item")
++    if item == "post":
++        return _("Your post was approved"), _("Your post is now published.")
++    if item == "reel":
++        return _("Your reel was approved"), _("Your reel is now published.")
++    if item == "story":
++        return _("Your story was approved"), _("Your story is now published.")
++    return _("Your content was approved"), _("Your content is now published.")
++
++
++def _moderation_rejected(params):
++    item = params.get("item")
++    if item == "post":
++        title = _("Your post was rejected")
++    elif item == "reel":
++        title = _("Your reel was rejected")
++    elif item == "story":
++        title = _("Your story was rejected")
++    else:
++        title = _("Your content was rejected")
++    # The reason is typed by a moderator: inserted as written.
++    return title, _("Reason: %(reason)s") % {"reason": params.get("reason", "")}
++
++
++def _system_announcement(params):
++    title = params.get("title")
++    body = params.get("body")
++    if title is None or body is None:
++        return None
++    return str(title), str(body)
++
++
++_BUILDERS = {
++    "new_follower": _new_follower,
++    "comment_on_content": _comment_on_content,
++    "chat_message": _chat_message,
++    "new_like": _new_like,
++    "new_share": _new_share,
++    "new_rating": _new_rating,
++    "moderation_approved": _moderation_approved,
++    "moderation_rejected": _moderation_rejected,
++    "system_announcement": _system_announcement,
++}
++
++
++def render_notification(notification_type, params, language):
++    """
++    Return ``(title, body)`` in ``language``, or None when the type is
++    unknown or ``params`` are insufficient (caller falls back).
++
++    ``language`` outside ar/en is treated as English.
++    """
++    builder = _BUILDERS.get(notification_type)
++    if builder is None:
++        return None
++    if language not in SUPPORTED_LANGUAGES:
++        language = DEFAULT_LANGUAGE
++    with translation.override(language):
++        return builder(params or {})
++
++
++def render_for_all_languages(notification_type, params):
++    """{language: (title, body)} for every supported language (may be {})."""
++    rendered = {}
++    for language in SUPPORTED_LANGUAGES:
++        pair = render_notification(notification_type, params, language)
++        if pair is not None:
++            rendered[language] = pair
++    return rendered
+diff --git a/notifications/migrations/0003_p112_localization.py b/notifications/migrations/0003_p112_localization.py
+new file mode 100644
+index 0000000..1153218
+--- /dev/null
++++ b/notifications/migrations/0003_p112_localization.py
+@@ -0,0 +1,18 @@
++# Generated by Django 5.2.17 on 2026-10-05 02:09
++
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ("notifications", "0002_backfill_notification_preferences"),
++    ]
++
++    operations = [
++        migrations.AddField(
++            model_name="notification",
++            name="params",
++            field=models.JSONField(blank=True, default=dict),
++        ),
++    ]
+diff --git a/notifications/models.py b/notifications/models.py
+index 848bc8c..1c36945 100644
+--- a/notifications/models.py
++++ b/notifications/models.py
+@@ -93,6 +93,12 @@ class Notification(TimestampedModel):
+         default="",
+     )
+     target_id = models.PositiveIntegerField(null=True, blank=True)
++    # Part P-112: the language-neutral inputs the title/body were
++    # rendered from (for example {"item": "post"}). Stored next to the
++    # rendered text so a future client-side re-render stays possible.
++    # Empty for notifications created before P-112 and for any event
++    # source that still passes literal text.
++    params = models.JSONField(default=dict, blank=True)
+     is_read = models.BooleanField(default=False)
+ 
+     class Meta:
+diff --git a/notifications/services.py b/notifications/services.py
+index fc28cda..b57820b 100644
+--- a/notifications/services.py
++++ b/notifications/services.py
+@@ -35,6 +35,7 @@ def create_notification(
+     body: str,
+     deep_link_type: str | None = None,
+     target_id: int | None = None,
++    params: dict | None = None,
+ ) -> Notification:
+     """
+     Persist one in-app Notification for ``recipient`` and return it.
+@@ -76,6 +77,7 @@ def create_notification(
+         body=body,
+         deep_link_type=deep_link_type,
+         target_id=target_id,
++        params=params or {},
+     )
+ 
+ 
+@@ -123,7 +125,13 @@ def _stringify_data(data: dict) -> dict[str, str]:
+     return {str(key): str(value) for key, value in data.items() if value is not None}
+ 
+ 
+-def send_push_notification(user_id: int, title: str, body: str, data: dict) -> None:
++def send_push_notification(
++    user_id: int,
++    title: str,
++    body: str,
++    data: dict,
++    localized: dict | None = None,
++) -> None:
+     """
+     Push-sending seam. Signature frozen since Part P-072 (called by
+     notifications.tasks.dispatch_notification) - do not change it.
+@@ -138,9 +146,15 @@ def send_push_notification(user_id: int, title: str, body: str, data: dict) -> N
+     * Firebase not configured -> logged and skipped;
+     * one token fails (invalid / expired) -> logged, and the remaining
+       tokens are still tried.
++
++    Part P-112: ``localized`` is an optional ``{"ar": (title, body),
++    "en": (title, body)}`` map. A token whose registered ``locale`` is
++    in the map is sent that language's text; every other token gets
++    ``title`` / ``body`` (the recipient's preferred language). The
++    four-argument call keeps working unchanged.
+     """
+     tokens = list(
+-        DeviceToken.objects.filter(user_id=user_id).values_list("token", flat=True)
++        DeviceToken.objects.filter(user_id=user_id).values_list("token", "locale")
+     )
+     if not tokens:
+         logger.info("send_push_notification: user %s has no device tokens.", user_id)
+@@ -157,12 +171,13 @@ def send_push_notification(user_id: int, title: str, body: str, data: dict) -> N
+         return
+ 
+     payload = _stringify_data(data)
+-    notification = messaging.Notification(title=title, body=body)
++    localized = localized or {}
+     sent = 0
+-    for token in tokens:
++    for token, locale in tokens:
++        token_title, token_body = localized.get(locale, (title, body))
+         message = messaging.Message(
+             token=token,
+-            notification=notification,
++            notification=messaging.Notification(title=token_title, body=token_body),
+             data=payload,
+             android=messaging.AndroidConfig(priority="high"),
+         )
+diff --git a/notifications/tasks.py b/notifications/tasks.py
+index 85bb761..976b1b6 100644
+--- a/notifications/tasks.py
++++ b/notifications/tasks.py
+@@ -56,6 +56,8 @@ import logging
+ from celery import shared_task
+ from django.contrib.auth import get_user_model
+ 
++from core.i18n import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES
++from notifications.messages import render_for_all_languages
+ from notifications.models import Notification, NotificationPreference
+ from notifications.services import create_notification, send_push_notification
+ 
+@@ -104,11 +106,20 @@ def _is_category_enabled(recipient_id, preference_field):
+ def dispatch_notification(
+     recipient_id,
+     notification_type,
+-    title,
+-    body,
++    title="",
++    body="",
+     deep_link_type=None,
+     target_id=None,
++    params=None,
+ ):
++    """
++    Part P-112: when ``params`` is given, title and body are RENDERED here
++    from the gettext catalogs in the recipient's ``preferred_language``
++    (the in-app row) and, per device, in each token's registered locale
++    (the push). ``title`` / ``body`` are then only the English fallback
++    used if rendering is impossible for this type/params. Without
++    ``params`` the supplied text is stored and pushed as before.
++    """
+     recipient = User.objects.filter(pk=recipient_id).first()
+     if recipient is None:
+         logger.warning(
+@@ -131,6 +142,15 @@ def dispatch_notification(
+         )
+         return
+ 
++    localized = {}
++    if params is not None:
++        localized = render_for_all_languages(notification_type, params)
++        language = getattr(recipient, "preferred_language", DEFAULT_LANGUAGE)
++        if language not in SUPPORTED_LANGUAGES:
++            language = DEFAULT_LANGUAGE
++        if language in localized:
++            title, body = localized[language]
++
+     # Raises ValueError (nothing written, no push) for an unknown
+     # notification_type / deep_link_type - a programming error that
+     # must be loud, not swallowed.
+@@ -141,8 +161,13 @@ def dispatch_notification(
+         body,
+         deep_link_type=deep_link_type,
+         target_id=target_id,
++        params=params,
+     )
+ 
++    push_kwargs = {}
++    if localized:
++        push_kwargs["localized"] = localized
++
+     try:
+         send_push_notification(
+             user_id=recipient.id,
+@@ -154,6 +179,7 @@ def dispatch_notification(
+                 "deep_link_type": notification.deep_link_type,
+                 "target_id": notification.target_id,
+             },
++            **push_kwargs,
+         )
+     except Exception:
+         # Best-effort: the in-app row already exists. Re-raising would
+diff --git a/notifications/tests/test_deep_link_sweep.py b/notifications/tests/test_deep_link_sweep.py
+index ef688bc..b9144f5 100644
+--- a/notifications/tests/test_deep_link_sweep.py
++++ b/notifications/tests/test_deep_link_sweep.py
+@@ -125,7 +125,9 @@ class TestModerationDeepLinks:
+ 
+         row = _only_notification(owner)
+         _assert_row(row, "moderation_rejected", "post_detail", post.pk)
+-        assert row["body"] == "Reason: Blurry image"
++        # Part P-112: users default to preferred_language="ar", so the
++        # label is Arabic; the moderator's own words are inserted as written.
++        assert row["body"] == "السبب: Blurry image"
+         detail = _open_detail(owner, "post", row["target_id"])
+         assert detail["id"] == post.pk
+         assert detail["status"] == "rejected"
+diff --git a/notifications/tests/test_localized_dispatch.py b/notifications/tests/test_localized_dispatch.py
+new file mode 100644
+index 0000000..6f811ac
+--- /dev/null
++++ b/notifications/tests/test_localized_dispatch.py
+@@ -0,0 +1,242 @@
++"""
++Tests for server-side notification localization (Part P-112).
++
++dispatch_notification renders title/body from the gettext catalogs in
++the RECIPIENT's preferred_language; the push for each device uses that
++device's registered locale. User-generated text is never translated.
++"""
++
++from unittest.mock import patch
++
++import pytest
++from django.contrib.auth import get_user_model
++
++from devices.models import DeviceToken
++from notifications.messages import render_notification
++from notifications.models import Notification
++from notifications.tasks import dispatch_notification
++
++User = get_user_model()
++
++pytestmark = pytest.mark.django_db
++
++
++def _make_user(username, language=None):
++    user = User.objects.create_user(
++        username=username,
++        email=f"{username}@example.com",
++        password="testpass123",
++        account_type="customer",
++    )
++    if language is not None:
++        User.objects.filter(pk=user.pk).update(preferred_language=language)
++        user.refresh_from_db()
++    return user
++
++
++def _dispatch(user, **overrides):
++    kwargs = dict(
++        recipient_id=user.id,
++        notification_type="new_follower",
++        title="New follower",
++        body="Someone started following your business.",
++        deep_link_type="business_profile",
++        target_id=3,
++        params={},
++    )
++    kwargs.update(overrides)
++    with patch("notifications.tasks.send_push_notification") as mock_push:
++        dispatch_notification(**kwargs)
++    return mock_push
++
++
++class TestRenderNotification:
++    def test_follower_in_arabic_and_english(self):
++        assert render_notification("new_follower", {}, "en") == (
++            "New follower",
++            "Someone started following your business.",
++        )
++        title, body = render_notification("new_follower", {}, "ar")
++        assert title == "متابع جديد"
++        assert body == "بدأ شخص ما بمتابعة نشاطك التجاري."
++
++    @pytest.mark.parametrize("item", ["post", "reel", "story", "unknown"])
++    @pytest.mark.parametrize("kind", ["moderation_approved", "moderation_rejected"])
++    def test_every_moderation_item_has_distinct_arabic_text(self, item, kind):
++        english = render_notification(kind, {"item": item, "reason": "r"}, "en")
++        arabic = render_notification(kind, {"item": item, "reason": "r"}, "ar")
++        assert arabic is not None and english is not None
++        assert arabic[0] != english[0]
++        assert arabic[1] != english[1]
++
++    def test_rejection_reason_is_inserted_untranslated(self):
++        _title, body = render_notification(
++            "moderation_rejected", {"item": "post", "reason": "Blurry image"}, "ar"
++        )
++        assert body == "السبب: Blurry image"
++
++    def test_user_text_is_never_translated(self):
++        # Even text identical to a catalog msgid stays exactly as typed.
++        for text in ("New message", "New follower"):
++            assert render_notification("comment_on_content", {"text": text}, "ar") == (
++                "تعليق جديد",
++                text,
++            )
++            assert render_notification("chat_message", {"text": text}, "ar") == (
++                "رسالة جديدة",
++                text,
++            )
++
++    @pytest.mark.parametrize(
++        "params, arabic_body",
++        [
++            ({"media": "image"}, "أرسل صورة"),
++            ({"media": "video"}, "أرسل مقطع فيديو"),
++            ({"shared": "post"}, "شارك منشورًا"),
++            ({"shared": "reel"}, "شارك ريل"),
++            ({"shared": "product"}, "شارك منتجًا"),
++        ],
++    )
++    def test_chat_media_and_shared_bodies(self, params, arabic_body):
++        assert render_notification("chat_message", params, "ar")[1] == arabic_body
++
++    def test_every_notification_type_is_renderable(self):
++        samples = {
++            "system_announcement": {"title": "T", "body": "B"},
++            "comment_on_content": {"text": "x"},
++            "chat_message": {"text": "x"},
++        }
++        for value in Notification.NotificationType.values:
++            params = samples.get(value, {"item": "post"})
++            for language in ("ar", "en"):
++                assert render_notification(value, params, language) is not None
++
++    def test_insufficient_params_return_none(self):
++        assert render_notification("comment_on_content", {}, "ar") is None
++        assert render_notification("chat_message", {"shared": ""}, "ar") is None
++        assert render_notification("no_such_type", {}, "ar") is None
++
++    def test_unsupported_language_falls_back_to_english(self):
++        assert render_notification("new_follower", {}, "fr")[0] == "New follower"
++
++
++class TestDispatchLocalization:
++    def test_arabic_user_gets_arabic_row(self):
++        user = _make_user("ar_user", "ar")
++
++        _dispatch(user)
++
++        row = Notification.objects.get(recipient=user)
++        assert row.title == "متابع جديد"
++        assert row.body == "بدأ شخص ما بمتابعة نشاطك التجاري."
++        assert row.params == {}
++
++    def test_english_user_gets_english_row(self):
++        user = _make_user("en_user", "en")
++
++        _dispatch(user)
++
++        row = Notification.objects.get(recipient=user)
++        assert row.title == "New follower"
++
++    def test_new_user_defaults_to_arabic(self):
++        user = _make_user("default_user")
++
++        _dispatch(user)
++
++        assert Notification.objects.get(recipient=user).title == "متابع جديد"
++
++    def test_params_are_stored_with_the_row(self):
++        user = _make_user("params_user", "en")
++
++        _dispatch(
++            user,
++            notification_type="moderation_rejected",
++            title="Your post was rejected",
++            body="Reason: x",
++            params={"item": "post", "reason": "x"},
++        )
++
++        row = Notification.objects.get(recipient=user)
++        assert row.params == {"item": "post", "reason": "x"}
++        assert row.title == "Your post was rejected"
++        assert row.body == "Reason: x"
++
++    def test_without_params_supplied_text_is_stored_as_is(self):
++        user = _make_user("legacy_user", "ar")
++
++        _dispatch(user, title="Custom", body="Literal body", params=None)
++
++        row = Notification.objects.get(recipient=user)
++        assert (row.title, row.body) == ("Custom", "Literal body")
++        assert row.params == {}
++
++    def test_unrenderable_params_keep_supplied_text(self):
++        user = _make_user("fallback_user", "ar")
++
++        _dispatch(
++            user,
++            notification_type="comment_on_content",
++            title="New comment",
++            body="hi",
++            params={},
++        )
++
++        row = Notification.objects.get(recipient=user)
++        assert (row.title, row.body) == ("New comment", "hi")
++
++    def test_push_gets_recipient_language_and_all_languages_map(self):
++        user = _make_user("push_user", "ar")
++
++        mock_push = _dispatch(user)
++
++        kwargs = mock_push.call_args.kwargs
++        assert kwargs["title"] == "متابع جديد"
++        assert kwargs["localized"]["en"][0] == "New follower"
++        assert kwargs["localized"]["ar"][0] == "متابع جديد"
++
++    def test_without_params_push_call_is_unchanged(self):
++        user = _make_user("plain_push_user", "ar")
++
++        mock_push = _dispatch(user, params=None)
++
++        assert "localized" not in mock_push.call_args.kwargs
++
++
++class TestPerDevicePushLanguage:
++    def _sent_titles(self, user):
++        from notifications import services
++
++        titles = {}
++
++        def fake_send(message, app=None):
++            titles[message.token] = message.notification.title
++
++        localized = {
++            "ar": ("متابع جديد", "ب"),
++            "en": ("New follower", "b"),
++        }
++        with patch.object(services, "_get_firebase_app", return_value=object()):
++            with patch.object(services.messaging, "send", side_effect=fake_send):
++                services.send_push_notification(
++                    user.id, "متابع جديد", "ب", {"type": "x"}, localized=localized
++                )
++        return titles
++
++    def test_each_device_receives_its_own_locale(self):
++        user = _make_user("multi_device", "ar")
++        DeviceToken.objects.create(user=user, token="t-en", platform="ios", locale="en")
++        DeviceToken.objects.create(
++            user=user, token="t-ar", platform="android", locale="ar"
++        )
++        DeviceToken.objects.create(
++            user=user, token="t-blank", platform="android", locale=""
++        )
++
++        titles = self._sent_titles(user)
++
++        assert titles == {
++            "t-en": "New follower",
++            "t-ar": "متابع جديد",
++            "t-blank": "متابع جديد",  # unknown locale -> account language
++        }
+diff --git a/notifications/tests/test_push.py b/notifications/tests/test_push.py
+index 0cc8998..a12ce25 100644
+--- a/notifications/tests/test_push.py
++++ b/notifications/tests/test_push.py
+@@ -56,9 +56,13 @@ def _push(user_id, data=None):
+ 
+ 
+ def test_signature_is_unchanged_from_p072_and_p079():
+-    parameters = list(inspect.signature(send_push_notification).parameters)
++    # The four P-072 parameters are frozen. Part P-112 added ONE optional
++    # trailing keyword (``localized``); existing four-argument callers
++    # must keep working.
++    parameters = inspect.signature(send_push_notification).parameters
+ 
+-    assert parameters == ["user_id", "title", "body", "data"]
++    assert list(parameters) == ["user_id", "title", "body", "data", "localized"]
++    assert parameters["localized"].default is None
+ 
+ 
+ def test_sends_one_message_per_registered_token_with_correct_payload():
+diff --git a/notifications/tests/test_services.py b/notifications/tests/test_services.py
+index 986d7c2..fa84d85 100644
+--- a/notifications/tests/test_services.py
++++ b/notifications/tests/test_services.py
+@@ -180,8 +180,10 @@ def test_send_push_notification_without_tokens_does_not_raise_and_logs(caplog):
+ 
+ 
+ def test_send_push_notification_signature_is_frozen():
+-    # chat.tasks.notify_offline_recipient (P-072) depends on this
+-    # exact signature. Do not change it.
+-    parameters = list(inspect.signature(send_push_notification).parameters)
++    # The four P-072 parameters are frozen. Part P-112 added ONE optional
++    # trailing keyword (``localized``); existing four-argument callers
++    # must keep working.
++    parameters = inspect.signature(send_push_notification).parameters
+ 
+-    assert parameters == ["user_id", "title", "body", "data"]
++    assert list(parameters) == ["user_id", "title", "body", "data", "localized"]
++    assert parameters["localized"].default is None
+diff --git a/notifications/tests/test_sources.py b/notifications/tests/test_sources.py
+index 4711b69..a47f82f 100644
+--- a/notifications/tests/test_sources.py
++++ b/notifications/tests/test_sources.py
+@@ -140,6 +140,7 @@ class TestModerationSource:
+             body="Your post is now published.",
+             deep_link_type="post_detail",
+             target_id=post.pk,
++            params={"item": "post"},
+         )
+ 
+     def test_reject_post_notifies_owner_with_reason(self, dispatch_delay):
+@@ -154,6 +155,7 @@ class TestModerationSource:
+             body="Reason: Blurry image",
+             deep_link_type="post_detail",
+             target_id=post.pk,
++            params={"item": "post", "reason": "Blurry image"},
+         )
+ 
+     def test_approve_reel_uses_reel_detail(self, dispatch_delay):
+@@ -168,6 +170,7 @@ class TestModerationSource:
+             body="Your reel is now published.",
+             deep_link_type="reel_detail",
+             target_id=reel.pk,
++            params={"item": "reel"},
+         )
+ 
+     def test_content_without_detail_screen_links_to_business_profile(
+@@ -189,6 +192,7 @@ class TestModerationSource:
+             body="Your story is now published.",
+             deep_link_type="business_profile",
+             target_id=9,
++            params={"item": "story"},
+         )
+ 
+     def test_second_decision_does_not_notify_again(self, dispatch_delay):
+@@ -250,6 +254,7 @@ class TestFollowSource:
+             body="Someone started following your business.",
+             deep_link_type="business_profile",
+             target_id=business.pk,
++            params={},
+         )
+ 
+     def test_repeat_follow_does_not_notify_again(self, dispatch_delay):
+@@ -312,6 +317,7 @@ class TestCommentSource:
+             body="Great post",
+             deep_link_type="post_detail",
+             target_id=post.pk,
++            params={"text": "Great post"},
+         )
+ 
+     def test_comment_on_reel_uses_reel_detail(self, dispatch_delay):
+diff --git a/social/views.py b/social/views.py
+index 5d88852..96452d8 100644
+--- a/social/views.py
++++ b/social/views.py
+@@ -105,6 +105,7 @@ class FollowToggleView(APIView):
+                 body="Someone started following your business.",
+                 deep_link_type="business_profile",
+                 target_id=business.pk,
++                params={},
+             )
+ 
+         _invalidate_home_feed_cache(request.user.id)
+@@ -418,6 +419,7 @@ class CommentCreateView(APIView):
+                     data["content_type"]
+                 ],
+                 target_id=obj.pk,
++                params={"text": data["text"][:100]},
+             )
+ 
+         return Response(CommentSerializer(comment).data, status=201)

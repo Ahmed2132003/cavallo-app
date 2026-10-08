@@ -13021,3 +13021,72 @@ Remaining work
 GitHub: cavallo-mobile, branch part-111: STEP 4B = 9e34c99; STEP 5 + 6A = f173430; STEP 6B = 71debbf.
 
 Exact next starting point: P-114 (visual restyle of the destination screens inside this shell). P-114 and P-115 must keep every navigation manifest entry intact and keep test/routing/navigation_reachability_test.dart green.
+
+## PART P-114 — Flutter: Instagram-Style Content Surfaces (Home Feed, Stories, Post/Reel Cards, Business Profile, Explore, Product Detail) — STATUS: COMPLETE
+
+Phase 23 | Priority: High | Complexity: High | Dependencies: P-111, P-112, P-113 | Parallelizable: No | Backend dependency: No | External input required: No
+
+P-114 is fully closed. All implementation steps were completed and pushed to `cavallo-mobile` on branch `part-111`. The four required manual combinations were also completed successfully: Light/English, Light/Arabic, Dark/English, Dark/Arabic.
+
+### Scope completed
+
+- Home feed: Instagram-style stories tray, post/reel cards, pull-to-refresh, infinite-feed presentation and skeleton loading.
+- Stories: unseen/seen rings, story viewer presentation, segmented progress, hold-to-pause, swipe-down close, reply/Like controls and RTL-aware tap zones.
+- Post cards: Instagram-style header, Verified/Featured presentation, media aspect ratios, carousel indicators, action row, likes/caption/comment preview and expandable caption.
+- Reel cards: 9:16 media presentation with overlaid actions and caption.
+- Business public profile: Instagram-style header, story ring, stats, Follow/Following states, Message action, tabs and 3-column content grids.
+- Explore/Search: sticky search, horizontal filter chips, existing filter bottom sheet, mixed 3-column discover grid and Featured badges while organic results remain visible.
+- Product detail: discovery-only presentation with image carousel, name/price/availability/variants, Message Business as the primary action, Share and Save; no cart, checkout or purchase affordances.
+- Comments: bottom-sheet presentation with avatar rows and keyboard-aware input bar.
+- Shared presentation widgets and tokens from P-111/P-112/P-113 were reused; no provider, repository, DTO or backend data-flow changes were introduced by P-114.
+- Directional layout rules and RTL behavior were preserved throughout the touched surfaces.
+- New/changed user-facing strings were localized in both ARB files as required by the part.
+
+### Validation
+
+- Golden tests: **28 PNG goldens generated and verified; 28/28 passed**.
+- `flutter analyze`: **No issues found!**
+- Targeted P-114/full relevant Flutter test run: **All tests passed**.
+- The recorded verification run reached **+486 tests and continued successfully through the suite**; the HTTP `400` lines shown by router tests are expected test-environment noise from requests to the unavailable local backend and did not fail the tests.
+- Manual device validation: **PASS** for all four required combinations:
+  - Light / English — ✅
+  - Light / Arabic — ✅
+  - Dark / English — ✅
+  - Dark / Arabic — ✅
+- Manual checks covered Home, Stories/Story Viewer, Post, Reel, Business Profile, Explore and Product Detail.
+
+### Final P-114 Definition of Done
+
+- [x] All listed content surfaces restyled
+- [x] Light + Dark completed
+- [x] Arabic RTL + English LTR completed
+- [x] Golden tests green
+- [x] Widget/feature/routing tests green
+- [x] Four-combination manual check passed
+- [x] Existing behavior preserved
+- [x] No cart, checkout or purchase affordances added
+- [x] Directional layout APIs preserved
+- [x] Touched strings localized
+- [x] Navigation manifest/routes preserved
+- [x] P-114 fully closed
+
+### GitHub reference
+
+- `cavallo-mobile`: branch `part-111`
+- Final P-114 implementation commit: **`a43185a`**
+- P-114 code and tests were already pushed successfully before this Progress close.
+
+### Remaining work
+
+None for P-114.
+
+### Exact next starting point
+
+**P-115** — apply the same component language to the remaining chat, notifications, business console and moderation surfaces, then perform the final repository-wide localization/hardcoded-string QA sweep.
+
+### Edits to existing sections
+
+Add this status to the Part/Phase tracking index if present:
+`P-114 | Flutter: Instagram-Style Content Surfaces | Phase 23 | COMPLETE (all surfaces implemented, 28/28 goldens green, relevant tests green, four-combination manual validation passed, final mobile commit a43185a)`
+
+P-114 must not be reopened for unrelated P-115 localization or console cleanup work.
