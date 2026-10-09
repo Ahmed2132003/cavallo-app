@@ -13221,3 +13221,35 @@ Edits to existing sections
 Replace the P-115 line in the Part/Phase tracking index with: P-115 | Flutter: Chat, Notifications, Business Console & Moderation Restyle + Final UI/UX QA Sweep | Phase 23 | IN PROGRESS (restyle steps 2, 4, 5, 6, 7 done and green; step 8 localization done except the 4 chat files; step 3 chat thread not found in repo; steps 9-14 not started)
 
 Do NOT mark Phase 23 complete.
+
+P-115 STEP 9b — Validators / load-error / product-form localization: DONE
+- 16 new ARB keys added to app_en.arb and app_ar.arb (Arabic = first-pass, added to
+  "pending native review" list for Step 12):
+  validationBusinessNameRequired, validationCountryRequired, validationCityRequired,
+  businessProfileLoadError, postLoadError, reelLoadError, commonGenericError,
+  validationCaptionRequired, reelVideoRequired, productFormEditTitle, productFormCreate,
+  productFormSaveChanges, validationProductNameRequired, validationDescriptionRequired,
+  validationPriceRequired, validationPriceInvalid
+- 23 literal replacements with context.l10n.* in 7 files:
+  business_onboarding_screen, business_profile_edit_screen, post_detail_screen,
+  reel_detail_screen, post_form_screen, reel_form_screen, product_form_screen
+- First attempt (commit b4fd7d1) added the ARB keys but did NOT change the dart files:
+  the PowerShell alias R (= Invoke-History) shadowed the helper function, so Reps were
+  empty and PRE-CHECKS passed vacuously. It also ran `dart format lib` (146 files).
+- Fix: p115_step9b_fix.ps1 (helper renamed New-Rep, plan sanity check = 23, idempotent,
+  formats only touched files). Result: 23 applied, 0 reverted, flutter test exit 0
+  (413 passed), no leftover literals.
+- Untouched on purpose: API values ('post','reel','trader','EGP','light'), toString(),
+  FormatException, 'wss'.
+
+STILL OPEN (Step 9c):
+- Chat files still contain English literals ('Online', 'Connecting…', 'Photo', 'Shared a post…'):
+  chat_thread_screen, message_bubble_widget, shared_content_card,
+  share_to_conversation_sheet, conversation.dart. _pendingMigration in the guard test
+  must be emptied afterwards.
+- error_interceptor.dart (4 messages) and analytics_repository.dart (2): decision =
+  presentation-layer helper that maps ApiFailure.code (e.g. NETWORK_ERROR) to a localized
+  string, falling back to the original message. Data layer unchanged.
+- social_error_message.dart, featured_badge.dart ('Featured'), content_action_row.dart:259
+  (share text with raw English contentType): to be decided after reading the files.
+- Step 3 status (chat thread restyle) must be confirmed as pushed to GitHub.
