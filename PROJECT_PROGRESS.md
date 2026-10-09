@@ -13300,3 +13300,11 @@ GitHub references: 9A 6123acb, 9B b4fd7d1 (+ fix cf15c52), 9C 9513c35.
 Exact next starting point: (a) run flutter test test/l10n --reporter expanded and fix the one failing test; (b) decide items 3 and 4; (c) then STEP 3 / STEP 10 as listed in "Remaining work".
 
 Edit to the tracking line for P-115: replace "steps 9-14 not started" with "step 9 partly done (9A, 9B, 9C pushed; 1 test/l10n failure open); steps 10-14 not started".
+
+In "STEP 9C", replace the bullet "OPEN item 1 (test/l10n ... +22 -1)" with:
+
+1. test/l10n failure: RESOLVED. The only failing test was arb_encoding_test "no garbled text anywhere in lib/ or test/ sources". Cause: the four chat files contained garbled characters in comments (em dash, ellipsis, middle dot, multiplication sign) introduced when p115_step9c.ps1 was run (script read as ANSI instead of UTF-8, most likely). Fixed by p115_step9c_fix_encoding.ps1 (ASCII-only script; 26 + 14 + 3 + 1 sequences repaired in chat_thread_screen, message_bubble_widget, share_to_conversation_sheet, shared_content_card). Comments only; no code or ARB change.
+   Result: flutter test test/l10n -> "+23: All tests passed!"; flutter test test/features/chat -> "+114: All tests passed!". Evidence: p115_step9c_fix_l10n.txt, p115_step9c_fix_chat.txt. Commit: add hash after push.
+   Lesson for later scripts: keep PowerShell scripts ASCII-only (build non-ASCII characters from codes) or save with a UTF-8 BOM, and always run the l10n folder (it includes arb_encoding_test) after any script that writes .dart files.
+
+Change the step header "DONE except one open test failure" to "DONE".
