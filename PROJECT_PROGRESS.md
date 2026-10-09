@@ -13090,3 +13090,115 @@ Add this status to the Part/Phase tracking index if present:
 `P-114 | Flutter: Instagram-Style Content Surfaces | Phase 23 | COMPLETE (all surfaces implemented, 28/28 goldens green, relevant tests green, four-combination manual validation passed, final mobile commit a43185a)`
 
 P-114 must not be reopened for unrelated P-115 localization or console cleanup work.
+
+## PART P-115 — Flutter: Chat, Notifications, Business Console & Moderation Restyle + Final UI/UX QA Sweep — STATUS: IN PROGRESS (restyle STEPS 2, 4, 5, 6, 7 done and green; STEP 3 chat thread NOT FOUND in the repo — see Known issues; STEPS 8–14 NOT STARTED)
+
+Phase 23 | Priority: High | Complexity: Medium | Dependencies: P-111, P-112, P-113, P-114 | Parallelizable: No | Backend dependency: No | External input required: Yes — native Arabic review of the final app_ar.arb (carried from P-112)
+
+Branch: cavallo-mobile / part-111. Flutter 3.29.3. Local path D:\Cavallo\social_commerce_app. Work is delivered one STEP per message as PowerShell scripts run from the repo root (they create and modify files, run dart format, back up to %TEMP%, and stop without changing anything if an expected line is missing).
+
+Step numbering follows the P-115 step list: 1 baseline, 2 chat list, 3 chat thread, 4 notifications, 5 business console, 6 analytics + status chips, 7 Staff moderation, 8 localization cleanup, 9 reachability/guard validation, 10 goldens, 11 UI_QA_CHECKLIST.md, 12 native Arabic review, 13 full regression, 14 closeout. STEPs 5, 6 and 7 were each split in two (5A/5B, 6A/6B, 7A/7B). The git commit messages do not match the step numbers (see GitHub references).
+
+Rules kept in every step so far
+Presentation only. No provider, repository, DTO, polling, navigation callback, moderation rule or backend call was changed. Chat reliability code (persistence-first send, queue, reconnection, delivery state) was not touched.
+Shared components reused instead of local variants: AppAvatar, AppShimmerBox, EmptyStateWidget, ErrorStateWidget, context.appColors. New shared pieces below.
+Directional layout only (EdgeInsetsDirectional, AlignmentDirectional); colours only from the AppColors tokens in Light and Dark.
+Meaning never rides on colour alone (icon + text on every status chip; chart lines have different dash patterns).
+Rejection reason always fully visible to the business (chip text wraps, never cut).
+Step-by-step record
+
+STEP 1 — Baseline / pre-coding audit: no evidence file for this step exists in the repository (no baseline output was saved). [CONFIRM] whether the three guard-test baseline failures were recorded elsewhere. State at the start of the restyle: test/l10n/arb_parity_test.dart (P-112) and test/routing/navigation_reachability_test.dart (P-113) exist; test/l10n/no_hardcoded_strings_test.dart does NOT exist yet (created in STEP 8).
+
+STEP 2 — Chat list restyle: DONE.
+
+Modified: lib/features/chat/presentation/chat_list_screen.dart, test/features/chat/presentation/chat_list_screen_test.dart (12 tests), ARB files (chat list keys, en + ar) and the generated app_localizations*.dart.
+Rows use AppAvatar, AppShimmerBox, EmptyStateWidget, ErrorStateWidget; all strings localized; times through AppFormatters.
+The spec's "online dot" is NOT drawn: neither the backend nor ConversationParticipantSummary carries presence data, and P-115 forbids new features/backend changes. Same reason applies in the thread screen.
+Because the screen now uses AppFormatters (which reads AppLocalizations), the old chat list test harness (a MaterialApp without localization delegates) crashed 8 tests with "Null check operator used on a null value". Fixed in the test harness only (delegates added); the app itself was never affected.
+
+STEP 3 — Chat thread restyle: NOT FOUND IN THE REPOSITORY (see Known issues #1).
+
+STEP 4 — Notification center and preferences: DONE.
+
+Created: lib/features/notifications/presentation/notification_grouping.dart (Today / This week / Earlier), test/features/notifications/presentation/notification_restyle_test.dart (11 tests), p115_step4_notifications.ps1.
+Modified: notification_center_screen.dart, notification_preferences_screen.dart, ARB files + generated localizations.
+Grouped sections, unread tint, skeleton loader, empty state, preferences as one rounded group of switches. Provider, paging, mark-read call and NotificationNavigator.openNotification call unchanged.
+Avatar/thumbnail on notification rows is NOT drawn: AppNotification carries exactly eight serializer fields and no actor avatar or thumbnail; adding one needs a backend change (out of scope).
+
+STEP 5 (5A + 5B) — Business Console dashboard and lists: DONE.
+
+Created: lib/core/widgets/app_status_chip.dart (AppStatusChip with AppStatusTone success/warning/danger/neutral — icon + wrapping text), lib/features/business_console/presentation/console_row.dart (ConsoleRow row anatomy + ConsoleThumbnail), console_dashboard.dart (cards with counts), tests console_restyle_test.dart (7) and console_lists_restyle_test.dart (3), scripts p115_step5a_console_dashboard.ps1, p115_step5b_console_lists.ps1.
+Modified: business_console_shell.dart (labels localized, English text unchanged), content_list_screen.dart, product_list_screen.dart, story_list_screen.dart, lib/routing/app_router.dart (+2 lines), ARB files + generated localizations.
+Rules preserved exactly: a Reel shows the processing / processing-failed chip before any moderation chip; a story past expiresAt shows Expired; the 5-second Reel poll, the FAB hero tags and all callbacks unchanged.
+Result reported after STEP 5: flutter analyze clean; 458 tests passed in business_console, content, stories, products and routing; the only failures in the full flutter test were the 8 chat list harness failures above (fixed).
+
+STEP 6A — Analytics charts themed from tokens: DONE.
+
+Modified: analytics_line_chart.dart (full replacement: line, grid, borders, axis numbers, title from context.appColors; optional dashArray; directional padding), analytics_screen.dart (3 colour lines + import: likes warning + dashed, rating trend success + dotted, card icons brandText). Created: analytics_theme_test.dart (4 tests), p115_step6a_analytics_theme.ps1.
+Result: flutter analyze clean; business_console 123 passed; routing 92 passed.
+Analytics screen strings deliberately left as hardcoded English (see Known issues #3). Tooltip colouring and dot painters (LineTouchTooltipData, getDotPainter) were NOT themed because the installed fl_chart version was not known and those APIs changed between versions.
+
+STEP 6B — Status/moderation chips test coverage: DONE (test-only, no lib change).
+
+Created: test/features/business_console/presentation/console_status_chips_test.dart (9 tests: content tab 4 locale/theme combinations + a rejected-without-reason case; stories tab 4 combinations), p115_step6b_status_chips.ps1.
+Covers: every state's chip (under review, live, rejected with long reason, processing, processing failed; story pending, published, rejected, expired), one icon + one text per chip, token colours in Light/Dark, text not cut (no overflow/maxLines; rejected chip taller than a one-line chip), English and Arabic. Reported result: all tests passed.
+
+STEP 7A — Staff moderation queue: DONE.
+
+Replaced: lib/features/moderation/presentation/moderation_widgets.dart (age chip is now the shared AppStatusChip keeping the keys age-chip-<urgency>; PriorityBadge fast path = brand/onBrand fill with bolt, normal = outline/textSecondary; thumbnail placeholder from tokens) and moderation_queue_screen.dart (rows are hairline token surfaces Material keyed queue-row-<id>, directional padding, chevron mirrors in RTL because Icons.chevron_right has matchTextDirection). Created: test/features/moderation/presentation/moderation_restyle_test.dart (9 tests), p115_step7a_moderation_queue.ps1, p115_step7a_fix1.ps1, p115_step7a_fix2.ps1.
+Two defects found by the owner's first run and fixed: (1) Icon has no matchTextDirection parameter (it is a property of IconData) — removed from the screen, the test reads chevron.icon!.matchTextDirection; (2) the RTL test showed LTR because a MaterialApp with locale: ar but without the Global localization delegates stays LTR — the test now passes AppLocalizations.localizationsDelegates and supportedLocales.
+Result: moderation folder and routing green after the fixes. SLA logic, ordering, retry, 403 message, summary text and every key are unchanged; the P-040 tests pass unchanged.
+
+STEP 7B — Staff moderation review screen and reject dialog: DONE.
+
+Replaced: lib/core/widgets/app_button.dart (new AppButtonVariant.danger: danger background, onDanger text and spinner; existing variants unchanged) and moderation_review_screen.dart (details card = hairline token surface keyed review-details-card; Reject = outlined button in dangerText; reject dialog confirm = AppButtonVariant.danger, disabled until a non-blank reason; required/error messages in dangerText; directional padding). Created: moderation_review_restyle_test.dart (9 tests), p115_step7b_moderation_review.ps1.
+Approve still has NO confirmation dialog: documented P-040 decision (fast path for clearing the queue). Reject keeps its reason dialog as its confirmation. popped results (true / false / null), snackbars and keys unchanged; P-040 review tests pass unchanged.
+Result reported by the owner: all tests passed (moderation, plus social, search, business_profile and routing since the shared AppButton changed).
+New shared pieces (reuse, do not duplicate)
+AppStatusChip + AppStatusTone (lib/core/widgets/app_status_chip.dart) — the one status chip.
+ConsoleRow, ConsoleThumbnail (lib/features/business_console/presentation/console_row.dart) — the one console list row.
+AppButtonVariant.danger (lib/core/widgets/app_button.dart) — destructive actions.
+groupNotificationsByRecency (notification_grouping.dart).
+Testing conventions learned (apply to STEPS 8–10)
+Any test of an RTL layout must pass AppLocalizations.localizationsDelegates and AppLocalizations.supportedLocales to MaterialApp; locale: ar alone stays LTR.
+Any screen that now reads context.l10n or AppFormatters needs those delegates in every test that pumps it.
+Provider fakes in the new tests use xxxProvider.overrideWith(() => _FixedNotifier(items)) on a subclass of the real notifier overriding build(); a screen that polls (content list with a processing Reel) must be unmounted at the end of the test (pumpWidget(const SizedBox.shrink())) or a pending timer fails it.
+Test files are kept ASCII-only; Arabic text is read from the generated localizations.
+Known issues / open items
+STEP 3 (chat thread restyle) is NOT in the repository: chat_thread_screen.dart, message_bubble_widget.dart, shared_content_card.dart and share_to_conversation_sheet.dart have no P-115 changes and no context.l10n usage on branch part-111 (head c77f303 when checked). The required work (own/received bubbles, grouped corners, ticks, typing indicator, shared cards, date separators, input bar with mirrored send icon, Block/Report header menu, no change to send/queue/reconnect/delivery logic) is still OPEN. [CONFIRM] with the owner whether it was done locally and not pushed; if not, it must be done before STEP 14. P-115 cannot close without it.
+"Online dot" (chat list) and notification avatar/thumbnail are intentionally not drawn (no data in the API); record them as spec deviations in the STEP 14 closeout.
+Hardcoded English strings remain on purpose in two feature areas, because their old tests pump a bare MaterialApp without localization delegates: the analytics screen (P-085 tests) and the whole moderation feature (queue, widgets, review screen, reject dialog; P-040 tests). STEP 8 must localize them AND update those test harnesses in the same step (the 6A/7A/7B restyle tests already pass delegates where needed).
+fl_chart tooltip colouring and dot painters not themed (fl_chart version not checked; read it from pubspec.lock first).
+lib/features/business_console/presentation/business_console_screen.dart still has the debug "Back to splash" button with hardcoded English (flagged in P-112 for P-114/P-115). Check whether the screen is still reachable before STEP 8.
+Not re-verified (carried from P-112/P-113): the Language selector PATCHing preferred_language on /api/v1/auth/me/. Confirm before the repository-wide l10n check.
+Native-speaker Arabic review of app_ar.arb and the glossary is still pending (STEP 12). Until then the Arabic is "pending review" and must not be described as final.
+Manual Light/Dark × Arabic/English walk-through for the three account types has NOT been done yet (STEP 11).
+Goldens for P-115 screens do not exist yet (STEP 10).
+Pending commit
+
+STEPs 2, 4, 5 and 6A are pushed (below). STEPs 6B, 7A (+ fix1, fix2) and 7B were validated locally by the owner; [CONFIRM] they are committed and pushed, and add the commit hash here.
+
+GitHub references
+cavallo-mobile, branch part-111:
+a8f7bb3 — commit message "update part P115-Step3" — contains STEP 2 (chat list).
+530dcf1 — commit message "update part P115-Step4" — STEP 4 (notifications).
+c77f303 — commit message "update part P115-Step6A" — contains STEP 5A, 5B and 6A.
+STEPs 6B, 7A, 7B: hash to be added after push.
+Remaining work (in order)
+Resolve the STEP 3 gap (chat thread).
+STEP 8: create test/l10n/no_hardcoded_strings_test.dart (scans lib/ for Text('…'), Text("…"), hintText:, labelText:, tooltip: and SnackBar content literals; allowlist inside the test file with a comment per entry); localize the analytics screen and the moderation feature and update the P-085 / P-040 harnesses; clear the remaining literals; keep ARB parity and Arabic plural completeness green.
+STEP 9: re-run the reachability, ARB parity and no-hardcoded-strings tests for Customer, Business and Staff.
+STEP 10: goldens (chat list, chat thread own/received/shared card/typing, notification center, console dashboard, moderation row) in light/dark and en/ar.
+STEP 11: UI_QA_CHECKLIST.md at the repo root, executed on a real device for the three account types in all four combinations, results recorded.
+STEP 12: native Arabic review of app_ar.arb against the P-112 glossary, or mark it pending.
+STEP 13: full flutter analyze + flutter test regression; confirm chat reliability code is unchanged.
+STEP 14: closeout; mark Phase 23 COMPLETE only if every item genuinely passed, otherwise list exactly what remains.
+Exact next starting point
+
+First answer the STEP 3 question (was the chat thread restyled and just not pushed?). If not: do STEP 3 next. Otherwise start STEP 8. Do not mark P-115 or Phase 23 complete until STEPs 3 and 8–14 are done.
+
+Edits to existing sections
+
+Add this line to the Part/Phase tracking index if present: P-115 | Flutter: Chat, Notifications, Business Console & Moderation Restyle + Final UI/UX QA Sweep | Phase 23 | IN PROGRESS (restyle steps 2, 4, 5, 6, 7 done and green; step 3 chat thread not found in repo; steps 8-14 not started)
+
+Do NOT mark Phase 23 complete.
