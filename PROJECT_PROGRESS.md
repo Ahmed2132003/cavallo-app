@@ -13253,3 +13253,50 @@ STILL OPEN (Step 9c):
 - social_error_message.dart, featured_badge.dart ('Featured'), content_action_row.dart:259
   (share text with raw English contentType): to be decided after reading the files.
 - Step 3 status (chat thread restyle) must be confirmed as pushed to GitHub.
+
+P-115 STEP 9 (9A + 9B + 9C) — Guard validation + remaining localization: PARTLY DONE (one l10n test failure open)
+
+Note on numbering: the P-115 step list defines STEP 9 as "reachability / guard validation". In practice STEP 9 was split into 9A (baseline of the guards + inventory), 9B (localization of validators / load errors) and 9C (localization of the last four chat files). Branch cavallo-mobile / part-111.
+
+STEP 9A — Guard baseline and inventory: DONE (commit 6123acb "update part P115-Step9A").
+- Script p115_step9a_guard_baseline.ps1. Evidence: p115_step9a_evidence.txt, p115_step9a_inventory.txt, p115_step9a_run_arb.txt, p115_step9a_run_reach.txt, p115_step9a_run_hardcoded.txt, p115_step9a_run_analyze.txt. Context files p115_step3_bundle.txt and p115_step9b_context.txt were also committed (reading material only, not the chat thread restyle).
+- Result of the three guards at that time: ARB parity 8 tests passed; navigation reachability 16 tests passed; no-hardcoded-strings 5 tests passed. flutter analyze: 1 info (curly_braces_in_flow_control_structures in product_form_screen.dart).
+- The inventory listed 100 candidate user-visible strings the guard test cannot see (validators, assigned error messages, getters). 9B and 9C worked from it.
+
+STEP 9B — Validators / load errors / product form: DONE (commits b4fd7d1 + fix cf15c52). See the "P-115 STEP 9b" section above (16 keys, 23 replacements in 7 files).
+
+STEP 9C — Last four chat files + guard list closed: DONE except one open test failure (commit 9513c35 "update part P115-Step9C", pushed to part-111).
+- Script: p115_step9c.ps1. Evidence files: p115_step9c_evidence.txt, p115_step9c_l10n.txt, p115_step9c_chat.txt.
+- Modified (presentation strings only; send / queue / reconnection / delivery-state logic untouched):
+  lib/features/chat/presentation/chat_thread_screen.dart
+  lib/features/chat/presentation/message_bubble_widget.dart
+  lib/features/chat/presentation/share_to_conversation_sheet.dart
+  lib/features/chat/presentation/shared_content_card.dart
+  lib/l10n/app_en.arb, lib/l10n/app_ar.arb (+ generated app_localizations*.dart via flutter gen-l10n)
+  test/l10n/no_hardcoded_strings_test.dart (_pendingMigration is now EMPTY; the set is kept because the tests use it)
+- 23 new ARB keys (Arabic = first-pass, add to "pending native review" for STEP 12):
+  chatThreadFallbackTitle, chatConnectionOnline, chatConnectionConnecting, chatConnectionReconnecting, chatConnectionOffline, chatThreadTyping, chatThreadEmpty, chatComposerHint, chatAttachPhoto, chatAttachVideo, chatPhotoTooLarge(maxMb), chatVideoTooLarge(maxMb), chatBubbleRetrying, chatBubbleFailedTapRetry, chatShareVia, chatShareToConversation, chatSharePickerEmpty, chatSharePickerLoadError, chatShareFailed, sharedContentTypePost, sharedContentTypeReel, sharedContentTypeProduct, sharedContentUnavailable
+- English text is identical to before, so no existing test was edited.
+- Behaviour note: in share_to_conversation_sheet.dart a failed share with an ApiFailure now shows the localized message (localizedApiError); any other error shows chatShareFailed.
+- Results: flutter test test/features/chat -> "+114: All tests passed!". flutter analyze -> 2 infos, both curly_braces_in_flow_control_structures in lib/features/products/presentation/product_form_screen.dart (lines 506 and 532; analyzer reported line 527 in 9A, so these are the same kind of info, not from 9C). 
+- Script lesson: the script stopped at "flutter analyze 2>&1 | Tee-Object" because $ErrorActionPreference='Stop' turns Flutter's stderr line "2 issues found" into a PowerShell error. All file edits were already written; the tests were then run by hand with cmd /c "flutter test ... > file 2>&1". Use that form in later scripts.
+
+OPEN — must be resolved before STEP 9 can be called closed:
+1. test/l10n: "flutter test test/l10n" ended with "+22 -1: Some tests failed." The failing test was NOT identified (the saved tail only shows localization_pipeline_test.dart lines). It was committed and pushed in this state. Next action: run flutter test test/l10n --reporter expanded, read the failure, fix it, and record the cause here. Do not claim the l10n guards green until then. (Check first whether it is a new key problem, e.g. ARB parity / placeholders, or a pre-existing pipeline test issue.)
+2. Chat reliability: confirm with git diff that outbound_message_queue_provider.dart and chat_connection_manager.dart are unchanged by 9C (the script did not write to them).
+3. Raw backend text still shown to the user in chat (deliberate, because existing tests assert it; changing it needs the owner's decision on editing those tests):
+   - chat_thread_screen.dart history error shows _historyError!.message (test expects 'Network down').
+   - message_bubble_widget.dart failed bubble shows outbound.errorMessage (test expects 'Not allowed.'); the stored text 'Failed to send message.' lives in outbound_message_queue_provider.dart (queue logic, not touched).
+   Both conflict with the P-112 rule that raw backend messages are never shown.
+4. Items from the 9B list that were NOT done in 9C:
+   - error_interceptor.dart (4 messages) and analytics_repository.dart (2): decision stays = presentation helper mapping ApiFailure.code to a localized string with fallback to the original message; data layer unchanged.
+   - social_error_message.dart (returns inner.message), featured_badge.dart (static const label 'Featured', not scanned by the guard), content_action_row.dart:259 (share text with raw English contentType), conversation.dart previewText (English fallback strings; the chat list uses ARB keys so currently unused for display).
+5. STEP 3 (chat thread restyle) is still NOT done: 9C only localized the strings; the visual restyle (bubbles, grouped corners, date separators, input bar, Block/Report menu) is still open. Confirm whether it exists locally unpushed.
+
+Arabic status: the 23 keys above are first-pass translations. app_ar.arb is still "pending native review"; do not describe it as final.
+
+GitHub references: 9A 6123acb, 9B b4fd7d1 (+ fix cf15c52), 9C 9513c35.
+
+Exact next starting point: (a) run flutter test test/l10n --reporter expanded and fix the one failing test; (b) decide items 3 and 4; (c) then STEP 3 / STEP 10 as listed in "Remaining work".
+
+Edit to the tracking line for P-115: replace "steps 9-14 not started" with "step 9 partly done (9A, 9B, 9C pushed; 1 test/l10n failure open); steps 10-14 not started".
