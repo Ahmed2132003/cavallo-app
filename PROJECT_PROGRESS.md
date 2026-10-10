@@ -13116,7 +13116,35 @@ Rows use AppAvatar, AppShimmerBox, EmptyStateWidget, ErrorStateWidget; all strin
 The spec's "online dot" is NOT drawn: neither the backend nor ConversationParticipantSummary carries presence data, and P-115 forbids new features/backend changes. Same reason applies in the thread screen.
 Because the screen now uses AppFormatters (which reads AppLocalizations), the old chat list test harness (a MaterialApp without localization delegates) crashed 8 tests with "Null check operator used on a null value". Fixed in the test harness only (delegates added); the app itself was never affected.
 
-STEP 3 — Chat thread restyle: NOT FOUND IN THE REPOSITORY (see Known issues #1).
+P-115 STEP 3A — Chat bubbles restyle (lib/features/chat/presentation/message_bubble_widget.dart): DONE (pending owner run result)
+- Presentation only. Own bubbles: AppColors.brand + onBrand; received: surfaceVariant + textPrimary; failed (outbound): dangerSubtle + dangerText. Radius 20 with the sender-side corners tightened to 4 between consecutive messages (new optional isFirstInGroup / isLastInGroup on MessageBubbleWidget and OutboundMessageBubbleWidget, default true; the caller decides grouping in STEP 3B). Everything directional (AlignmentDirectional, BorderRadiusDirectional, EdgeInsetsDirectional), so it mirrors in Arabic.
+- Ticks: sent = one tick, delivered = two ticks (meta tone), read = two ticks full strength (onBrand). A shared card with no text now shows its time/ticks line on the page instead of an empty bubble.
+- Unchanged: public API (plus the two optional params), keys (outbound_retry_*, outbound_discard_*, chatMedia_*), callbacks, the Image.network / Image.file handling, time format. No send / queue / reconnection / delivery logic touched.
+- Decision: NO Block/Report menu is added to the thread header (the Block User feature does not exist; store blocker A2 needs its own part). Only actions that already exist are kept.
+- Expected: the 8 chat_thread / chat_thread_typing goldens now differ and must be regenerated in 3C.
+- Tests run: analyze ______, flutter test test/features/chat ______ (owner to fill).
+
+P-115 STEP 3B — Chat thread screen restyle (lib/features/chat/presentation/chat_thread_screen.dart): DONE (pending owner run result)
+- Only the imports (formatters, app_colors, app_avatar, app_shimmer_box) and the section from State.build to the end of the file changed. Everything above build (history load, reconnect catch-up, WebSocket event handling, delivery marking, typing send, outbound enqueue, media picking, dispose) is byte-identical.
+- AppBar: AppAvatar + name + status line (connection label, or "typing"); no online dot (no presence data). Date separators between calendar days (AppFormatters.absoluteDate, no new ARB keys). Consecutive messages from the same sender are grouped (isFirstInGroup / isLastInGroup passed to the bubbles). Typing: three static dots in a received-style bubble above the composer plus the AppBar line (no animation). Composer: top hairline, rounded filled field (surfaceVariant), attach button, circular brand send button (Icons.send mirrors in RTL). Loading: AppShimmerBox skeleton instead of a spinner. History-error view ('Retry') and the empty text unchanged in behaviour.
+- Not added: Block/Report header menu (Block User does not exist; store blocker A2 is its own part).
+- Tests run: analyze ______, flutter test test/features/chat ______ (owner to fill).
+- Next: 3C (new chat_thread_restyle_test.dart, regenerate the 8 chat_thread goldens, full regression).
+
+P-115 STEP 3C — Chat thread tests + thread golden regeneration: DONE (pending owner run result)
+- Added test/features/chat/presentation/chat_thread_restyle_test.dart (8 tests): bubble colours from AppColors (light and dark), grouping flags and corner radii (20 / 4 on the sender side), date separators on day change, typing dots follow the typing event, LTR/RTL mirroring of bubble side and send-button side, send icon matchTextDirection. Reuses test/goldens/golden_helpers.dart.
+- Regenerated the 8 chat_thread / chat_thread_typing goldens (--update-goldens with --plain-name "chat_thread") from the RESTYLED screen; reviewed: ______ (owner). chat_list and test/goldens/p115_screens untouched.
+- Results: flutter analyze ______; flutter test test/features/chat ______; flutter test test/goldens ______ (expected 52); full flutter test ______.
+- STEP 3 is now COMPLETE and the thread golden limitation recorded under STEP 10 is lifted. STEP 10 can be marked DONE after the owner's visual sign-off of all 24 PNGs.
+- Not added by design: Block/Report in the thread header (Block User does not exist; store blocker A2 needs its own part); no online dot (no presence data).
+
+## P-115 STEP 3C - Chat thread tests + thread golden regeneration: DONE
+- Added test/features/chat/presentation/chat_thread_restyle_test.dart (8 tests, 7 reported by flutter at run time): bubble colours from AppColors (light and dark), grouping flags and corner radii (20 / 4 on the sender side), date separators on day change, typing dots follow the typing event, LTR/RTL mirroring of bubble side and send-button side, send icon matchTextDirection. Reuses test/goldens/golden_helpers.dart.
+- Fix: the typing test needed two pump() calls after each emitEvent (one pump was not enough for the broadcast stream event to reach setState and rebuild). Test file only; the screen was not changed.
+- Regenerated the 8 chat_thread / chat_thread_typing goldens from the RESTYLED screen (--update-goldens with --plain-name "chat_thread"); reviewed visually by the owner: all fine. chat_list and test/goldens/p115_screens untouched.
+- Results: flutter analyze: No issues found; flutter test test/features/chat/presentation/chat_thread_restyle_test.dart: +7 all passed; flutter test test/goldens: +52 all passed; full flutter test: +1587 all passed.
+- STEP 3 is now COMPLETE and the thread golden limitation recorded under STEP 10 is lifted.
+- Not added by design: Block/Report in the thread header (Block User does not exist; store blocker A2 needs its own part); no online dot (no presence data).
 
 STEP 4 — Notification center and preferences: DONE.
 
@@ -13308,3 +13336,163 @@ In "STEP 9C", replace the bullet "OPEN item 1 (test/l10n ... +22 -1)" with:
    Lesson for later scripts: keep PowerShell scripts ASCII-only (build non-ASCII characters from codes) or save with a UTF-8 BOM, and always run the l10n folder (it includes arb_encoding_test) after any script that writes .dart files.
 
 Change the step header "DONE except one open test failure" to "DONE".
+
+## P-115 STEP 10 (goldens) — STATUS: DONE (thread baselines are placeholders, see Known limitation)
+
+Split into 10A (infrastructure + chat goldens), 10B (screens goldens), 10C (generate, verify, close). Tests only; the single lib/ edit in this step is the lint fix listed below.
+
+### What was added
+- test/goldens/golden_helpers.dart: shared harness. GoldenCombo x4 (light_en, light_ar, dark_en, dark_ar), pumpGoldenApp (real AppTheme, locale, AppLocalizations delegates, ProviderScope overrides, asserts the expected text direction), expectGolden, unmountGolden.
+- test/goldens/p115_chat_goldens_test.dart: chat_list, chat_thread (own, received, shared product card, ticks) and chat_thread_typing, x 4 combos = 12 goldens in test/goldens/p115_chat/.
+- test/goldens/p115_screens_goldens_test.dart: notification_center, console_dashboard, moderation_queue x 4 combos = 12 goldens in test/goldens/p115_screens/.
+- Total 24 PNGs. Offline: every repository, the queue notifier and ChatConnectionManager are test fakes; no network; no running animation.
+
+### Determinism
+- ChatListScreen, NotificationCenterScreen and the dashboard build AppFormatters without an injectable clock, so test data is chosen so the rendered text never changes: chat list uses old fixed dates (always an absolute date); notification center uses Today = +10 min ("just now"), This week = 3.5 / 5.5 days ago, Earlier = fixed Jan 2026 date; moderation age comes from QueueItem.ageDuration.
+- Dashboard shows 12 products and 0 for content, stories and followers (ContentItem, OwnStory, DailyStats constructors were not available); can be enriched later. Dashboard golden uses a 680 px wide surface so all four cards are visible.
+
+### Results
+- Baselines generated with --update-goldens on the two p115 files only; p114 untouched (git status confirmed).
+- flutter test test/goldens (no flag): 52 passed (p114 + p115).
+- Lint fix (only lib/ change): flutter analyze reported 2 info items (curly_braces_in_flow_control_structures) in lib/features/products/presentation/product_form_screen.dart (price and currency validators). Fixed by wrapping each if body in braces; no behaviour change. test/features/products: 82 passed.
+- flutter analyze: No issues found.
+- Full flutter test: 1580 passed.
+
+### Known limitation (must be fixed before P-115 closes)
+- The 8 chat_thread / chat_thread_typing PNGs capture the PRE-RESTYLE thread screen, because STEP 3 (chat thread restyle) is not implemented. Typing is a text line in the AppBar, not dots. After STEP 3 lands: run --update-goldens on p115_chat_goldens_test.dart, review the PNGs, re-run without the flag.
+- Visual review: screens goldens (notification center, dashboard, moderation) reviewed by the owner; chat list and thread PNGs not separately signed off. Owner to confirm: ______
+
+### Not done by this step
+- P-115 and Phase 23 stay IN PROGRESS: STEP 3 (chat thread restyle), UI_QA_CHECKLIST.md execution on device, native Arabic review, final closeout.
+
+Tracking line: replace "steps 10-14 not started" with "step 10 done (24 goldens; 8 thread baselines are placeholders until step 3); steps 11-14 not started; step 3 open".
+
+## P-115 STEP 10 (goldens) - CLOSED
+- All 24 PNGs (chat list, chat thread, typing, notification center, console dashboard, moderation queue; light/dark x en/ar) are final and visually signed off by the owner.
+- Known limitation from the earlier STEP 10 entry is lifted (thread goldens now come from the restyled screen).
+
+Tracking line: replace "step 10 done (24 goldens; 8 thread baselines are placeholders until step 3); steps 11-14 not started; step 3 open" with "steps 3 and 10 done and closed (24 goldens final); steps 11-14 not started".
+
+## P-115 STEP 11A - UI_QA_CHECKLIST.md created (structure + Customer): WRITTEN, NOT EXECUTED
+- Created UI_QA_CHECKLIST.md at the repo root: header (date, branch, device, app version, all blank), recording method, Customer section (14 screens from navigation_manifest.dart + shell_branches.dart + app_router.dart; each in Light-EN, Light-AR, Dark-EN, Dark-AR), per-screen and per-group check items, "needs confirmation" list, empty Defects Log, and title-only placeholders for Business, Staff (11B) and Cross-cutting (11C).
+- Every result cell is an empty box. Nothing was run on a device; no result is recorded.
+- No screen was invented: all 14 Customer rows come from the manifest. No screen file is missing from the manifest for all account types.
+- Script: P115-Step11A.ps1 (writes only UI_QA_CHECKLIST.md; refuses to overwrite unless -Force).
+
+Tracking line: replace "steps 11-14 not started" with "step 11A done (checklist structure + Customer written, not executed); 11B, 11C, 12-14 not started".
+
+## P-115 STEP 11B - UI_QA_CHECKLIST.md Business + Staff sections: WRITTEN, NOT EXECUTED
+- Replaced the Business and Staff placeholders in UI_QA_CHECKLIST.md. Business: 10 rows (profile edit, the four console screens, four forms, Saved via Profile hub) from navigation_manifest.dart + app_router.dart + business_console_shell.dart, plus the Create sheet, onboarding as a special screen, and one row for the 13 shared screens run with a Business account. Staff: 3 rows (moderation queue, moderation review, Saved via Profile hub) plus one row for the 13 shared screens.
+- All result cells are empty boxes. Nothing was run on a device.
+- No screen file is missing from the manifest. Two entry points are marked "needs confirmation": the tab 5 header shortcuts to the console, and editing a product from the list (router-only, not a separate manifest entry).
+- Cross-cutting (11C) and Sign-off are not written yet.
+- Script: P115-Step11B.ps1 (edits only UI_QA_CHECKLIST.md, backup .bak; stops unless both placeholders are intact).
+
+Tracking line: replace "step 11A done (checklist structure + Customer written, not executed); 11B, 11C, 12-14 not started" with "step 11A and 11B done (checklist structure + Customer, Business, Staff written, not executed); 11C, 12-14 not started".
+
+## P-115 STEP 11C - UI_QA_CHECKLIST.md Cross-cutting + Sign-off: WRITTEN, NOT EXECUTED
+- Replaced the Cross-cutting placeholder in UI_QA_CHECKLIST.md with: reachability per account type (Customer, Business, Staff; screens and entries are in their tables), localization, theme correctness, chat functionality on a real device, moderation visibility. Added a Sign-off section.
+- Sign-off is blank on purpose: guard test results (reachability, ARB parity, no-hardcoded-strings), Arabic review status (Pending/Completed), signature and date.
+- NOT DONE: nothing was run on a device; no result is recorded. The checklist (11A, 11B, 11C) is complete as a document only.
+- Script: P115-Step11C.ps1 (edits only UI_QA_CHECKLIST.md, backup .bak; stops if Cross-cutting is not an empty placeholder or Sign-off already exists).
+
+Tracking line: replace "step 11A and 11B done (checklist structure + Customer, Business, Staff written, not executed); 11C, 12-14 not started" with "step 11 checklist written (11A, 11B, 11C), device execution NOT done; steps 12-14 not started".
+
+## P-115 STEP 11B (fix) - Business/Staff checks completed: WRITTEN, NOT EXECUTED
+- UI_QA_CHECKLIST.md: added to Business the moderation-state chips (Pending/Approved/Rejected) with the rejection-reason checks, the console dashboard cards and the chart checks (readable in dark, meaning not carried by colour alone: dash pattern/labels/legend text). Added to Staff the destructive-action checks (danger colour, confirmation dialog, cancel changes nothing), chips/badges and the rejection-reason cross-check with a Business account.
+- Known gaps recorded in the checklist as things to observe on the device, not as results: Story has no rejection_reason from the backend (O-1); a rejected Post/Reel opens "not found" for its owner from a notification (D-1, open); block user may not exist in the app (listed as a new part still to build).
+- The earlier 11B run had no step spec and covered screens and access paths only; this patch adds the missing items. Nothing was run on a device; no result is recorded.
+- Script: P115-Step11B-fix.ps1 (patches only UI_QA_CHECKLIST.md, backup .bak, stops if an anchor is not found exactly once).
+
+- P-115 / STEP 12A: chunk 1 من 4 اتراجع وتعديلاته اتطبقت، والتحقق نضيف (gen-l10n، analyze، test/l10n: 23 passed).
+- P-115 / STEP 12B: chunk 2 من 4 اتراجع (115 مفتاح)، اتطبق 3 تعديلات (followButtonFollowing, productShareText, notifEmpty) + تعديل مُرحَّل من chunk 1 (hubFeaturedStatus).
+- قرارات المصطلحات (قرار المنتج: الاختيار الأكثر احترافية): Cavallo يفضل لاتيني؛ فاتح/داكن للعناصر القصيرة؛ appTitle توطين مقصود؛ عميل = Customer (يُضاف للـglossary)؛ مميّز بالشدّة (يُصحَّح سطر الـglossary)؛ "يرجى" تفضل في رسائل auth.
+- محتاج متابعة: عنوان شاشة الشات "الرسائل" مقابل تاب "المحادثات" (الاختلاف في EN نفسه). التوحيد يتطلب إعادة توليد goldens الـchat list (ar).
+- الترجمة العربية لسه "pending review" ومحتاجة مراجعة متحدث أصلي.
+
+- P-115 / STEP 12C: chunk 3 من 4 اتراجع (115 مفتاح)، اتطبق 5 تعديلات (notifPrefsSystemFooter, consoleStoryPending, moderationContentTypeStory, moderationDetailSubmittedBy, moderationNotAllowed).
+- قرارات المصطلحات (قرار المنتج: الاختيار الأكثر احترافية): اسم مجموعة Moderator يفضل لاتيني؛ "إعلان" ممنوع حتى لـannouncements؛ حالة Pending للقصص = قيد المراجعة (توحيد مع المنشورات)؛ تم النشر تفضل لـLive وPublished.
+- الترجمة العربية لسه "pending review" ومحتاجة مراجعة متحدث أصلي.
+
+- P-115 / STEP 12D: chunk 4 من 4 اتراجع (113 مفتاح)، اتطبق 8 تعديلات (analyticsStoryViews, contentPostNotFound, contentReelNotFound, contentFormCaption, productFormCategoryRequired, commonGenericError, chatThreadTyping, chatSharePickerEmpty).
+- بذلك اتراجعت الـ458 مفتاح كلها في 4 chunks (مجموع التعديلات المخطط: 4 + 4 + 5 + 8 = 21)، وملف app_ar.arb بيخزّن العربي كـ \uXXXX فالسكربتات بتقارن بعد فك الترميز.
+- قرارات المصطلحات (قرار المنتج: الاختيار الأكثر احترافية): النص التوضيحي = Caption؛ التصنيف = Category؛ "لم يتم العثور على ..." لكل حالات not found؛ "حاول مرة أخرى" لكل رسائل الخطأ؛ جارٍ الكتابة بدل يكتب.
+- محتاج متابعة: EN بيقول "Messages tab" بينما التاب "Chats"، وعنوان الشاشة "الرسائل" مقابل "المحادثات". التوحيد يتطلب تعديل EN وإعادة توليد goldens الـchat list.
+- الترجمة العربية لسه "pending review" ومحتاجة مراجعة متحدث أصلي.
+
+## P-115 / STEP 12Z - Arabic review closeout: DONE (review done; native-speaker sign-off still PENDING)
+
+- STEP 12 (A-D) راجع كل مفاتيح app_ar.arb (458 مفتاح) على 4 chunks وطبّق 21 تعديل (4 + 4 + 5 + 8). ملف app_ar.arb بيخزّن العربي كـ \uXXXX فالمقارنة بتتم بعد فك الترميز.
+- التحقق النهائي (2026-10-10): flutter gen-l10n شغال، flutter analyze: No issues found، flutter test test/l10n: +23 passed، flutter test test/core/l10n: +64 passed.
+- قرارات المصطلحات اللي اتثبتت: Cavallo لاتيني؛ فاتح/داكن للعناصر القصيرة؛ عميل = Customer؛ اسم مجموعة Moderator لاتيني؛ "إعلان" ممنوع حتى لـannouncements؛ النص التوضيحي = Caption؛ التصنيف = Category؛ "لم يتم العثور على ..." لكل حالات not found؛ "حاول مرة أخرى" لكل رسائل الخطأ؛ "يرجى" تفضل في رسائل auth؛ حالة Pending للقصص = قيد المراجعة؛ "تم النشر" لـLive وPublished.
+- OPEN (قرار منتج): EN بيقول "Messages tab" بينما التاب "Chats"، وعنوان الشاشة "الرسائل" مقابل "المحادثات". التوحيد يحتاج تعديل EN وإعادة توليد goldens الـchat list (ar).
+- OPEN: الترجمة العربية لسه "pending review". المراجعة دي مراجعة تقنية/مصطلحية، مش sign-off من متحدث أصلي، ومينفعش توصف بأنها نهائية.
+- مفيش تغيير في أي كود غير ملف app_ar.arb وملفات l10n المولّدة.
+
+## P-115 / STEP 13 - Full validation: PARTIAL (2 groups FAIL, cause not yet diagnosed)
+
+- Date 2026-10-10, branch part-111. PASS: flutter gen-l10n, flutter analyze (No issues found), reachability guard (+16), ARB parity + encoding (+10), no-hardcoded-strings guard (+5), chat tests, notification tests.
+- FAIL (exit=1): flutter test test/goldens, and full flutter test. The failing tests are not yet identified: validation_13.txt in the repo is truncated and does not contain those sections. Hypothesis (unconfirmed): the STEP 12 Arabic edits changed text in the ar goldens.
+- Not yet checked: chat reliability diff (logic files) and test-files-modified diff. Their output was not captured.
+- Noted: test/goldens/p115_screens/ and p115_screens_goldens_test.dart are still untracked in git (STEP 10 files never committed).
+- Next: run the diagnostic script (diag_13.txt), classify each golden failure as intentional visual change (review the PNG first, then --update-goldens) or real bug. No guard test was weakened and no allowlist entry was added.
+- P-115 and Phase 23 remain IN PROGRESS.
+
+## P-115 / STEP 13 - Diagnosis: 5 failures identified (not yet fixed)
+
+- Full suite (2026-10-10): 5 failing tests. 1 test: discover_search_bar_test "shows the Arabic hint" (expected text out of date after the STEP 12 Arabic edits, to be confirmed). 4 goldens: moderation queue row (light_ar, dark_ar), chat_thread_typing (light_ar, dark_ar), presumably from STEP 12C/12D Arabic text changes. Not yet confirmed from the diff images. widget_test.dart "App boots signed-out" is NOT a failure.
+- Chat reliability diff against base 87cbcbb was invalid: that base predates P-100 and includes P-072..P-077 chat work. It also includes the 146-file dart format of b4fd7d1. Redo against the parent of a8f7bb3 with git diff -w. Result not recorded yet.
+- No guard test weakened, no allowlist entry added, no golden updated, no chat logic touched.
+- Untracked: test/goldens/p115_* (STEP 10, to be committed) and test/goldens/failures/ (to be gitignored, never committed).
+- P-115 and Phase 23 remain IN PROGRESS.
+
+## P-115 / STEP 13 - Diagnosis round 2 (still not fixed)
+
+- Correct base for the chat-reliability diff: ed2ea65 (parent of a8f7bb3). With git diff -w, 6 logic files still differ (chat_connection_manager, chat_event, conversation_repository, conversation, shared_content, outbound_message_queue_provider; 29 insertions, 26 deletions). Content NOT yet inspected, so "chat logic untouched" is NOT confirmed. Likely P-115 STEP 9C string/localization edits, unverified.
+- Test files in P-115 touching chat/notifications: chat_list_screen_test.dart (+166 with -w, STEP 2 restyle tests) and notification_restyle_test.dart (new, STEP 4). Removed assertions not yet checked.
+- 4 Arabic goldens (chat_thread_typing and moderation queue, light/dark) and discover_search_bar_test (ar) still failing; failure images not yet reviewed. No golden updated. No guard test weakened, no allowlist change.
+- P-115 and Phase 23 remain IN PROGRESS.
+
+## P-115 / STEP 13 - Diagnosis round 3
+
+- Chat reliability diff (base ed2ea65, git diff -w -U0) inspected by content: the 6 files differ ONLY by dart format re-wrapping (b4fd7d1 format of lib). No behaviour change in chat_connection_manager, chat_event, conversation_repository, conversation, shared_content, outbound_message_queue_provider. Confirmed.
+- discover_search_bar_test (ar): cause confirmed. Test hardcoded the old Arabic hint; ARB now says "ابحث عن أنشطة تجارية ومنتجات ومنشورات" after STEP 12. Fix is in the test (reads AppLocalizations), no ARB change.
+- chat_list_screen_test: removed assertions are replaced by restyle equivalents (skeleton, AppAvatar, AppButton, localization delegates). No weakening found.
+- 4 Arabic goldens (chat_thread_typing, moderation queue; light/dark): images still NOT reviewed. No golden updated.
+- No guard test weakened, no allowlist change.
+- P-115 and Phase 23 remain IN PROGRESS.
+
+## P-115 / STEP 13 - Round 4 (status uncertain)
+
+- Goldens: moderation queue row and chat_thread_typing (light/dark ar) were regenerated with --update-goldens; flutter test test/goldens: +52 passed. The old vs new images were NOT reviewed before regenerating, so visual correctness of these 4 baselines is unconfirmed.
+- discover_search_bar_test: still failing at load (compile error) after the test-only patch; cause not yet read. Needs diag_discover.txt.
+- Full suite not re-run after these changes. P-115 and Phase 23 remain IN PROGRESS.
+
+## P-115 / STEP 13 - Round 5
+
+- discover_search_bar_test compile error: cause = my fix script wrote literal "\n" sequences into line 55 of the Dart file (PowerShell non-escaped string). Not an app or ARB problem. Fixed by replacing that line with proper Dart code; result of re-run to be recorded after the owner runs it.
+- The 4 regenerated Arabic goldens (chat_thread_typing, moderation queue; light/dark) are still NOT visually reviewed.
+- Full suite not re-run. P-115 and Phase 23 remain IN PROGRESS.
+
+## P-115 / STEP 13 - Round 6
+
+- discover_search_bar_test fixed and green (+3): the test now reads the Arabic hint from AppLocalizations. No ARB or app code change.
+- 4 Arabic goldens (chat_thread_typing, moderation queue; light/dark) regenerated; flutter test test/goldens: +52 passed. Visual review of the new PNGs NOT yet confirmed.
+- Chat reliability diff confirmed format-only (round 3). No guard test weakened, no allowlist change.
+- Full suite re-run pending. P-115 and Phase 23 remain IN PROGRESS.
+
+## P-115 / STEP 13 - Full validation: PASS (one visual check pending)
+
+- 2026-10-10, branch part-111: flutter gen-l10n OK, flutter analyze: No issues found, full flutter test: +1587 All tests passed. Guards (reachability +16, ARB parity/encoding +10, no-hardcoded-strings +5) pass; goldens +52 pass.
+- Fixes in this step: discover_search_bar_test now reads the Arabic hint from AppLocalizations (STEP 12 had added a word to the ARB text); 4 Arabic goldens regenerated (chat_thread_typing, moderation queue; light/dark) because of STEP 12 text changes.
+- Chat reliability diff (base ed2ea65, git diff -w) confirmed format-only: no behaviour change in chat transport/queue/delivery code.
+- No guard test weakened, no allowlist entry added.
+- PENDING: visual review of the 4 regenerated Arabic goldens (not confirmed). test/goldens/p115_* still untracked; test/goldens/failures/ to be gitignored.
+- P-115 and Phase 23 remain IN PROGRESS (open: STEP 14 closeout, device execution of UI_QA_CHECKLIST.md, native Arabic sign-off, chat label decision).
+
+## P-115 / STEP 13 - CLOSED
+
+- The 4 regenerated Arabic goldens (chat_thread_typing, moderation queue; light/dark) were visually reviewed by the owner: correct. Pending item from the previous entry is resolved.
+- .gitignore now ignores test/goldens/failures/. Temporary diagnostic files (diag_*, full_13, validation_13, *.bak, bundle_*, _review_tmp) are intentionally NOT committed.
+- STEP 13 result: analyze clean, full suite +1587 passed, all guards and goldens green, chat logic unchanged (format-only diff).
+- P-115 and Phase 23 remain IN PROGRESS: STEP 14 closeout, device execution of UI_QA_CHECKLIST.md, native Arabic sign-off, "Messages/Chats" label decision.
