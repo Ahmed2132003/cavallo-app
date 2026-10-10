@@ -13550,3 +13550,29 @@ Date 2026-10-10, branch part-111 (cavallo-mobile). Supersedes the "NOT COMPLETE 
 The visual and localization layers are stable. Store listing assets and screenshots should be produced from this design in both languages and both themes, after the native Arabic sign-off.
 
 Tracking line: Phase 23 COMPLETE (P-115 closed 2026-10-10 with the exceptions above: native Arabic sign-off pending; online dot and thread Block/Report not built by decision; D-1/D-2/G-1/O-1 and the Messages/Chats label carried forward).
+## P-115 / STEP 14 - FINAL CLOSEOUT: COMPLETE (with recorded exceptions)
+
+Date 2026-10-10, branch part-111 (cavallo-mobile). Supersedes the "NOT COMPLETE - IN PROGRESS" STEP 14 entry above: the device QA and the Arabic review that were open there are now done by the owner.
+
+### Definition of Done
+- Remaining screens restyled: DONE. Two scope items intentionally not built and ACCEPTED by the owner: online dot (no presence data) and Block/Report in the thread header (Block User feature does not exist; store blocker A2 is its own part).
+- Reachability, ARB parity, no-hardcoded-strings guards green: DONE (STEP 13: +16, +10, +5). No guard weakened, no allowlist growth.
+- Goldens green: DONE (+52, stable over three runs; PNGs reviewed by the owner).
+- flutter analyze clean; full suite +1587 passed.
+- UI_QA_CHECKLIST.md executed on a real device by the owner (Customer, Business, Staff x Light-EN, Light-AR, Dark-EN, Dark-AR) and recorded in the checklist, including the Sign-off section. Results are the owner's attestation; per-cell notes were not kept.
+- Chat reliability code: behaviour unchanged (9 files differ from main by dart format only; verified by diff and by byte-identical comparison after formatting). chat_unread_provider.dart is a read-only P-113 addition.
+- Repo hygiene: temporary working files untracked and ignored (commit 4873e72 in cavallo-mobile).
+
+### Arabic review: DONE
+- The glossary and app_ar.arb (458 keys; 21 edits from the STEP 12 technical review, glossary decisions applied) were reviewed and approved by Ahmed, a native Arabic speaker and the product owner, on 2026-10-10. The earlier "native-speaker sign-off pending" status is closed by this entry.
+- Note for the record: the reviewer is the product owner; no separate second reviewer was used.
+
+### Known open items carried forward (none caused by Phase 23)
+- D-1, D-2, G-1 (P-095): rejected Post/Reel opens "not found" for its owner from a notification; approved Reel not yet processed; G-1 undecided. O-1: Story has no rejection_reason from the backend. Recorded in the checklist Defects Log (K-1, K-2) as known.
+- Open product decision: "Messages" (EN text, screen title) vs "Chats" (tab). If unified: change EN and regenerate the Arabic chat-list goldens.
+- Block User feature, account deletion and privacy/Terms links (store blockers) are separate future parts.
+
+### Handoff
+The visual and localization layers are stable and the Arabic is approved. Store listing assets and screenshots should be produced from this design in both languages and both themes.
+
+Tracking line: Phase 23 COMPLETE (P-115 closed 2026-10-10; Arabic approved by the owner; exceptions: online dot and thread Block/Report not built by decision; D-1/D-2/G-1/O-1 and the Messages/Chats label carried forward).
