@@ -13496,3 +13496,32 @@ Tracking line: replace "step 11A and 11B done (checklist structure + Customer, B
 - .gitignore now ignores test/goldens/failures/. Temporary diagnostic files (diag_*, full_13, validation_13, *.bak, bundle_*, _review_tmp) are intentionally NOT committed.
 - STEP 13 result: analyze clean, full suite +1587 passed, all guards and goldens green, chat logic unchanged (format-only diff).
 - P-115 and Phase 23 remain IN PROGRESS: STEP 14 closeout, device execution of UI_QA_CHECKLIST.md, native Arabic sign-off, "Messages/Chats" label decision.
+## P-115 / STEP 14 - Phase 23 closeout review: NOT COMPLETE - IN PROGRESS
+
+Date 2026-10-10, branch part-111 (cavallo-mobile). Decision: Phase 23 stays IN PROGRESS. Reason: UI_QA_CHECKLIST.md was never executed on a device, and the native-speaker Arabic sign-off is pending.
+
+### Definition of Done review
+| Item | Result | Evidence |
+|---|---|---|
+| Remaining screens restyled (chat list, thread, notifications, console, moderation) | PASS with 2 recorded deviations | online dot and thread-header Block/Report not built (no presence data; Block User feature does not exist - store blocker A2) |
+| Reachability, ARB parity, no-hardcoded-strings guards green | PASS | STEP 13 re-run 2026-10-10: reachability +16, ARB parity/encoding +10, no-hardcoded +5; no guard weakened, no allowlist growth |
+| Goldens green | PASS | flutter test test/goldens +52, three consecutive runs stable; 24 P-115 PNGs and the 4 regenerated Arabic PNGs reviewed by the owner |
+| flutter analyze / full suite | PASS | No issues found; +1587 All tests passed |
+| QA checklist executed and recorded on a real device | NOT DONE | closeout evidence: 125 table cells still empty, 0 passed, 0 failed; Sign-off blank |
+| Arabic review status stated honestly | PASS | 458 keys reviewed in 4 chunks, 21 edits; native-speaker sign-off PENDING (not final) |
+| Chat reliability code unchanged in behaviour | PASS | 9 chat logic files differ from main only by dart format; verified by diff -w against base ed2ea65 and by byte-identical comparison after formatting both versions. chat_unread_provider.dart is a read-only P-113 addition |
+| Changed files inside Phase 23 scope | NOT CLEAN | temporary files (bundle_*, _review_tmp, *.bak, diag_*, arabic_glossary.txt, phase23_text.txt, recon files) are present in HEAD although STEP 13 recorded them as not committed; to be untracked |
+
+### Remaining (exact)
+1. Execute UI_QA_CHECKLIST.md on a real device: Customer, Business and Staff accounts x Light-EN, Light-AR, Dark-EN, Dark-AR; record results; fill Sign-off.
+2. Native Arabic speaker approval of app_ar.arb (status: Claude-assisted technical review applied; native approval PENDING). Do not describe the Arabic as final.
+3. Owner decision on "Messages" vs "Chats" naming (EN text and AR screen title); if unified, regenerate the chat list Arabic goldens.
+4. Owner decision on the two deviations: online dot and thread-header Block/Report (accept, or schedule a separate part together with the Block User feature).
+5. Repo hygiene: untrack the temporary files listed above and keep them in .gitignore.
+
+### Known open defects carried forward (not caused by Phase 23)
+- D-1: a rejected Post/Reel opens "not found" for its owner from a notification (P-095). Needs an owner-facing view; product/architecture decision.
+- D-2 (approved Reel not yet processed), G-1, O-1 (Story has no rejection_reason): from P-095, never formally closed.
+- To observe on the device and record in the Defects Log: D-1 and O-1.
+
+Tracking line: Phase 23 IN PROGRESS (P-111..P-114 per their entries; P-115 code and automated checks complete, device QA, native Arabic sign-off and two owner decisions open).
