@@ -70,12 +70,7 @@ def _unknown_binary_is_video(file, exc):
     stream with a positive duration in it.
     """
     params = getattr(exc, "params", None) or {}
-    detected = str(params.get("detected_mime") or "").lower()
-    if detected in CHAT_VIDEO_MIME_TYPES:
-        # libmagic named an allowed video type and only the letter case
-        # differs (e.g. "video/MP2T"); validate_upload compares exactly.
-        return True
-    if detected != _UNKNOWN_BINARY_MIME and not detected.startswith("video/"):
+    if params.get("detected_mime") != _UNKNOWN_BINARY_MIME:
         return False
     if shutil.which("ffprobe") is None:
         return False

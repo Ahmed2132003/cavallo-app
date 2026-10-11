@@ -1,10 +1,4 @@
-import os
-import shutil
-import subprocess
-import tempfile
-
 from django.apps import apps
-from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
@@ -19,118 +13,15 @@ from .models import Conversation, ConversationParticipant, Message
 # Part P-076 — chat media limits (documented, single source of truth).
 #
 # Images: jpeg/png/webp, 5 MB — identical to Post.image / Product.image.
-# Video:  any common video container (mp4, mov, mkv, webm, avi, 3gp, ...),
-#         recognised by its REAL content (libmagic, plus an ffprobe check for
-#         containers libmagic has no signature for) - never by file
-#         extension. The size cap is settings.CHAT_VIDEO_MAX_MB (env
-#         CHAT_VIDEO_MAX_MB, default 1024 MB). Chat video is stored exactly
-#         as uploaded (no transcoding); the Flutter client offers an external
-#         player for codecs the phone itself cannot decode.
+# Video:  video/mp4 only, 25 MB. Chat video is NOT transcoded (no ffmpeg
+#         pipeline like Reel's), so the stricter 25 MB cap (vs Reel's
+#         100 MB) is the chosen alternative to transcoding. To also accept
+#         iPhone .mov later, add "video/quicktime" to CHAT_VIDEO_MIME_TYPES.
 # ---------------------------------------------------------------------------
 CHAT_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"]
 CHAT_IMAGE_MAX_BYTES = 5 * 1024 * 1024
-CHAT_VIDEO_MIME_TYPES = [
-    "video/mp4",
-    "video/quicktime",
-    "video/webm",
-    "video/x-matroska",
-    "video/x-msvideo",
-    "video/3gpp",
-    "video/3gpp2",
-    "video/mpeg",
-    "video/mp2t",
-    "video/x-m4v",
-    "video/x-flv",
-    "video/x-ms-asf",
-    "video/x-ms-wmv",
-    "video/ogg",
-    "video/x-ogm",
-    "video/h264",
-    "video/h265",
-    "video/hevc",
-    "video/avi",
-    "video/x-mpeg",
-    "video/mj2",
-    "video/divx",
-]
-CHAT_VIDEO_MAX_BYTES = settings.CHAT_VIDEO_MAX_MB * 1024 * 1024
-
-# libmagic's answer when it has no signature for the container (MPEG-TS and
-# some camera/exotic formats end up here). It is the ONLY answer that is
-# second-guessed with ffprobe; every other type was positively identified
-# as "not a video" and stays rejected.
-_UNKNOWN_BINARY_MIME = "application/octet-stream"
-_FFPROBE_TIMEOUT_SECONDS = 30
-
-
-def _unknown_binary_is_video(file, exc):
-    """
-    True only when `exc` says libmagic could not identify the file AND
-    ffprobe (already installed for the Reel pipeline) finds a real video
-    stream with a positive duration in it.
-    """
-    params = getattr(exc, "params", None) or {}
-    detected = str(params.get("detected_mime") or "").lower()
-    if detected in CHAT_VIDEO_MIME_TYPES:
-        # libmagic named an allowed video type and only the letter case
-        # differs (e.g. "video/MP2T"); validate_upload compares exactly.
-        return True
-    if detected != _UNKNOWN_BINARY_MIME and not detected.startswith("video/"):
-        return False
-    if shutil.which("ffprobe") is None:
-        return False
-
-    temp_path = None
-    try:
-        path_getter = getattr(file, "temporary_file_path", None)
-        if callable(path_getter):
-            target = path_getter()
-        else:
-            with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                temp_path = tmp.name
-                file.seek(0)
-                for chunk in file.chunks():
-                    tmp.write(chunk)
-            target = temp_path
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-protocol_whitelist",
-                "file",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=codec_type:format=duration",
-                "-of",
-                "default=noprint_wrappers=1",
-                target,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=_FFPROBE_TIMEOUT_SECONDS,
-            check=False,
-        )
-        if result.returncode != 0:
-            return False
-        fields = dict(
-            line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
-        )
-        return (
-            fields.get("codec_type") == "video"
-            and float(fields.get("duration", "0")) > 0
-        )
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return False
-    finally:
-        file.seek(0)
-        if temp_path is not None:
-            try:
-                os.unlink(temp_path)
-            except OSError:
-                pass
-
+CHAT_VIDEO_MIME_TYPES = ["video/mp4"]
+CHAT_VIDEO_MAX_BYTES = 25 * 1024 * 1024
 
 # ---------------------------------------------------------------------------
 # Part P-077 — shared content (Post / Reel / Product) inside a message.
@@ -263,7 +154,7 @@ class MessageSerializer(serializers.ModelSerializer):
     نفسها بدون أي منطق تحقق بديل. ملحوظة: validate_upload بتفحص الحجم
     قبل النوع، فلو استخدمنا سقف الصورة (5MB) مباشرة هيترفض فيديو 10MB
     غلط. عشان كده الفحص على مرحلتين، كلهم عن طريق نفس الدالة:
-      1) نوع صورة + سقف الفيديو (CHAT_VIDEO_MAX_MB) — نجح => صورة، وبعدها نطبق سقف
+      1) نوع صورة + سقف الفيديو (25MB) — نجح => صورة، وبعدها نطبق سقف
          الصورة (5MB) بنفس الدالة.
       2) لو النوع مش صورة => نوع فيديو + سقف الفيديو.
     """
@@ -308,14 +199,10 @@ class MessageSerializer(serializers.ModelSerializer):
             validate_upload(value, CHAT_IMAGE_MIME_TYPES, CHAT_VIDEO_MAX_BYTES)
         except DjangoValidationError as exc:
             if exc.code != "unsupported_file_type":
-                # file_too_large (أكبر من السقف أيًا كان النوع) — نرفضه كما هو.
+                # file_too_large (أكبر من 25MB أيًا كان النوع) — نرفضه كما هو.
                 raise
             # مش صورة: يا فيديو مسموح، يا يترفض بنفس رسالة validate_upload.
-            try:
-                validate_upload(value, CHAT_VIDEO_MIME_TYPES, CHAT_VIDEO_MAX_BYTES)
-            except DjangoValidationError as video_exc:
-                if not _unknown_binary_is_video(value, video_exc):
-                    raise
+            validate_upload(value, CHAT_VIDEO_MIME_TYPES, CHAT_VIDEO_MAX_BYTES)
             self._media_type = Message.MediaType.VIDEO
         else:
             # صورة حقيقية: نطبق سقف الصورة (5MB) عبر نفس الدالة.

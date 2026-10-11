@@ -3,24 +3,19 @@ Tests for chat media messages (Part P-076, backend half).
 
 Proves media validation goes through the SHARED core.media.validate_upload()
 (spied via wraps=, not reimplemented), the size caps (5 MB image /
-video cap), that a media-only message is valid, and that a message with
+25 MB video), that a media-only message is valid, and that a message with
 neither text nor media is rejected.
 """
 
-import shutil
-import subprocess
 from unittest.mock import patch
 
 import pytest
-from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from chat import serializers as chat_serializers
 from chat.models import Conversation, ConversationParticipant, Message
 from chat.tasks import notify_offline_recipient
 from core.media import validate_upload
@@ -146,118 +141,10 @@ def test_video_between_5mb_and_25mb_is_accepted():
     assert response.data["media_type"] == "video"
 
 
-def test_libmagic_case_variant_of_allowed_video_type_is_accepted():
-    # libmagic spells some types in capitals (e.g. "video/MP2T"); the strict
-    # allow-list check in validate_upload rejects that spelling.
-    exc = DjangoValidationError(
-        "unsupported",
-        code="unsupported_file_type",
-        params={"detected_mime": "video/MP2T"},
-    )
-
-    assert chat_serializers._unknown_binary_is_video(object(), exc) is True
-
-
-def test_video_cap_comes_from_settings_and_is_far_above_25mb():
-    assert chat_serializers.CHAT_VIDEO_MAX_BYTES == (
-        settings.CHAT_VIDEO_MAX_MB * 1024 * 1024
-    )
-    assert chat_serializers.CHAT_VIDEO_MAX_BYTES > 25 * _MB
-
-
-def test_video_over_the_configured_cap_is_rejected(monkeypatch):
-    # Shrink the cap so the test never has to build a gigabyte-sized upload.
-    monkeypatch.setattr(chat_serializers, "CHAT_VIDEO_MAX_BYTES", 8 * _MB)
+def test_video_over_25mb_is_rejected():
     client, url, conversation, _, _ = _setup("big_vid")
 
-    response = client.post(url, {"media": _mp4(extra=8 * _MB)}, format="multipart")
-
-    assert response.status_code == status.HTTP_400_BAD_REQUEST
-    assert response.data["error"]["code"] == "VALIDATION_ERROR"
-    assert not Message.objects.filter(conversation=conversation).exists()
-
-
-def test_video_just_under_the_configured_cap_is_accepted(monkeypatch):
-    monkeypatch.setattr(chat_serializers, "CHAT_VIDEO_MAX_BYTES", 8 * _MB)
-    client, url, _, _, _ = _setup("edge_vid")
-
-    response = client.post(url, {"media": _mp4(extra=7 * _MB)}, format="multipart")
-
-    assert response.status_code == status.HTTP_201_CREATED
-    assert response.data["media_type"] == "video"
-
-
-# Minimal real container headers: libmagic identifies them from content, the
-# filename and the client-declared Content-Type are deliberately misleading.
-_OTHER_VIDEO_HEADERS = {
-    "clip.mov": b"\x00\x00\x00\x14ftypqt  \x00\x00\x00\x00qt  ",
-    "clip.3gp": b"\x00\x00\x00\x14ftyp3gp4\x00\x00\x00\x00 3gp4",
-    "clip.m4v": b"\x00\x00\x00\x18ftypM4V \x00\x00\x00\x00M4V ",
-    "clip.mkv": b"\x1a\x45\xdf\xa3\x93\x42\x82\x88matroska",
-    "clip.webm": b"\x1a\x45\xdf\xa3\x93\x42\x82\x84webm",
-    "clip.avi": b"RIFF\x00\x00\x00\x00AVI LIST",
-    "clip.flv": b"FLV\x01\x05\x00\x00\x00\x09\x00\x00\x00\x00",
-    "clip.mpg": b"\x00\x00\x01\xba\x44\x00\x04\x00\x04\x01\x00\x00\x00",
-}
-
-
-@pytest.mark.parametrize("name", sorted(_OTHER_VIDEO_HEADERS))
-def test_common_video_formats_other_than_mp4_are_accepted(name):
-    client, url, _, _, _ = _setup("fmt_" + name.split(".")[-1])
-    upload = SimpleUploadedFile(
-        name,
-        _OTHER_VIDEO_HEADERS[name] + b"\0" * 64,
-        content_type="application/octet-stream",
-    )
-
-    response = client.post(url, {"media": upload}, format="multipart")
-
-    assert response.status_code == status.HTTP_201_CREATED
-    assert response.data["media_type"] == "video"
-    assert response.data["media"]
-
-
-@pytest.mark.skipif(
-    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
-    reason="ffmpeg/ffprobe not installed",
-)
-def test_container_libmagic_cannot_name_is_accepted_when_ffprobe_sees_video(tmp_path):
-    # MPEG-TS is the classic case: libmagic answers application/octet-stream.
-    clip = tmp_path / "clip.ts"
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc=duration=1:size=160x120:rate=10",
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            str(clip),
-        ],
-        check=True,
-        capture_output=True,
-        timeout=120,
-    )
-    client, url, _, _, _ = _setup("ts_vid")
-    upload = SimpleUploadedFile("clip.ts", clip.read_bytes(), content_type="video/mp2t")
-
-    response = client.post(url, {"media": upload}, format="multipart")
-
-    assert response.status_code == status.HTTP_201_CREATED
-    assert response.data["media_type"] == "video"
-
-
-def test_unknown_binary_that_is_not_a_video_is_still_rejected():
-    client, url, conversation, _, _ = _setup("junk_bin")
-    upload = SimpleUploadedFile(
-        "movie.mp4", b"\x01\x02\x03" * 200, content_type="video/mp4"
-    )
-
-    response = client.post(url, {"media": upload}, format="multipart")
+    response = client.post(url, {"media": _mp4(extra=25 * _MB)}, format="multipart")
 
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     assert response.data["error"]["code"] == "VALIDATION_ERROR"

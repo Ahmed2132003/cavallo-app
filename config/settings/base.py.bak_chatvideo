@@ -241,7 +241,6 @@ CELERY_TIMEZONE = "UTC"
 # threshold, so a breach is caught within one Beat tick of crossing it.
 # ---------------------------------------------------------------------------
 from celery.schedules import crontab  # noqa: E402
-
 CELERY_BEAT_SCHEDULE = {
     "check-moderation-sla": {
         "task": "moderation.check_moderation_sla",
@@ -475,13 +474,6 @@ OBJECT_STORAGE_USE_SSL = env.bool("OBJECT_STORAGE_USE_SSL", default=True)
 OBJECT_STORAGE_PUBLIC_ENDPOINT_URL = (
     OBJECT_STORAGE_PUBLIC_ENDPOINT_URL or OBJECT_STORAGE_ENDPOINT_URL
 )
-
-# Chat video size cap, in MB (chat/serializers.py reads it). Chat videos are
-# accepted in any common video format, so this one env var is the only knob
-# that bounds an upload. Keep it in sync with the Flutter client
-# (chat_thread_screen.dart `_maxVideoBytes`) and make sure the reverse proxy
-# allows it too (nginx `client_max_body_size`, gunicorn `--timeout`).
-CHAT_VIDEO_MAX_MB = env.int("CHAT_VIDEO_MAX_MB", default=1024)
 
 # Part P-081: Firebase Cloud Messaging. Blank until the Firebase project
 # exists (architecture Section 7 item 4); blank means pushes are skipped

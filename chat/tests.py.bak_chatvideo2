@@ -421,11 +421,7 @@ def test_conversation_list_falls_back_to_email_for_customer_without_profile():
     response = client.get(reverse("chat:conversation-list"))
 
     assert response.status_code == status.HTTP_200_OK
-    # Chat never shows the raw e-mail: it falls back to the part before "@".
-    assert (
-        response.data[0]["other_participant"]["display_name"]
-        == user_b.email.split("@", 1)[0]
-    )
+    assert response.data[0]["other_participant"]["display_name"] == user_b.email
 
 
 def test_conversation_list_unread_count_excludes_own_and_read_messages():

@@ -14,7 +14,6 @@ from unittest.mock import patch
 import pytest
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 from rest_framework import status
@@ -144,18 +143,6 @@ def test_video_between_5mb_and_25mb_is_accepted():
 
     assert response.status_code == status.HTTP_201_CREATED
     assert response.data["media_type"] == "video"
-
-
-def test_libmagic_case_variant_of_allowed_video_type_is_accepted():
-    # libmagic spells some types in capitals (e.g. "video/MP2T"); the strict
-    # allow-list check in validate_upload rejects that spelling.
-    exc = DjangoValidationError(
-        "unsupported",
-        code="unsupported_file_type",
-        params={"detected_mime": "video/MP2T"},
-    )
-
-    assert chat_serializers._unknown_binary_is_video(object(), exc) is True
 
 
 def test_video_cap_comes_from_settings_and_is_far_above_25mb():
