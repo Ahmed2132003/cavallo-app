@@ -3,7 +3,6 @@ from rest_framework import serializers
 
 from content.models import Post, Reel
 from core.media import validate_upload
-from core.video_validation import validate_video_upload
 from moderation.models import ModerationLog, ModerationQueue
 from social.models import Like, Save
 
@@ -171,12 +170,6 @@ class ReelSerializer(serializers.ModelSerializer):
         )
 
     def validate_video(self, value):
-        # Accept any real video (phone formats included) up to
-        # settings.REEL_MAX_UPLOAD_BYTES; transcode_reel normalises it to MP4.
-        validate_video_upload(value)
-        return value
-
-    def _legacy_validate_video(self, value):
         # Same P-013 content-sniffing choke point as PostSerializer's
         # validate_image — real MIME detection via libmagic, not the
         # filename extension or client-supplied Content-Type. 100 MB

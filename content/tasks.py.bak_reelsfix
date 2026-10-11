@@ -42,7 +42,7 @@ MAX_HEIGHT_PX = 1080          # Never upscale a smaller source video.
 VIDEO_BITRATE = "2M"
 AUDIO_BITRATE = "128k"
 THUMBNAIL_SECOND = 1          # Extract the thumbnail at this many seconds in.
-FFMPEG_TIMEOUT_SECONDS = 1800  # Long phone videos need far more than 5 minutes.
+FFMPEG_TIMEOUT_SECONDS = 300  # Generous ceiling for a single Reel's transcode.
 # --------------------------------------------------------------------------
 
 
@@ -101,12 +101,6 @@ def transcode_reel(reel_id):
                     "-y",
                     "-i",
                     str(input_path),
-                    "-map",
-                    "0:v:0",
-                    "-map",
-                    "0:a:0?",
-                    "-sn",
-                    "-dn",
                     "-vf",
                     f"scale=-2:min(ih\\,{MAX_HEIGHT_PX})",
                     "-c:v",
@@ -149,20 +143,6 @@ def transcode_reel(reel_id):
                 capture_output=True,
                 timeout=FFMPEG_TIMEOUT_SECONDS,
             )
-
-            # 3b. Clips shorter than THUMBNAIL_SECOND produce no frame at
-            #     all (ffmpeg exits 0 but writes nothing) - retry at 0s so
-            #     such a reel does not end up FAILED for lack of a thumbnail.
-            if not thumbnail_path.exists():
-                subprocess.run(
-                    [
-                        "ffmpeg", "-y", "-ss", "0", "-i", str(output_path),
-                        "-frames:v", "1", str(thumbnail_path),
-                    ],
-                    check=True,
-                    capture_output=True,
-                    timeout=FFMPEG_TIMEOUT_SECONDS,
-                )
 
             # 4. Real duration via ffprobe (never trust client-supplied
             #    metadata for this).

@@ -442,12 +442,6 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
-# Reel video upload ceiling (bytes). Was a hard-coded 100 MB, which rejected
-# ordinary phone videos. Override with REEL_MAX_UPLOAD_BYTES in .env.
-# NOTE: a reverse proxy in front of Django (nginx: client_max_body_size,
-# Cloudflare plan limits, ...) must allow at least this much too.
-REEL_MAX_UPLOAD_BYTES = env.int("REEL_MAX_UPLOAD_BYTES", default=2 * 1024 * 1024 * 1024)
-
 OBJECT_STORAGE_PROVIDER = env("OBJECT_STORAGE_PROVIDER", default="")
 OBJECT_STORAGE_BUCKET = env("OBJECT_STORAGE_BUCKET", default="")
 OBJECT_STORAGE_KEY = env("OBJECT_STORAGE_KEY", default="")
