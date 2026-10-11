@@ -260,25 +260,14 @@ def _resolve_conversation_participant_display_name(user):
     (same convention already used for the moderation "submitter" object).
     """
     business_profile = getattr(user, "business_profile", None)
-    if business_profile is not None and (business_profile.business_name or "").strip():
-        return business_profile.business_name.strip()
+    if business_profile is not None:
+        return business_profile.business_name
 
     customer_profile = getattr(user, "customer_profile", None)
-    if customer_profile is not None and (customer_profile.display_name or "").strip():
-        return customer_profile.display_name.strip()
+    if customer_profile is not None:
+        return customer_profile.display_name
 
-    # No profile (or a blank name): never show the raw e-mail address in
-    # the chat UI. Prefer the account's real name, then the part of the
-    # e-mail before the "@".
-    full_name = (user.get_full_name() or "").strip()
-    if full_name:
-        return full_name
-
-    email = (user.email or "").strip()
-    if email:
-        return email.split("@", 1)[0]
-
-    return user.get_username()
+    return user.email
 
 
 class ConversationListSerializer(serializers.ModelSerializer):
@@ -359,22 +348,3 @@ class ConversationListSerializer(serializers.ModelSerializer):
             .exclude(status="read")
             .count()
         )
-
-
-class FollowedBusinessSerializer(serializers.Serializer):
-    """
-    Read-only row for the mobile "New chat" picker: a business the
-    current user follows. `business_id` is the BusinessProfile id,
-    exactly what POST /api/v1/conversations/start/ accepts as
-    `business_id`, so the client never needs the owner's user id.
-    """
-
-    business_id = serializers.IntegerField(source="business.id", read_only=True)
-    business_name = serializers.CharField(
-        source="business.business_name", read_only=True
-    )
-    business_type = serializers.CharField(
-        source="business.business_type", read_only=True
-    )
-    city = serializers.CharField(source="business.city", read_only=True)
-    country = serializers.CharField(source="business.country", read_only=True)

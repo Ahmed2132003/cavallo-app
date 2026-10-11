@@ -2,7 +2,6 @@ from django.urls import path
 
 from chat.views import (
     ConversationStartView,
-    FollowedBusinessListView,
     UserPresenceView,
     message_collection_view,
     ConversationListView,
@@ -30,11 +29,6 @@ urlpatterns = [
         "users/<int:user_id>/presence/",
         UserPresenceView.as_view(),
         name="user-presence",
-    ),
-    path(
-        "following/",
-        FollowedBusinessListView.as_view(),
-        name="followed-businesses",
     ),
     path("", ConversationListView.as_view(), name="conversation-list"),
 ]
