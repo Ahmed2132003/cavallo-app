@@ -58,16 +58,12 @@ part's own "flag rather than silently add/omit" instruction — revisit
 if real usage data says otherwise.
 """
 
-import re
 from dataclasses import dataclass
 from decimal import Decimal
-from functools import reduce
-from operator import and_
 from typing import Any, Optional
 
 from django.contrib.postgres.search import SearchQuery, SearchRank
-from django.db.models import F, FloatField, Q, QuerySet, Value
-from django.db.models.functions import Cast, Coalesce
+from django.db.models import F, Q, QuerySet
 
 from businesses.models import BusinessProfile
 from products.models import Product
@@ -85,62 +81,6 @@ from search.cursor import (
 
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 50
-
-# Letters/digits of ANY script (Arabic included); everything else
-# (punctuation, tsquery operators such as & | ! ( ) : ' \\) is dropped, so
-# a token is always safe to splice into a raw tsquery.
-_TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
-
-
-def _tokenize(text: str) -> list:
-    return _TOKEN_RE.findall(text)
-
-
-def _build_search_query(text: str) -> SearchQuery:
-    """Whole-word full-text query OR'ed with a prefix query.
-
-    Postgres full-text only matches WHOLE words, so while the user is
-    still typing ("leat") `SearchQuery("leat")` matches nothing.
-    The extra `tok:*` terms make every token a prefix match, which is
-    what a search-as-you-type box needs. Config is the DB default for
-    both sides, same as the stored `search_vector`.
-    """
-    query = SearchQuery(text)
-    tokens = _tokenize(text)
-    if tokens:
-        prefix = " & ".join(f"{token}:*" for token in tokens)
-        query = query | SearchQuery(prefix, search_type="raw")
-    return query
-
-
-def _contains_every_token(text: str, fields: tuple) -> Q:
-    """Case-insensitive substring fallback: every token must appear in
-    at least one of `fields`. Works for partial words, Arabic text and
-    rows whose `search_vector` is NULL / stale."""
-    tokens = _tokenize(text) or [text]
-    per_token = []
-    for token in tokens:
-        any_field = Q()
-        for field in fields:
-            any_field |= Q(**{f"{field}__icontains": token})
-        per_token.append(any_field)
-    return reduce(and_, per_token)
-
-
-def _rank_expression(search_query) -> Coalesce:
-    """SearchRank as float8, NULL (no search_vector) -> 0.
-
-    The explicit Cast matters for pagination: ts_rank returns `real`
-    (float4), whose value does not round-trip through the cursor's
-    Python float, so `rank = <cursor value>` never matched and every
-    page after the first came back empty whenever several results
-    shared the same rank. float8 round-trips exactly.
-    """
-    return Coalesce(
-        Cast(SearchRank(F("search_vector"), search_query), FloatField()),
-        Value(0.0),
-        output_field=FloatField(),
-    )
 
 
 @dataclass(frozen=True)
@@ -265,17 +205,14 @@ def build_product_queryset(filters: SearchFilters) -> QuerySet:
     return qs
 
 
-def _fetch_business_entries(
-    filters, *, search_query, mode, cursor, limit, text=None
-):
+def _fetch_business_entries(filters, *, search_query, mode, cursor, limit):
     if limit <= 0:
         return []
     qs = build_business_queryset(filters)
     if search_query is not None:
-        qs = qs.filter(
-            Q(search_vector=search_query)
-            | _contains_every_token(text or "", ("business_name", "description"))
-        ).annotate(rank=_rank_expression(search_query))
+        qs = qs.filter(search_vector=search_query).annotate(
+            rank=SearchRank(F("search_vector"), search_query)
+        )
         qs = qs.order_by("-is_featured", "-rank", "-id")
         secondary_field = "rank"
     else:
@@ -306,17 +243,14 @@ def _fetch_business_entries(
     return entries
 
 
-def _fetch_product_entries(
-    filters, *, search_query, mode, cursor, limit, text=None
-):
+def _fetch_product_entries(filters, *, search_query, mode, cursor, limit):
     if limit <= 0:
         return []
     qs = build_product_queryset(filters)
     if search_query is not None:
-        qs = qs.filter(
-            Q(search_vector=search_query)
-            | _contains_every_token(text or "", ("name", "description"))
-        ).annotate(rank=_rank_expression(search_query))
+        qs = qs.filter(search_vector=search_query).annotate(
+            rank=SearchRank(F("search_vector"), search_query)
+        )
         qs = qs.order_by("-business__is_featured", "-rank", "-id")
         secondary_field = "rank"
     else:
@@ -371,14 +305,13 @@ def get_search_results(
 
     normalized_q = q.strip() if q else ""
     mode = MODE_RELEVANCE if normalized_q else MODE_RECENCY
-    search_query = _build_search_query(normalized_q) if normalized_q else None
+    search_query = SearchQuery(normalized_q) if normalized_q else None
 
     decoded_cursor = decode_cursor(cursor, expected_mode=mode) if cursor else None
 
     business_entries = _fetch_business_entries(
         filters,
         search_query=search_query,
-        text=normalized_q,
         mode=mode,
         cursor=decoded_cursor,
         limit=page_size,
@@ -386,7 +319,6 @@ def get_search_results(
     product_entries = _fetch_product_entries(
         filters,
         search_query=search_query,
-        text=normalized_q,
         mode=mode,
         cursor=decoded_cursor,
         limit=page_size,
