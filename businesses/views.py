@@ -30,6 +30,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework.exceptions import NotFound
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.generics import RetrieveAPIView
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -39,6 +40,7 @@ from core.cache import cache_get_or_set
 from . import services
 from .models import BusinessProfile, CustomerProfile
 from .serializers import (
+    BusinessAvatarUploadSerializer,
     BusinessProfileOwnerSerializer,
     BusinessProfileSerializer,
     CustomerProfileSerializer,
@@ -173,6 +175,44 @@ def _business_profile_cache_key(pk):
     so the exact key format cannot drift between the two call sites.
     """
     return f"business_profile:{pk}"
+
+
+class BusinessAvatarView(APIView):
+    """
+    POST   /api/v1/businesses/me/avatar/  - set/replace the business profile
+                                            photo (multipart, field `avatar`).
+    DELETE /api/v1/businesses/me/avatar/  - remove it.
+
+    Same IDOR-safe-by-construction rule as BusinessProfileMeView: the profile
+    is always request.user's own (no id in the URL or body). Both methods
+    answer 200 with the owner's full profile (BusinessProfileOwnerSerializer),
+    so the client can replace its cached profile in one step. A separate
+    endpoint (instead of multipart on /me/) keeps the existing JSON POST/PATCH
+    contract untouched and gives "remove photo" a natural verb.
+
+    Like BusinessProfileMeView.patch(), a successful write drops the public
+    read's cache entry so the new photo shows on the very next public read.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        serializer = BusinessAvatarUploadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        profile = _call_service(
+            services.set_business_avatar,
+            user=request.user,
+            file=serializer.validated_data["avatar"],
+        )
+        cache.delete(_business_profile_cache_key(profile.id))
+        return Response(BusinessProfileOwnerSerializer(profile).data)
+
+    def delete(self, request):
+        profile = _call_service(services.clear_business_avatar, user=request.user)
+        cache.delete(_business_profile_cache_key(profile.id))
+        return Response(BusinessProfileOwnerSerializer(profile).data)
 
 
 class BusinessProfilePublicView(RetrieveAPIView):

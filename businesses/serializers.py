@@ -24,10 +24,18 @@ IDOR-mitigation docstring first.
 """
 
 import phonenumbers
+from django.core.exceptions import ValidationError as DjangoValidationError
 from phonenumbers import NumberParseException
 from rest_framework import serializers
 
+from core.media import validate_upload
+
 from .models import BusinessProfile, CustomerProfile
+
+# Business profile photo limits. Same allow-list as product/post images; 5 MB is
+# plenty for a round avatar the app shows at 32-96 px.
+_ALLOWED_AVATAR_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"]
+_MAX_AVATAR_SIZE_BYTES = 5 * 1024 * 1024
 
 
 class BusinessProfileSerializer(serializers.ModelSerializer):
@@ -53,6 +61,12 @@ class BusinessProfileSerializer(serializers.ModelSerializer):
     # and Search both use this serializer, so the Flutter "Featured"
     # badge gets its data from here.
     is_featured = serializers.BooleanField(read_only=True)
+    # Profile photo URL (null when the business has none). READ-ONLY here: it
+    # is written only through BusinessAvatarView (multipart), so the existing
+    # JSON POST/PATCH /me/ contract is unchanged and a client can never set
+    # it by sending a string. Every screen that renders a business (public
+    # profile, Search, owner /me/) gets it from this one serializer.
+    avatar = serializers.FileField(read_only=True)
 
     class Meta:
         model = BusinessProfile
@@ -65,6 +79,7 @@ class BusinessProfileSerializer(serializers.ModelSerializer):
             "description",
             "category",
             "phone_number",
+            "avatar",
             "is_verified",
             "is_featured",
             "follower_count",
@@ -161,3 +176,26 @@ class BusinessProfileOwnerSerializer(BusinessProfileSerializer):
         if expires_at is None:
             return None
         return serializers.DateTimeField().to_representation(expires_at)
+
+
+class BusinessAvatarUploadSerializer(serializers.Serializer):
+    """
+    Input for POST /api/v1/businesses/me/avatar/ (multipart, one `avatar`
+    file). The content check goes through the single shared choke point
+    core.media.validate_upload() (real MIME sniffing + size), exactly like
+    ProductSerializer.validate_image(); DRF turns the Django
+    ValidationError into the project's standard error envelope.
+    """
+
+    avatar = serializers.FileField(allow_empty_file=False)
+
+    def validate_avatar(self, value):
+        try:
+            validate_upload(
+                value,
+                allowed_mime_types=_ALLOWED_AVATAR_MIME_TYPES,
+                max_size_bytes=_MAX_AVATAR_SIZE_BYTES,
+            )
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(list(exc.messages))
+        return value

@@ -20,10 +20,14 @@ no DRF dependency, on purpose — it must stay callable from plain
 Python, Django Admin actions, and management commands alike.
 """
 
+import logging
+
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from .models import BusinessProfile, CustomerProfile
+
+logger = logging.getLogger(__name__)
 
 ACCOUNT_TYPE_BUSINESS = "business"
 ACCOUNT_TYPE_CUSTOMER = "customer"
@@ -110,6 +114,66 @@ def update_business_profile(user, **fields) -> BusinessProfile:
         for field_name, value in fields.items():
             setattr(profile, field_name, value)
         profile.save()
+    return profile
+
+
+def _get_own_business_profile(user) -> BusinessProfile:
+    """Resolve `user`'s OWN BusinessProfile (never an id from the caller),
+    with the same account_type guard as update_business_profile()."""
+    if getattr(user, "account_type", None) != ACCOUNT_TYPE_BUSINESS:
+        raise ValidationError(
+            "Only a Business-type user can change a BusinessProfile photo."
+        )
+    try:
+        return user.business_profile
+    except BusinessProfile.DoesNotExist:
+        raise ValidationError(
+            "This user does not have a BusinessProfile yet. "
+            "POST to create one first."
+        )
+
+
+def _delete_stored_file(storage, name) -> None:
+    """Best-effort removal of a replaced/cleared avatar file. A storage hiccup
+    must never turn a successful profile update into a 500, so failures are
+    logged and swallowed (the orphaned object is harmless)."""
+    if not name:
+        return
+    try:
+        storage.delete(name)
+    except Exception:  # noqa: BLE001
+        logger.warning("Could not delete old avatar file %s", name, exc_info=True)
+
+
+def set_business_avatar(user, file) -> BusinessProfile:
+    """
+    Set (or replace) `user`'s business profile photo. `file` must already be
+    validated by the serializer (core.media.validate_upload). The previous
+    file, if any, is removed from storage after the new one is saved.
+    """
+    profile = _get_own_business_profile(user)
+    old_name = profile.avatar.name if profile.avatar else None
+
+    with transaction.atomic():
+        profile.avatar = file
+        profile.save(update_fields=["avatar", "updated_at"])
+
+    if old_name and old_name != profile.avatar.name:
+        _delete_stored_file(profile.avatar.storage, old_name)
+    return profile
+
+
+def clear_business_avatar(user) -> BusinessProfile:
+    """Remove `user`'s business profile photo (idempotent: no photo is fine)."""
+    profile = _get_own_business_profile(user)
+    old_name = profile.avatar.name if profile.avatar else None
+    storage = profile.avatar.storage
+
+    with transaction.atomic():
+        profile.avatar = None
+        profile.save(update_fields=["avatar", "updated_at"])
+
+    _delete_stored_file(storage, old_name)
     return profile
 
 

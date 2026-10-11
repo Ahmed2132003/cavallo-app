@@ -11,7 +11,11 @@ per this part's own spec.
 
 from django.urls import path
 
-from businesses.views import BusinessProfileMeView, BusinessProfilePublicView
+from businesses.views import (
+    BusinessAvatarView,
+    BusinessProfileMeView,
+    BusinessProfilePublicView,
+)
 
 app_name = "businesses"
 
@@ -20,5 +24,6 @@ urlpatterns = [
     # actually matter here since <int:pk> only matches digit strings
     # and could never match the literal "me" anyway.
     path("me/", BusinessProfileMeView.as_view(), name="business-me"),
+    path("me/avatar/", BusinessAvatarView.as_view(), name="business-me-avatar"),
     path("<int:pk>/", BusinessProfilePublicView.as_view(), name="business-public"),
 ]

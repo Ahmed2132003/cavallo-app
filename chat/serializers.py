@@ -218,6 +218,7 @@ def build_shared_content_payload(message):
         "available": False,
         "business_id": None,
         "business_name": None,
+        "business_avatar": None,
         "preview": None,
     }
     model = ContentType.objects.get_for_id(message.shared_content_type_id).model_class()
@@ -236,6 +237,7 @@ def build_shared_content_payload(message):
         available=True,
         business_id=target.business_id,
         business_name=target.business.business_name,
+        business_avatar=_resolve_business_avatar_url(target.business),
         preview=_preview_for(target),
     )
     return payload
@@ -394,6 +396,32 @@ def _resolve_conversation_participant_display_name(user):
     return user.get_username()
 
 
+def _resolve_business_avatar_url(business_profile):
+    """Profile photo URL of a BusinessProfile, or None. Never raises."""
+    if business_profile is None or not business_profile.avatar:
+        return None
+    try:
+        return business_profile.avatar.url
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _resolve_conversation_participant_avatar(user):
+    """
+    Profile photo URL of a chat participant, or None. Only Business accounts
+    have a photo (BusinessProfile.avatar); Customers have none, so the client
+    falls back to initials. Never raises: a storage/signing hiccup must not
+    break the whole conversation list.
+    """
+    business_profile = getattr(user, "business_profile", None)
+    if business_profile is None or not business_profile.avatar:
+        return None
+    try:
+        return business_profile.avatar.url
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class ConversationListSerializer(serializers.ModelSerializer):
     """
     Read-only serializer for the Conversation List screen (P-074).
@@ -446,6 +474,7 @@ class ConversationListSerializer(serializers.ModelSerializer):
             "id": user.id,
             "account_type": user.account_type,
             "display_name": _resolve_conversation_participant_display_name(user),
+            "avatar": _resolve_conversation_participant_avatar(user),
         }
 
     def get_last_message(self, obj):

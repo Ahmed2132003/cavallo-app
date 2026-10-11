@@ -130,6 +130,15 @@ class BusinessProfile(TimestampedModel, SoftDeleteModel):
         max_digits=3, decimal_places=2, default=0
     )
     ratings_count = models.PositiveIntegerField(default=0)
+    # Business profile photo: the round avatar shown next to the business
+    # name on every screen (feed, stories, search, chat, profile). Plain
+    # FileField like Product.image / Post.image - the real content check is
+    # core.media.validate_upload() (python-magic), never Pillow. Written ONLY
+    # through businesses.services.set_business_avatar()/clear_business_avatar()
+    # (POST/DELETE /api/v1/businesses/me/avatar/), never through the JSON
+    # POST/PATCH /me/ contract. null/blank = "no photo": clients then fall
+    # back to the business name's initials.
+    avatar = models.FileField(upload_to="businesses/avatars/", null=True, blank=True)
 
     class Meta:
         verbose_name = "Business Profile"
