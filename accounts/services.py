@@ -36,8 +36,15 @@ register_user() is easier to build on top of than one already carrying
 extra optional parameters this part doesn't need.
 """
 
+import hashlib
+import hmac
+import re
+import secrets
+
+from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.db import transaction
+from django_redis import get_redis_connection
 from rest_framework_simplejwt.tokens import RefreshToken
 
 User = get_user_model()
@@ -135,3 +142,173 @@ def blacklist_refresh_token(raw_token):
     """
     token = RefreshToken(raw_token)
     token.blacklist()
+
+
+# ---------------------------------------------------------------------------
+# Password reset OTP core (Task P2.1)
+#
+# Scope: OTP issue + verify only. No email sending, reset tokens, API
+# endpoints, or throttling here — later tasks build on these two functions.
+#
+# Redis stores only "<issuance_id>:<HMAC-SHA256 digest>" — never the raw
+# OTP. The digest covers (normalized email, issuance id, OTP). Every
+# issuance gets a fresh random issuance id, so two issuances can never
+# produce the same stored value even if the six-digit OTP collides. Keys
+# are derived from a SHA-256 hash of the normalized email, so no key ever
+# contains an email address.
+# ---------------------------------------------------------------------------
+
+_REDIS_ALIAS = "default"
+OTP_TTL_SECONDS = 60
+OTP_MAX_ATTEMPTS = 5
+_OTP_KEY_PREFIX = "pwreset:otp:"
+_ATTEMPTS_KEY_PREFIX = "pwreset:attempts:"
+_OTP_PATTERN = re.compile(r"[0-9]{6}")
+
+# Issue/replace: store the new issuance value ("<issuance_id>:<digest>")
+# with a 60s TTL and reset the attempt counter in one atomic step, so a
+# reissue can never leave stale attempts attached to the new OTP (or the
+# old issuance alive).
+# KEYS[1] = otp key, KEYS[2] = attempts key
+# ARGV[1] = stored issuance value, ARGV[2] = ttl seconds
+_LUA_ISSUE = """
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+redis.call('SET', KEYS[2], 0, 'EX', ARGV[2])
+return 1
+"""
+
+# Attempt + fetch: atomically check the issuance exists, reject if
+# attempts are already at the maximum, otherwise increment the counter and
+# return the complete stored issuance value (issuance id + digest). The
+# attempts key's expiry is kept equal to the otp key's remaining TTL so
+# both expire together.
+# KEYS[1] = otp key, KEYS[2] = attempts key
+# ARGV[1] = max attempts
+# Returns {status, stored value}: status 0 = missing/expired, 2 = attempts
+# exhausted, 1 = attempt counted and stored value returned.
+_LUA_ATTEMPT = """
+local digest = redis.call('GET', KEYS[1])
+if not digest then
+    return {0, ''}
+end
+local attempts = tonumber(redis.call('GET', KEYS[2]) or '0')
+if attempts >= tonumber(ARGV[1]) then
+    return {2, ''}
+end
+redis.call('INCR', KEYS[2])
+local pttl = redis.call('PTTL', KEYS[1])
+if pttl > 0 then
+    redis.call('PEXPIRE', KEYS[2], pttl)
+end
+return {1, digest}
+"""
+
+# Consume: delete the OTP and attempts keys only if the complete stored
+# issuance value (issuance id + digest) still equals the value that was
+# fetched and verified. Only the caller whose script run actually performs
+# the DEL gets 1; a concurrent consumer or a reissue in between — even one
+# with an identical six-digit OTP — carries a different issuance id, so
+# the comparison fails and returns 0.
+# KEYS[1] = otp key, KEYS[2] = attempts key
+# ARGV[1] = complete stored issuance value that was verified
+_LUA_CONSUME = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    redis.call('DEL', KEYS[1], KEYS[2])
+    return 1
+end
+return 0
+"""
+
+
+def _normalize_email(email):
+    return email.strip().casefold()
+
+
+def _otp_keys(normalized_email):
+    email_id = hashlib.sha256(normalized_email.encode("utf-8")).hexdigest()
+    return _OTP_KEY_PREFIX + email_id, _ATTEMPTS_KEY_PREFIX + email_id
+
+
+def _otp_digest(normalized_email, issuance_id, otp):
+    message = f"{normalized_email}:{issuance_id}:{otp}".encode("utf-8")
+    return hmac.new(
+        settings.SECRET_KEY.encode("utf-8"), message, hashlib.sha256
+    ).hexdigest()
+
+
+def _to_text(value):
+    return value.decode("ascii") if isinstance(value, bytes) else value
+
+
+def _run_script(conn, source, keys, args):
+    return conn.register_script(source)(keys=keys, args=args)
+
+
+def _consume_otp(conn, otp_key, attempts_key, stored_value):
+    """
+    Atomically delete the OTP only if the complete stored issuance value
+    (issuance id + digest) is unchanged.
+    """
+    return (
+        int(_run_script(conn, _LUA_CONSUME, [otp_key, attempts_key], [stored_value]))
+        == 1
+    )
+
+
+def create_password_reset_otp(email):
+    """
+    Issue a password-reset OTP for `email` and return the raw six-digit
+    string (needed by a later task to email it to the user).
+
+    Replaces any previous OTP for the same normalized email and resets
+    the attempt counter, atomically. Each issuance gets a fresh random
+    issuance id; Redis stores only "<issuance_id>:<HMAC-SHA256 digest>"
+    with a 60-second expiry. The raw OTP is never stored or logged.
+    """
+    normalized = _normalize_email(email)
+    otp = f"{secrets.randbelow(10**6):06d}"
+    issuance_id = secrets.token_hex(16)
+    stored_value = f"{issuance_id}:{_otp_digest(normalized, issuance_id, otp)}"
+    otp_key, attempts_key = _otp_keys(normalized)
+    conn = get_redis_connection(_REDIS_ALIAS)
+    _run_script(
+        conn,
+        _LUA_ISSUE,
+        [otp_key, attempts_key],
+        [stored_value, OTP_TTL_SECONDS],
+    )
+    return otp
+
+
+def verify_password_reset_otp(email, otp):
+    """
+    Verify `otp` for `email`. Returns True exactly once per issued OTP.
+
+    Returns False for: a malformed OTP (not exactly six ASCII digits —
+    this does not consume an attempt), a missing/expired/already-used
+    OTP, a wrong OTP, or any attempt after the fifth.
+    """
+    if not isinstance(otp, str) or _OTP_PATTERN.fullmatch(otp) is None:
+        return False
+
+    normalized = _normalize_email(email)
+    otp_key, attempts_key = _otp_keys(normalized)
+    conn = get_redis_connection(_REDIS_ALIAS)
+
+    status, stored = _run_script(
+        conn, _LUA_ATTEMPT, [otp_key, attempts_key], [OTP_MAX_ATTEMPTS]
+    )
+    if int(status) != 1:
+        return False
+
+    stored_value = _to_text(stored)
+    issuance_id, separator, stored_digest = stored_value.rpartition(":")
+    if not separator:
+        return False
+    supplied = _otp_digest(normalized, issuance_id, otp)
+    if not hmac.compare_digest(
+        stored_digest.encode("ascii"), supplied.encode("ascii")
+    ):
+        return False
+
+    return _consume_otp(conn, otp_key, attempts_key, stored_value)
