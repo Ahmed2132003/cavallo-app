@@ -289,7 +289,22 @@ EMAIL_HOST = env.str("EMAIL_HOST", default="")
 EMAIL_PORT = int(env.str("EMAIL_PORT", default="") or 587)
 EMAIL_HOST_USER = env.str("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = env.str("EMAIL_HOST_PASSWORD", default="")
-# EMAIL_USE_TLS / EMAIL_USE_SSL: str -> lowercase -> in ("1","true","yes","on")
+from django.core.exceptions import ImproperlyConfigured  # noqa: E402
+
+
+def _email_flag(name, default):
+    # str -> strip -> lowercase -> in ("1","true","yes","on"); blank = default.
+    raw = env.str(name, default="").strip().lower()
+    return default if raw == "" else raw in ("1", "true", "yes", "on")
+
+
+EMAIL_USE_SSL = _email_flag("EMAIL_USE_SSL", False)
+# STARTTLS (port 587) is the default; it is off by default when SSL is on.
+EMAIL_USE_TLS = _email_flag("EMAIL_USE_TLS", not EMAIL_USE_SSL)
+if EMAIL_USE_TLS and EMAIL_USE_SSL:
+    raise ImproperlyConfigured(
+        "EMAIL_USE_TLS and EMAIL_USE_SSL are mutually exclusive; set only one."
+    )
 EMAIL_TIMEOUT = int(env.str("EMAIL_TIMEOUT", default="") or 10)
 DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="") or "noreply@localhost"
 

@@ -13576,3 +13576,11 @@ Date 2026-10-10, branch part-111 (cavallo-mobile). Supersedes the "NOT COMPLETE 
 The visual and localization layers are stable and the Arabic is approved. Store listing assets and screenshots should be produced from this design in both languages and both themes.
 
 Tracking line: Phase 23 COMPLETE (P-115 closed 2026-10-10; Arabic approved by the owner; exceptions: online dot and thread Block/Report not built by decision; D-1/D-2/G-1/O-1 and the Messages/Chats label carried forward).
+
+
+## Phase 1 correction - SMTP TLS/SSL flags (password reset)
+
+Date 2026-11-05, branch develop. Corrects commit 665a4ee: EMAIL_USE_TLS and EMAIL_USE_SSL were only a comment in config/settings/base.py, not real settings, and .env.example had no SMTP entries.
+- base.py: EMAIL_USE_SSL and EMAIL_USE_TLS are now env-driven (1/true/yes/on; blank = default). TLS defaults to on unless SSL is on. Enabling both raises ImproperlyConfigured.
+- .env.example: added EMAIL_HOST, EMAIL_PORT, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD, EMAIL_USE_TLS, EMAIL_USE_SSL, EMAIL_TIMEOUT, DEFAULT_FROM_EMAIL.
+- dev.py unchanged: still overrides EMAIL_BACKEND with the console backend.
