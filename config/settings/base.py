@@ -284,6 +284,15 @@ CELERY_BEAT_SCHEDULE = {
     },
 }
 
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST = env.str("EMAIL_HOST", default="")
+EMAIL_PORT = int(env.str("EMAIL_PORT", default="") or 587)
+EMAIL_HOST_USER = env.str("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = env.str("EMAIL_HOST_PASSWORD", default="")
+# EMAIL_USE_TLS / EMAIL_USE_SSL: str -> lowercase -> in ("1","true","yes","on")
+EMAIL_TIMEOUT = int(env.str("EMAIL_TIMEOUT", default="") or 10)
+DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="") or "noreply@localhost"
+
 # ---------------------------------------------------------------------------
 # DRF / JWT
 # ---------------------------------------------------------------------------
