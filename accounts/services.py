@@ -312,3 +312,107 @@ def verify_password_reset_otp(email, otp):
         return False
 
     return _consume_otp(conn, otp_key, attempts_key, stored_value)
+
+
+# ---------------------------------------------------------------------------
+# Password reset token core (Task P2.2)
+#
+# Scope: reset-token issue + consume only. No email sending, API endpoints,
+# password change, or throttling here — later tasks build on these functions.
+#
+# A reset token is only ever minted by verify_otp_and_issue_reset_token(),
+# which first consumes the OTP through verify_password_reset_otp() (P2.1,
+# unchanged), so an OTP can never be reused and the token cannot be issued
+# without a successful verification. The raw token (256 bits from
+# secrets.token_urlsafe) is returned to the caller once and never stored or
+# logged: Redis holds only an HMAC-SHA256 digest over (normalized email,
+# token), under a key derived from a SHA-256 hash of the normalized email.
+# One active token per email — issuing a new one replaces the previous.
+# ---------------------------------------------------------------------------
+
+RESET_TOKEN_TTL_SECONDS = 300
+_RESET_TOKEN_KEY_PREFIX = "pwreset:token:"
+_RESET_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}")  # token_urlsafe(32)
+
+# Consume: delete the token key only if the stored digest equals the digest
+# of the supplied token. The compare and the delete run as one atomic Redis
+# step, so of any number of concurrent consumers exactly one gets 1. The
+# comparison is not constant-time, which is safe here: the stored value is a
+# keyed HMAC of the supplied token, so a caller cannot steer it byte by byte.
+# KEYS[1] = token key
+# ARGV[1] = digest of the supplied token
+_LUA_CONSUME_RESET_TOKEN = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    redis.call('DEL', KEYS[1])
+    return 1
+end
+return 0
+"""
+
+
+def _reset_token_key(normalized_email):
+    email_id = hashlib.sha256(normalized_email.encode("utf-8")).hexdigest()
+    return _RESET_TOKEN_KEY_PREFIX + email_id
+
+
+def _reset_token_digest(normalized_email, token):
+    message = f"reset-token:{normalized_email}:{token}".encode("utf-8")
+    return hmac.new(
+        settings.SECRET_KEY.encode("utf-8"), message, hashlib.sha256
+    ).hexdigest()
+
+
+def _issue_reset_token(normalized_email):
+    """
+    Mint a reset token for an already-verified normalized email. Private on
+    purpose: the only public way to get a token is
+    verify_otp_and_issue_reset_token().
+    """
+    token = secrets.token_urlsafe(32)
+    conn = get_redis_connection(_REDIS_ALIAS)
+    conn.set(
+        _reset_token_key(normalized_email),
+        _reset_token_digest(normalized_email, token),
+        ex=RESET_TOKEN_TTL_SECONDS,
+    )
+    return token
+
+
+def verify_otp_and_issue_reset_token(email, otp):
+    """
+    Verify (and thereby consume) the password-reset OTP for `email`; on
+    success return a fresh raw reset token (a 43-character URL-safe string)
+    valid for RESET_TOKEN_TTL_SECONDS. Returns None on any OTP failure and
+    issues nothing.
+
+    The OTP is consumed by verify_password_reset_otp() before the token is
+    minted, so the same OTP can never produce a second token. Any previous
+    token for the same normalized email is replaced and stops working.
+    """
+    if not verify_password_reset_otp(email, otp):
+        return None
+    return _issue_reset_token(_normalize_email(email))
+
+
+def consume_password_reset_token(email, token):
+    """
+    Consume the reset token for `email`. Returns True exactly once per
+    issued token.
+
+    Returns False for: a malformed token (this never touches Redis), an
+    unknown, expired or already-used token, a token issued for a different
+    email, or a token superseded by a newer one. A failed attempt never
+    consumes the valid token.
+    """
+    if not isinstance(token, str) or _RESET_TOKEN_PATTERN.fullmatch(token) is None:
+        return False
+
+    normalized = _normalize_email(email)
+    conn = get_redis_connection(_REDIS_ALIAS)
+    result = _run_script(
+        conn,
+        _LUA_CONSUME_RESET_TOKEN,
+        [_reset_token_key(normalized)],
+        [_reset_token_digest(normalized, token)],
+    )
+    return int(result) == 1
