@@ -24,7 +24,15 @@ from accounts.serializers import (
     RegisterSerializer,
 )
 from accounts.tasks import send_password_reset_otp_task
-from accounts.throttles import LoginRateThrottle
+from accounts.throttles import (
+    LoginRateThrottle,
+    PasswordResetConfirmIdentifierThrottle,
+    PasswordResetConfirmIPThrottle,
+    PasswordResetRequestIdentifierThrottle,
+    PasswordResetRequestIPThrottle,
+    PasswordResetVerifyIdentifierThrottle,
+    PasswordResetVerifyIPThrottle,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -249,12 +257,16 @@ class PasswordResetRequestView(generics.GenericAPIView):
     status and body. No user lookup, Redis or SMTP happens in this
     request, so response time and content reveal nothing about whether
     the account exists. A broker failure is logged and answered the same
-    way. No throttling here (P2.5).
+    way. Throttled per IP and per email (Task P2.5, accounts/throttles.py).
     """
 
     serializer_class = PasswordResetRequestSerializer
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = [
+        PasswordResetRequestIPThrottle,
+        PasswordResetRequestIdentifierThrottle,
+    ]
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -280,12 +292,16 @@ class PasswordResetVerifyView(generics.GenericAPIView):
     Exchanges email + OTP for a one-time reset token through
     services.verify_otp_and_issue_reset_token(). Every failure kind
     (wrong, expired, attempts used up, unknown email) gets the same
-    unified response.
+    unified response. Throttled per IP and per email (Task P2.5).
     """
 
     serializer_class = PasswordResetVerifySerializer
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = [
+        PasswordResetVerifyIPThrottle,
+        PasswordResetVerifyIdentifierThrottle,
+    ]
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -305,12 +321,17 @@ class PasswordResetConfirmView(generics.GenericAPIView):
 
     Sets the new password through services.confirm_password_reset(). A
     weak password is answered with the password errors and leaves the reset
-    token valid; any other failure gets the unified response.
+    token valid; any other failure gets the unified response. Throttled
+    per IP and per email (Task P2.5).
     """
 
     serializer_class = PasswordResetConfirmSerializer
     permission_classes = [AllowAny]
     authentication_classes = []
+    throttle_classes = [
+        PasswordResetConfirmIPThrottle,
+        PasswordResetConfirmIdentifierThrottle,
+    ]
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
