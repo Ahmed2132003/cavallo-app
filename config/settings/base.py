@@ -311,6 +311,21 @@ DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="") or "noreply@local
 # ---------------------------------------------------------------------------
 # DRF / JWT
 # ---------------------------------------------------------------------------
+
+def _num_proxies(default):
+    """
+    REST_FRAMEWORK NUM_PROXIES from the NUM_PROXIES env var (Task P2.5).
+
+    = number of trusted reverse proxies in front of Django. DRF's
+    get_ident() then takes the client IP from X-Forwarded-For counting
+    from the RIGHT, so a client cannot forge it. 0 = ignore the header and
+    use REMOTE_ADDR only. Unset in DRF would trust the whole header, which
+    a client can rotate to dodge per-IP throttles, so it is always set
+    explicitly here. Blank/unset env value = `default`.
+    """
+    raw = env.str("NUM_PROXIES", default="").strip()
+    return int(raw) if raw else default
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
@@ -331,6 +346,8 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "login": "5/min",
     },
+    # Task P2.5: see _num_proxies() above. prod.py overrides the default (1).
+    "NUM_PROXIES": _num_proxies(default=0),
 }
 
 # ---------------------------------------------------------------------------
@@ -362,6 +379,28 @@ SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
+# ---------------------------------------------------------------------------
+# Password reset throttle rates — Task P2.5 (see accounts/throttles.py).
+# DRF format "N/period" (second|minute|hour|day). Each endpoint has two
+# independent layers: per client IP and per (normalized, hashed) email.
+# A blank/unset env var falls back to the default below.
+# ---------------------------------------------------------------------------
+def _rate(name, default):
+    return env.str(name, default="").strip() or default
+
+
+PASSWORD_RESET_REQUEST_IDENTIFIER_RATE = _rate(
+    "PASSWORD_RESET_REQUEST_IDENTIFIER_RATE", "5/hour"
+)
+PASSWORD_RESET_REQUEST_IP_RATE = _rate("PASSWORD_RESET_REQUEST_IP_RATE", "20/hour")
+PASSWORD_RESET_VERIFY_IDENTIFIER_RATE = _rate(
+    "PASSWORD_RESET_VERIFY_IDENTIFIER_RATE", "10/hour"
+)
+PASSWORD_RESET_VERIFY_IP_RATE = _rate("PASSWORD_RESET_VERIFY_IP_RATE", "30/hour")
+PASSWORD_RESET_CONFIRM_IDENTIFIER_RATE = _rate(
+    "PASSWORD_RESET_CONFIRM_IDENTIFIER_RATE", "5/hour"
+)
+PASSWORD_RESET_CONFIRM_IP_RATE = _rate("PASSWORD_RESET_CONFIRM_IP_RATE", "20/hour")
 
 # ---------------------------------------------------------------------------
 # Logging — Part P-015. Every log line is JSON, and every line emitted

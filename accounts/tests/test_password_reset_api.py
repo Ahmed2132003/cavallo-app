@@ -106,8 +106,11 @@ def _snapshot(response):
 
 def _redis_keys_for(redis_conn, email):
     email_id = services._otp_keys(services._normalize_email(email))[0].rsplit(":", 1)[1]
-    return sorted(k.decode() for k in redis_conn.scan_iter(match=f"*{email_id}*"))
-
+    return sorted(
+        k.decode()
+        for k in redis_conn.scan_iter(match=f"*{email_id}*")
+        if b"throttle_" not in k
+    )
 
 def _issue_reset_token(email):
     otp = services.create_password_reset_otp(email)

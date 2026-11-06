@@ -8,7 +8,7 @@ owner decision rather than guessed at here.
 """
 
 from .base import *  # noqa: F401,F403
-from .base import SENTRY_DSN, env
+from .base import REST_FRAMEWORK, SENTRY_DSN, _num_proxies, env
 
 from config.sentry import init_sentry
 
@@ -29,6 +29,12 @@ CSRF_COOKIE_SECURE = True
 # (nginx/snippets/cavallo_locations.conf). Only safe because web and asgi are
 # reachable ONLY through Nginx, never published on a public interface.
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# Task P2.5: one trusted proxy (Nginx) in front of Django, so the client IP is
+# the LAST X-Forwarded-For entry (the one Nginx appended). Set NUM_PROXIES in
+# .env to override (e.g. 2 if Cloudflare is ever put in front of Nginx).
+# This is a global DRF setting: it also fixes the IP that LoginRateThrottle sees.
+REST_FRAMEWORK = {**REST_FRAMEWORK, "NUM_PROXIES": _num_proxies(default=1)}
 
 # Part P-105: real Sentry initialization. An empty SENTRY_DSN disables Sentry.
 init_sentry(SENTRY_DSN, environment="prod")
