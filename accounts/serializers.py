@@ -146,3 +146,42 @@ class MePreferencesSerializer(serializers.Serializer):
         choices=[value for value, _label in User.LANGUAGE_CHOICES],
         required=False,
     )
+
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    """
+    Input for POST /password-reset/request/ (Task P2.4).
+
+    Format check only. Deliberately no database lookup: the view must do
+    the same work for every well-formed email.
+    """
+
+    email = serializers.EmailField()
+
+
+class PasswordResetVerifySerializer(serializers.Serializer):
+    """
+    Input for POST /password-reset/verify/ (Task P2.4).
+
+    The OTP is not pattern-checked here: a malformed OTP must produce the
+    same unified failure as a wrong one (services handles it).
+    """
+
+    email = serializers.EmailField()
+    otp = serializers.CharField()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    """
+    Input for POST /password-reset/confirm/ (Task P2.4).
+
+    Password strength is checked in services.confirm_password_reset(), not
+    here, because it must run after the user lookup and before the token is
+    consumed.
+    """
+
+    email = serializers.EmailField()
+    reset_token = serializers.CharField()
+    new_password = serializers.CharField(
+        write_only=True, style={"input_type": "password"}, trim_whitespace=False
+    )

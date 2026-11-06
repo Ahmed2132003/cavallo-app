@@ -44,9 +44,14 @@ import secrets
 
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
+from django.contrib.auth.password_validation import validate_password
 from django.core.mail import send_mail
 from django.db import transaction
 from django_redis import get_redis_connection
+from rest_framework_simplejwt.token_blacklist.models import (
+    BlacklistedToken,
+    OutstandingToken,
+)
 from rest_framework_simplejwt.tokens import RefreshToken
 
 User = get_user_model()
@@ -421,6 +426,33 @@ def consume_password_reset_token(email, token):
     return int(result) == 1
 
 
+def peek_password_reset_token(email, token):
+    """
+    Check the reset token for `email` WITHOUT consuming it (Task P2.4b).
+    Returns True when the token is currently valid, False otherwise.
+
+    A malformed token returns False without touching Redis. The stored
+    digest is compared with the digest of the supplied token the same way
+    consume_password_reset_token() does, but nothing is deleted, so a
+    True here is only a hint: the real one-time decision is still made by
+    consume_password_reset_token().
+    """
+    if not isinstance(email, str) or not isinstance(token, str):
+        return False
+    if _RESET_TOKEN_PATTERN.fullmatch(token) is None:
+        return False
+
+    normalized = _normalize_email(email)
+    conn = get_redis_connection(_REDIS_ALIAS)
+    stored = conn.get(_reset_token_key(normalized))
+    if stored is None:
+        return False
+    supplied = _reset_token_digest(normalized, token)
+    return hmac.compare_digest(
+        _to_text(stored).encode("ascii"), supplied.encode("ascii")
+    )
+
+
 # ---------------------------------------------------------------------------
 # Password reset OTP email delivery (Task P2.3)
 #
@@ -522,3 +554,76 @@ def request_password_reset_otp(email):
             type(exc).__name__,
         )
     return None
+
+# ---------------------------------------------------------------------------
+# Password reset confirm (Task P2.4)
+#
+# Scope: set the new password once the reset token has been checked. No
+# throttling here (P2.5). The failure signal is a plain False so the caller
+# can answer every failure kind identically; a weak password is the one
+# exception and is raised as django.core.exceptions.ValidationError so the
+# caller can show the password errors.
+# ---------------------------------------------------------------------------
+
+
+def _blacklist_all_outstanding_tokens(user):
+    """
+    Blacklist every outstanding refresh token of `user` (simplejwt
+    token_blacklist). Already-blacklisted tokens are skipped by the unique
+    constraint on BlacklistedToken.token (ignore_conflicts).
+    """
+    BlacklistedToken.objects.bulk_create(
+        [
+            BlacklistedToken(token=outstanding)
+            for outstanding in OutstandingToken.objects.filter(user=user)
+        ],
+        ignore_conflicts=True,
+    )
+
+
+def confirm_password_reset(email, reset_token, new_password):
+    """
+    Finish a password reset. Returns True when the password was changed and
+    False for every failure that must look the same to the caller: unknown,
+    inactive or ambiguous email, or a reset token that is wrong, expired,
+    already used or issued for another email.
+
+    Order matters (the password is never judged before the token is known
+    to be valid, so a weak password cannot reveal whether an account
+    exists):
+      1. Find the single active user (email__iexact). No user -> False.
+      2. Peek at the reset token without consuming it. Invalid -> False.
+      3. Run Django's validate_password against the user. A weak password
+         raises ValidationError BEFORE the token is consumed, so the token
+         stays valid and the user can retry.
+      4. Consume the reset token (atomic, one-time). Failure -> False.
+      5. In one transaction: set_password, save, and blacklist all of the
+         user's outstanding refresh tokens. Access tokens already issued
+         stay valid until they expire.
+    """
+    if not isinstance(email, str) or not isinstance(new_password, str):
+        return False
+    normalized = _normalize_email(email)
+    if not normalized:
+        return False
+
+    candidates = list(
+        User.objects.filter(email__iexact=normalized, is_active=True)[:2]
+    )
+    if len(candidates) != 1:
+        return False
+    user = candidates[0]
+
+    if not peek_password_reset_token(normalized, reset_token):
+        return False
+
+    validate_password(new_password, user=user)
+
+    if not consume_password_reset_token(normalized, reset_token):
+        return False
+
+    with transaction.atomic():
+        user.set_password(new_password)
+        user.save()
+        _blacklist_all_outstanding_tokens(user)
+    return True
