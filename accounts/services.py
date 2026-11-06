@@ -38,16 +38,19 @@ extra optional parameters this part doesn't need.
 
 import hashlib
 import hmac
+import logging
 import re
 import secrets
 
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
+from django.core.mail import send_mail
 from django.db import transaction
 from django_redis import get_redis_connection
 from rest_framework_simplejwt.tokens import RefreshToken
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 def register_user(*, email, password, account_type):
@@ -416,3 +419,106 @@ def consume_password_reset_token(email, token):
         [_reset_token_digest(normalized, token)],
     )
     return int(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# Password reset OTP email delivery (Task P2.3)
+#
+# Scope: build and send the OTP email only. No API endpoints, serializers,
+# views, throttling, password change or reset-token emailing here.
+#
+# Delivery is synchronous on purpose (no Celery task). A task would have to
+# carry the raw OTP through the Celery broker, which is the same Redis, and
+# that would put the raw OTP in Redis. The OTP must exist only in the email
+# body. See the P2.3 report for the timing side-channel this leaves open.
+# ---------------------------------------------------------------------------
+
+_OTP_EMAIL_SUBJECTS = {
+    "ar": "رمز إعادة تعيين كلمة المرور",
+    "en": "Your password reset code",
+}
+
+_OTP_EMAIL_BODIES = {
+    "ar": (
+        "رمز التحقق الخاص بك لإعادة تعيين كلمة المرور هو: {otp}\n"
+        "صالح لمدة {ttl} ثانية فقط.\n"
+        "إن لم تطلب ذلك، تجاهل هذه الرسالة."
+    ),
+    "en": (
+        "Your password reset verification code is: {otp}\n"
+        "It is valid for {ttl} seconds only.\n"
+        "If you did not request this, ignore this email."
+    ),
+}
+
+
+def _send_password_reset_otp_email(user, otp):
+    """
+    Build and send the password-reset OTP email to `user.email`.
+
+    Plain text only (the project has no existing email templates). The
+    language follows user.preferred_language ("ar" or "en"); anything else
+    falls back to Arabic, the project default. The validity shown in the
+    body is derived from OTP_TTL_SECONDS. The subject never contains the
+    OTP. The sender is settings.DEFAULT_FROM_EMAIL.
+
+    Lets any send exception propagate; the caller decides what to do.
+    """
+    language = getattr(user, "preferred_language", None)
+    if language not in _OTP_EMAIL_SUBJECTS:
+        language = "ar"
+    send_mail(
+        subject=_OTP_EMAIL_SUBJECTS[language],
+        message=_OTP_EMAIL_BODIES[language].format(otp=otp, ttl=OTP_TTL_SECONDS),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[user.email],
+        fail_silently=False,
+    )
+
+
+def request_password_reset_otp(email):
+    """
+    Issue a password-reset OTP for `email` and email it to the account
+    owner. Always returns None, whatever happened.
+
+    The caller can not tell these cases apart from the return value or an
+    exception: unknown email, inactive account, ambiguous email (more than
+    one account), malformed input, successful send, failed send.
+
+    - Lookup is case-insensitive (email__iexact), like authenticate_user().
+    - Unknown / inactive / ambiguous: nothing is sent and no Redis key is
+      created.
+    - Active user: create_password_reset_otp() then email the OTP.
+    - Send failure: the OTP just created is invalidated (its Redis keys are
+      deleted, using the P2.1 key helpers) and the failure is logged with
+      the exception class name only. The log never contains the OTP or the
+      email address; exception text is left out because SMTP errors often
+      embed the recipient address.
+
+    Known limit: an existing user takes longer than an unknown one (one
+    SMTP round trip), which is a timing side-channel. See the P2.3 report.
+    """
+    if not isinstance(email, str):
+        return None
+    normalized = _normalize_email(email)
+    if not normalized:
+        return None
+
+    candidates = list(User.objects.filter(email__iexact=normalized)[:2])
+    if len(candidates) != 1:
+        return None
+    user = candidates[0]
+    if not user.is_active:
+        return None
+
+    otp = create_password_reset_otp(normalized)
+    try:
+        _send_password_reset_otp_email(user, otp)
+    except Exception as exc:
+        conn = get_redis_connection(_REDIS_ALIAS)
+        conn.delete(*_otp_keys(normalized))
+        logger.error(
+            "Password reset OTP email failed (%s); OTP invalidated.",
+            type(exc).__name__,
+        )
+    return None
