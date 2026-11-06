@@ -80,11 +80,13 @@ def test_each_issuance_gets_a_unique_issuance_id(redis_conn, email):
     assert first_id != second_id
 
 
-def test_otp_expires_in_60_seconds(redis_conn, email):
+def test_otp_expires_in_300_seconds(redis_conn, email):
+    assert services.OTP_TTL_SECONDS == 300
+    ttl_ms = services.OTP_TTL_SECONDS * 1000
     create_password_reset_otp(email)
     otp_key, attempts_key = services._otp_keys(email)
-    assert 55_000 < redis_conn.pttl(otp_key) <= 60_000
-    assert 55_000 < redis_conn.pttl(attempts_key) <= 60_000
+    assert ttl_ms - 5_000 < redis_conn.pttl(otp_key) <= ttl_ms
+    assert ttl_ms - 5_000 < redis_conn.pttl(attempts_key) <= ttl_ms
 
 
 def test_correct_otp_succeeds(email):

@@ -171,12 +171,18 @@ def test_token_ttl_is_300_seconds(redis_conn, email):
     assert 295_000 < pttl <= 300_000
 
 
-def test_token_has_independent_longer_ttl_than_otp(redis_conn, email):
+def test_token_ttl_is_independent_of_otp_ttl(redis_conn, email):
+    otp_ms = services.OTP_TTL_SECONDS * 1000
+    token_ms = RESET_TOKEN_TTL_SECONDS * 1000
+    assert RESET_TOKEN_TTL_SECONDS >= services.OTP_TTL_SECONDS
+
     otp = create_password_reset_otp(email)
     otp_key, _ = services._otp_keys(email)
-    assert redis_conn.pttl(otp_key) <= 60_000
+    assert otp_ms - 5_000 < redis_conn.pttl(otp_key) <= otp_ms
+
     verify_otp_and_issue_reset_token(email, otp)
-    assert redis_conn.pttl(services._reset_token_key(email)) > 60_000
+    token_pttl = redis_conn.pttl(services._reset_token_key(email))
+    assert token_ms - 5_000 < token_pttl <= token_ms
 
 
 # --- consuming -------------------------------------------------------------

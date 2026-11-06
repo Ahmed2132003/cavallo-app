@@ -162,14 +162,14 @@ def blacklist_refresh_token(raw_token):
 # ---------------------------------------------------------------------------
 
 _REDIS_ALIAS = "default"
-OTP_TTL_SECONDS = 60
+OTP_TTL_SECONDS = 300
 OTP_MAX_ATTEMPTS = 5
 _OTP_KEY_PREFIX = "pwreset:otp:"
 _ATTEMPTS_KEY_PREFIX = "pwreset:attempts:"
 _OTP_PATTERN = re.compile(r"[0-9]{6}")
 
 # Issue/replace: store the new issuance value ("<issuance_id>:<digest>")
-# with a 60s TTL and reset the attempt counter in one atomic step, so a
+# with a 300s TTL and reset the attempt counter in one atomic step, so a
 # reissue can never leave stale attempts attached to the new OTP (or the
 # old issuance alive).
 # KEYS[1] = otp key, KEYS[2] = attempts key
@@ -266,7 +266,7 @@ def create_password_reset_otp(email):
     Replaces any previous OTP for the same normalized email and resets
     the attempt counter, atomically. Each issuance gets a fresh random
     issuance id; Redis stores only "<issuance_id>:<HMAC-SHA256 digest>"
-    with a 60-second expiry. The raw OTP is never stored or logged.
+    with a 300-second expiry. The raw OTP is never stored or logged.
     """
     normalized = _normalize_email(email)
     otp = f"{secrets.randbelow(10**6):06d}"
