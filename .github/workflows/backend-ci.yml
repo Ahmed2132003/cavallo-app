@@ -45,7 +45,7 @@ jobs:
       SENTRY_DSN: ""
       # Object storage for the tests (core/storage_backends.py reads these).
       # The tests really upload files (Story/Reel media), so they need a
-      # real S3-compatible server: the "Start MinIO" step below runs one on
+      # real S3-compatible server: the "Start SeaweedFS" step below runs one on
       # localhost:9000 with these same credentials. The region must be
       # non-empty, otherwise boto3 builds the endpoint "https://s3..amazonaws.com"
       # and fails with "Invalid endpoint". OBJECT_STORAGE_PUBLIC_ENDPOINT_URL is
@@ -92,29 +92,58 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libmagic1 ffmpeg
 
-      # A services: container cannot be given the "server /data" command,
-      # so MinIO is started with docker run (same image as docker-compose.yml).
-      - name: Start MinIO (S3-compatible object storage)
+      # MinIO's official images/binaries are no longer downloadable (quay.io
+      # and dl.min.io both refuse), so the tests use SeaweedFS's S3 gateway,
+      # which is S3-compatible and needs no license. Credentials come from
+      # the same OBJECT_STORAGE_* env vars as the app.
+      - name: Start SeaweedFS (S3-compatible object storage)
         run: |
-          docker run -d --name minio \
-            -p 9000:9000 \
-            -e MINIO_ROOT_USER="$OBJECT_STORAGE_KEY" \
-            -e MINIO_ROOT_PASSWORD="$OBJECT_STORAGE_SECRET" \
-            quay.io/minio/minio:latest server /data
+          cat > "$RUNNER_TEMP/s3.json" <<EOF
+          {
+            "identities": [
+              {
+                "name": "ci",
+                "credentials": [
+                  { "accessKey": "$OBJECT_STORAGE_KEY", "secretKey": "$OBJECT_STORAGE_SECRET" }
+                ],
+                "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+              }
+            ]
+          }
+          EOF
+          docker run -d --name seaweedfs \
+            -p 9000:8333 \
+            -v "$RUNNER_TEMP/s3.json":/etc/s3.json \
+            chrislusf/seaweedfs:latest \
+            server -s3 -s3.config=/etc/s3.json -dir=/data
           for i in $(seq 1 30); do
-            if curl -fsS http://localhost:9000/minio/health/ready > /dev/null; then
+            if curl -s -o /dev/null http://localhost:9000/; then
               exit 0
             fi
             sleep 2
           done
-          echo "::error::MinIO did not become ready"
-          docker logs minio
+          echo "::error::SeaweedFS did not become ready"
+          docker logs seaweedfs
           exit 1
 
-      - name: Create MinIO bucket
+      - name: Create object storage bucket
         run: |
-          docker run --rm --network host --entrypoint /bin/sh quay.io/minio/mc:latest -c \
-            "mc alias set local http://localhost:9000 '$OBJECT_STORAGE_KEY' '$OBJECT_STORAGE_SECRET' && mc mb --ignore-existing local/$OBJECT_STORAGE_BUCKET"
+          python - <<'PY'
+          import os
+          import boto3
+          from botocore.config import Config
+
+          s3 = boto3.client(
+              "s3",
+              endpoint_url=os.environ["OBJECT_STORAGE_ENDPOINT_URL"],
+              aws_access_key_id=os.environ["OBJECT_STORAGE_KEY"],
+              aws_secret_access_key=os.environ["OBJECT_STORAGE_SECRET"],
+              region_name=os.environ["OBJECT_STORAGE_REGION"],
+              config=Config(s3={"addressing_style": "path"}),
+          )
+          s3.create_bucket(Bucket=os.environ["OBJECT_STORAGE_BUCKET"])
+          print("bucket ready")
+          PY
 
       - name: pytest
         run: pytest
