@@ -181,9 +181,7 @@ class TestPublicReelIsFeatured(APITestCase):
         self.assertIs(results[0]["is_featured"], True)
 
     def test_serializer_flag_follows_business_state(self):
-        self.assertIs(
-            ReelPublicSerializer(self.plain_reel).data["is_featured"], False
-        )
+        self.assertIs(ReelPublicSerializer(self.plain_reel).data["is_featured"], False)
         BusinessProfile.objects.filter(pk=self.plain.pk).update(is_featured=True)
         fresh = Reel.objects.get(pk=self.plain_reel.pk)
         self.assertIs(ReelPublicSerializer(fresh).data["is_featured"], True)

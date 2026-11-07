@@ -81,17 +81,13 @@ class TestPostCreate(APITestCase):
         self.assertEqual(post.status, "pending_review")
 
     def test_unauthenticated_create_rejected(self):
-        response = self.client.post(
-            "/api/v1/posts/", {"caption": "hi"}, format="json"
-        )
+        response = self.client.post("/api/v1/posts/", {"caption": "hi"}, format="json")
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_customer_without_business_profile_gets_403_on_create(self):
         customer = _make_customer("customer-a@example.com")
         self.client.force_authenticate(customer)
-        response = self.client.post(
-            "/api/v1/posts/", {"caption": "hi"}, format="json"
-        )
+        response = self.client.post("/api/v1/posts/", {"caption": "hi"}, format="json")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
@@ -539,7 +535,6 @@ class TestReelDetailIDOR(APITestCase):
     def test_unauthenticated_delete_rejected(self):
         response = self.client.delete(f"/api/v1/reels/{self.reel.id}/")
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-        
 
 
 # ---------------------------------------------------------------------------
@@ -578,9 +573,7 @@ class TestPostRejectionReason(APITestCase):
 
         response = self.client.get(f"/api/v1/posts/{self.post_id}/")
         self.assertEqual(response.data["status"], "rejected")
-        self.assertEqual(
-            response.data["rejection_reason"], "Blurry image, resubmit"
-        )
+        self.assertEqual(response.data["rejection_reason"], "Blurry image, resubmit")
 
     def test_rejection_reason_is_null_after_approve(self):
         queue_item = ModerationQueue.objects.get(
@@ -625,9 +618,7 @@ class TestReelRejectionReason(APITestCase):
             object_id=reel_id,
         )
 
-        moderation_reject(
-            queue_item, reviewer=self.moderator, reason="Video too dark"
-        )
+        moderation_reject(queue_item, reviewer=self.moderator, reason="Video too dark")
 
         response = self.client.get(f"/api/v1/reels/{reel_id}/")
         self.assertEqual(response.data["status"], "rejected")

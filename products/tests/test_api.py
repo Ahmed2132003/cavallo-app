@@ -23,7 +23,6 @@ from businesses.models import BusinessProfile
 from categories.models import Category
 from core.tests.test_media import _DISGUISED_EXE_BYTES, _VALID_PNG_BYTES
 from products.models import Product, ProductVariant
-from core.tests.test_media import _VALID_PNG_BYTES
 
 pytestmark = pytest.mark.django_db
 
@@ -465,6 +464,7 @@ class TestProductImageUpload:
         assert response.status_code == 201
         assert response.json()["image"] is None
 
+
 @pytest.mark.django_db
 def test_multipart_create_without_is_active_defaults_to_active():
     """P-094 F-3: multipart create must not silently hide the product."""
@@ -475,20 +475,28 @@ def test_multipart_create_without_is_active_defaults_to_active():
     from categories.models import Category
 
     user = get_user_model().objects.create_user(
-        username="f3-biz", email="f3-biz@example.com",
-        password="Str0ng!Passw0rd#94", account_type="business",
+        username="f3-biz",
+        email="f3-biz@example.com",
+        password="Str0ng!Passw0rd#94",
+        account_type="business",
     )
     category = Category.objects.create(name="F3 Cat")
     BusinessProfile.objects.create(
-        user=user, business_name="F3", business_type="trader",
-        country="Egypt", city="Cairo", category=category,
+        user=user,
+        business_name="F3",
+        business_type="trader",
+        country="Egypt",
+        city="Cairo",
+        category=category,
     )
     client = APIClient()
     client.force_authenticate(user=user)
     response = client.post(
         "/api/v1/products/",
         {
-            "name": "F3 product", "price": "10.00", "currency": "EGP",
+            "name": "F3 product",
+            "price": "10.00",
+            "currency": "EGP",
             "category": category.id,
             "image": SimpleUploadedFile(
                 "p.png", _VALID_PNG_BYTES, content_type="image/png"

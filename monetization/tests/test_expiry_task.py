@@ -258,8 +258,10 @@ class TestDefensiveCorrectness:
         tasks.py must not write is_featured or flip is_active itself; it
         must call deactivate_subscriptions() (P-087 rule).
         """
-        source = Path(monetization.__file__).parent.joinpath("tasks.py").read_text(
-            encoding="utf-8"
+        source = (
+            Path(monetization.__file__)
+            .parent.joinpath("tasks.py")
+            .read_text(encoding="utf-8")
         )
         assert _writes_flags_directly(ast.parse(source)) is False
 
@@ -396,9 +398,11 @@ def _make_product(business, category, name, *, at):
 
 def _names(result, content_type):
     return [
-        item.obj.business_name
-        if content_type == CONTENT_TYPE_BUSINESS
-        else item.obj.name
+        (
+            item.obj.business_name
+            if content_type == CONTENT_TYPE_BUSINESS
+            else item.obj.name
+        )
         for item in result["items"]
         if item.content_type == content_type
     ]

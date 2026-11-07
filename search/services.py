@@ -194,7 +194,13 @@ def _sort_key(entry: SearchResult):
     )
 
 
-def _rows_after(is_featured_field: str, secondary_field: str, *, content_type: str, cursor: SearchCursor) -> Q:
+def _rows_after(
+    is_featured_field: str,
+    secondary_field: str,
+    *,
+    content_type: str,
+    cursor: SearchCursor,
+) -> Q:
     """
     Rows of `content_type` that come strictly AFTER `cursor` in the
     descending (is_featured, secondary, content-type rank, id) order —
@@ -265,9 +271,7 @@ def build_product_queryset(filters: SearchFilters) -> QuerySet:
     return qs
 
 
-def _fetch_business_entries(
-    filters, *, search_query, mode, cursor, limit, text=None
-):
+def _fetch_business_entries(filters, *, search_query, mode, cursor, limit, text=None):
     if limit <= 0:
         return []
     qs = build_business_queryset(filters)
@@ -306,9 +310,7 @@ def _fetch_business_entries(
     return entries
 
 
-def _fetch_product_entries(
-    filters, *, search_query, mode, cursor, limit, text=None
-):
+def _fetch_product_entries(filters, *, search_query, mode, cursor, limit, text=None):
     if limit <= 0:
         return []
     qs = build_product_queryset(filters)

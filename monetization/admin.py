@@ -60,7 +60,14 @@ class FeaturedSubscriptionAdmin(admin.ModelAdmin):
         created = activate_subscription(obj.business, obj.plan)
         # Hand the freshly created row's state back to the admin's
         # in-memory instance so its redirect / log entry use the real row.
-        for attr in ("id", "starts_at", "expires_at", "is_active", "created_at", "updated_at"):
+        for attr in (
+            "id",
+            "starts_at",
+            "expires_at",
+            "is_active",
+            "created_at",
+            "updated_at",
+        ):
             setattr(obj, attr, getattr(created, attr))
         obj._state.adding = False
         obj._state.db = created._state.db

@@ -15,9 +15,7 @@ class RateBusinessSerializer(serializers.Serializer):
     """
 
     score = serializers.IntegerField(min_value=1, max_value=5)
-    review_text = serializers.CharField(
-        required=False, allow_blank=True, default=""
-    )
+    review_text = serializers.CharField(required=False, allow_blank=True, default="")
 
 
 class RatingSerializer(serializers.ModelSerializer):

@@ -30,7 +30,15 @@ User = get_user_model()
 _counter = itertools.count(1)
 
 
-def make_business(name, *, country="Egypt", city="Cairo", business_type="trader", featured=False, category=None):
+def make_business(
+    name,
+    *,
+    country="Egypt",
+    city="Cairo",
+    business_type="trader",
+    featured=False,
+    category=None,
+):
     email = f"search-api-{next(_counter)}@example.com"
     user = User.objects.create_user(
         username=email, email=email, password="Str0ngPass!23", account_type="business"
@@ -204,7 +212,9 @@ class TestFeaturedOnly(APITestCase):
 class TestPriceFilterIsNonTransactional(APITestCase):
     _FORBIDDEN_SUBSTRINGS = ("buy", "cart", "checkout", "purchase", "order")
 
-    def test_min_max_price_narrow_products_correctly_with_no_transactional_wording(self):
+    def test_min_max_price_narrow_products_correctly_with_no_transactional_wording(
+        self,
+    ):
         """
         min_price/max_price apply to Product.price only (see
         build_business_queryset()'s own docstring — BusinessProfile
@@ -233,7 +243,9 @@ class TestPriceFilterIsNonTransactional(APITestCase):
 
         body_lower = str(response.content).lower()
         for term in self._FORBIDDEN_SUBSTRINGS:
-            assert term not in body_lower, f"found transactional term {term!r} in response"
+            assert (
+                term not in body_lower
+            ), f"found transactional term {term!r} in response"
 
 
 class TestQueryParamValidation(APITestCase):

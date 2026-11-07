@@ -43,6 +43,19 @@ jobs:
       REDIS_URL: redis://localhost:6379/0
       CORS_ALLOWED_ORIGINS: ""
       SENTRY_DSN: ""
+      # Object storage for the tests (core/storage_backends.py reads these).
+      # The tests really upload files (Story/Reel media), so they need a
+      # real S3-compatible server: the "Start MinIO" step below runs one on
+      # localhost:9000 with these same credentials. The region must be
+      # non-empty, otherwise boto3 builds the endpoint "https://s3..amazonaws.com"
+      # and fails with "Invalid endpoint". OBJECT_STORAGE_PUBLIC_ENDPOINT_URL is
+      # left unset on purpose: it falls back to the endpoint URL.
+      OBJECT_STORAGE_BUCKET: scd-ci-media
+      OBJECT_STORAGE_KEY: ci-minio-user
+      OBJECT_STORAGE_SECRET: ci-minio-secret
+      OBJECT_STORAGE_REGION: us-east-1
+      OBJECT_STORAGE_ENDPOINT_URL: http://localhost:9000
+      OBJECT_STORAGE_USE_SSL: "False"
 
     steps:
       - name: Checkout
@@ -69,6 +82,39 @@ jobs:
 
       - name: Django system check
         run: python manage.py check
+
+      # Same system packages the Dockerfile installs for the tests:
+      # libmagic1 (python-magic, upload validation) and ffmpeg (real video
+      # transcoding in content/tests/test_tasks.py). A no-op if the runner
+      # image already has them.
+      - name: Install system packages used by the tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libmagic1 ffmpeg
+
+      # A services: container cannot be given the "server /data" command,
+      # so MinIO is started with docker run (same image as docker-compose.yml).
+      - name: Start MinIO (S3-compatible object storage)
+        run: |
+          docker run -d --name minio \
+            -p 9000:9000 \
+            -e MINIO_ROOT_USER="$OBJECT_STORAGE_KEY" \
+            -e MINIO_ROOT_PASSWORD="$OBJECT_STORAGE_SECRET" \
+            quay.io/minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:9000/minio/health/ready > /dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::MinIO did not become ready"
+          docker logs minio
+          exit 1
+
+      - name: Create MinIO bucket
+        run: |
+          docker run --rm --network host --entrypoint /bin/sh quay.io/minio/mc:latest -c \
+            "mc alias set local http://localhost:9000 '$OBJECT_STORAGE_KEY' '$OBJECT_STORAGE_SECRET' && mc mb --ignore-existing local/$OBJECT_STORAGE_BUCKET"
 
       - name: pytest
         run: pytest
