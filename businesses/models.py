@@ -126,9 +126,7 @@ class BusinessProfile(TimestampedModel, SoftDeleteModel):
     # so an unrated business reads as "0.00, 0 reviews" rather than
     # null. Exact field names locked for P-064's search filter to
     # consume.
-    average_rating = models.DecimalField(
-        max_digits=3, decimal_places=2, default=0
-    )
+    average_rating = models.DecimalField(max_digits=3, decimal_places=2, default=0)
     ratings_count = models.PositiveIntegerField(default=0)
     # Business profile photo: the round avatar shown next to the business
     # name on every screen (feed, stories, search, chat, profile). Plain

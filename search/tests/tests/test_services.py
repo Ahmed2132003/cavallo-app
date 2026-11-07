@@ -14,7 +14,11 @@ from django.contrib.auth import get_user_model
 from businesses.models import BusinessProfile
 from categories.models import Category
 from products.models import Product
-from search.cursor import CONTENT_TYPE_BUSINESS, CONTENT_TYPE_PRODUCT, InvalidCursorError
+from search.cursor import (
+    CONTENT_TYPE_BUSINESS,
+    CONTENT_TYPE_PRODUCT,
+    InvalidCursorError,
+)
 from search.services import SearchFilters, get_search_results
 
 pytestmark = pytest.mark.django_db
@@ -28,7 +32,15 @@ def ts(minutes: int) -> datetime:
     return _BASE + timedelta(minutes=minutes)
 
 
-def make_business(name, *, country="Egypt", city="Cairo", business_type="trader", featured=False, rating=None):
+def make_business(
+    name,
+    *,
+    country="Egypt",
+    city="Cairo",
+    business_type="trader",
+    featured=False,
+    rating=None,
+):
     email = f"search-{next(_counter)}@example.com"
     user = User.objects.create_user(
         username=email, email=email, password="Str0ngPass!23", account_type="business"
@@ -79,12 +91,14 @@ class TestFilterOnlyNoQuery:
         other_biz = make_business("Alex Traders", city="Alexandria")
         make_product(other_biz, cat, "Alex Item", at=ts(2))
 
-        result = get_search_results(
-            SearchFilters(city="Cairo"), q=None, page_size=20
-        )
+        result = get_search_results(SearchFilters(city="Cairo"), q=None, page_size=20)
         content_types = {r.content_type for r in result["items"]}
         names = {
-            r.obj.business_name if r.content_type == CONTENT_TYPE_BUSINESS else r.obj.name
+            (
+                r.obj.business_name
+                if r.content_type == CONTENT_TYPE_BUSINESS
+                else r.obj.name
+            )
             for r in result["items"]
         }
         assert "Alex Item" not in names
@@ -104,7 +118,11 @@ class TestFullTextOnly:
 
         result = get_search_results(SearchFilters(), q="leather", page_size=20)
         names = {
-            r.obj.business_name if r.content_type == CONTENT_TYPE_BUSINESS else r.obj.name
+            (
+                r.obj.business_name
+                if r.content_type == CONTENT_TYPE_BUSINESS
+                else r.obj.name
+            )
             for r in result["items"]
         }
         assert "Leather World" in names
@@ -127,7 +145,9 @@ class TestCombinedQueryAndFilters:
             page_size=20,
         )
         product_names = {
-            r.obj.name for r in result["items"] if r.content_type == CONTENT_TYPE_PRODUCT
+            r.obj.name
+            for r in result["items"]
+            if r.content_type == CONTENT_TYPE_PRODUCT
         }
         assert product_names == {"Leather Bag"}
 
@@ -139,7 +159,9 @@ class TestMinRatingUsesRealField:
 
         result = get_search_results(SearchFilters(min_rating=Decimal("4.00")), q=None)
         business_names = {
-            r.obj.business_name for r in result["items"] if r.content_type == CONTENT_TYPE_BUSINESS
+            r.obj.business_name
+            for r in result["items"]
+            if r.content_type == CONTENT_TYPE_BUSINESS
         }
         assert business_names == {"High Rated"}
         assert high.average_rating == Decimal("4.50")
@@ -155,7 +177,11 @@ class TestFeaturedOnly:
 
         result = get_search_results(SearchFilters(featured_only=True), q=None)
         names = {
-            r.obj.business_name if r.content_type == CONTENT_TYPE_BUSINESS else r.obj.name
+            (
+                r.obj.business_name
+                if r.content_type == CONTENT_TYPE_BUSINESS
+                else r.obj.name
+            )
             for r in result["items"]
         }
         assert names == {"Featured Co.", "Featured Product"}
@@ -171,10 +197,16 @@ class TestIsFeaturedOrdering:
 
         result = get_search_results(SearchFilters(), q=None, page_size=20)
         ordered_names = [
-            r.obj.business_name if r.content_type == CONTENT_TYPE_BUSINESS else r.obj.name
+            (
+                r.obj.business_name
+                if r.content_type == CONTENT_TYPE_BUSINESS
+                else r.obj.name
+            )
             for r in result["items"]
         ]
-        assert ordered_names.index("Older Featured") < ordered_names.index("Newer Plain")
+        assert ordered_names.index("Older Featured") < ordered_names.index(
+            "Newer Plain"
+        )
         assert ordered_names.index("Older Featured Product") < ordered_names.index(
             "Newer Plain Product"
         )
@@ -222,9 +254,13 @@ class TestCountryCityJoinThroughBusiness:
         riyadh_biz = make_business("Riyadh Biz", country="Saudi Arabia", city="Riyadh")
         make_product(riyadh_biz, cat, "Riyadh Product", at=ts(2))
 
-        result = get_search_results(SearchFilters(country="Egypt", city="Cairo"), q=None)
+        result = get_search_results(
+            SearchFilters(country="Egypt", city="Cairo"), q=None
+        )
         product_names = {
-            r.obj.name for r in result["items"] if r.content_type == CONTENT_TYPE_PRODUCT
+            r.obj.name
+            for r in result["items"]
+            if r.content_type == CONTENT_TYPE_PRODUCT
         }
         assert product_names == {"Cairo Product"}
         assert "Riyadh Product" not in product_names

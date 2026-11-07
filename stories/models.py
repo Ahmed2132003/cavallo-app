@@ -138,7 +138,10 @@ class Story(Moderatable, TimestampedModel, SoftDeleteModel):
                 name="story_biz_status_exp_idx",
             ),
             # Part P-101: Architecture Section 9 composite index, found missing by the Phase 20 audit.
-            models.Index(fields=["business", "status", "created_at"], name="story_biz_status_created_idx"),
+            models.Index(
+                fields=["business", "status", "created_at"],
+                name="story_biz_status_created_idx",
+            ),
         ]
 
     def __str__(self):

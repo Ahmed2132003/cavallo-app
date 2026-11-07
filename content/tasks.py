@@ -38,10 +38,10 @@ logger = logging.getLogger(__name__)
 # Change these constants only — do not bury magic numbers in the ffmpeg
 # command construction below (same convention as moderation/tasks.py's
 # FAST_PATH_SLA_MINUTES/NORMAL_SLA_HOURS).
-MAX_HEIGHT_PX = 1080          # Never upscale a smaller source video.
+MAX_HEIGHT_PX = 1080  # Never upscale a smaller source video.
 VIDEO_BITRATE = "2M"
 AUDIO_BITRATE = "128k"
-THUMBNAIL_SECOND = 1          # Extract the thumbnail at this many seconds in.
+THUMBNAIL_SECOND = 1  # Extract the thumbnail at this many seconds in.
 FFMPEG_TIMEOUT_SECONDS = 1800  # Long phone videos need far more than 5 minutes.
 # --------------------------------------------------------------------------
 
@@ -156,8 +156,15 @@ def transcode_reel(reel_id):
             if not thumbnail_path.exists():
                 subprocess.run(
                     [
-                        "ffmpeg", "-y", "-ss", "0", "-i", str(output_path),
-                        "-frames:v", "1", str(thumbnail_path),
+                        "ffmpeg",
+                        "-y",
+                        "-ss",
+                        "0",
+                        "-i",
+                        str(output_path),
+                        "-frames:v",
+                        "1",
+                        str(thumbnail_path),
                     ],
                     check=True,
                     capture_output=True,

@@ -115,7 +115,10 @@ class SearchCursor:
                 raise ValueError("A relevance cursor's secondary key must be a number")
             object.__setattr__(self, "secondary", float(self.secondary))
         else:
-            if not isinstance(self.secondary, datetime) or self.secondary.tzinfo is None:
+            if (
+                not isinstance(self.secondary, datetime)
+                or self.secondary.tzinfo is None
+            ):
                 raise ValueError(
                     "A recency cursor's secondary key must be a timezone-aware datetime"
                 )
@@ -194,7 +197,9 @@ def decode_cursor(token: str, *, expected_mode: str) -> SearchCursor:
             raise InvalidCursorError("Invalid search cursor.")
 
     try:
-        secondary = float(sec) if mode == MODE_RELEVANCE else datetime.fromisoformat(sec)
+        secondary = (
+            float(sec) if mode == MODE_RELEVANCE else datetime.fromisoformat(sec)
+        )
         return SearchCursor(
             mode=mode,
             is_featured=bool(ft),

@@ -66,7 +66,9 @@ class TestPostPublicSerializerPerUserState(APITestCase):
     def _get_item(self, client):
         response = client.get("/api/v1/posts/public/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        items = [item for item in response.data["results"] if item["id"] == self.post.id]
+        items = [
+            item for item in response.data["results"] if item["id"] == self.post.id
+        ]
         self.assertEqual(len(items), 1)
         return items[0]
 
@@ -126,7 +128,9 @@ class TestReelPublicSerializerPerUserState(APITestCase):
     def _get_item(self, client):
         response = client.get("/api/v1/reels/public/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        items = [item for item in response.data["results"] if item["id"] == self.reel.id]
+        items = [
+            item for item in response.data["results"] if item["id"] == self.reel.id
+        ]
         self.assertEqual(len(items), 1)
         return items[0]
 
