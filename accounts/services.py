@@ -108,10 +108,19 @@ def authenticate_user(*, email, password):
     and returns None for that case too). Never raises for "user not
     found" vs "wrong password" — both look identical to the caller, by
     design (no user-enumeration signal).
+
+    Timing (Task P2.7b): the response must not reveal whether the email is
+    registered through its duration either. For a known email, authenticate()
+    runs the password hash (ModelBackend checks the password before it checks
+    is_active, so an inactive account is hashed too). For an unknown email
+    there is no user to check, so one throwaway hash of the submitted
+    password is computed instead (the same thing ModelBackend does for an
+    unknown username), which keeps the two durations comparable.
     """
     try:
         candidate = User.objects.get(email__iexact=email)
     except User.DoesNotExist:
+        User().set_password(password)
         return None
     return authenticate(username=candidate.username, password=password)
 
