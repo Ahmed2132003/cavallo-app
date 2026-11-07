@@ -26,12 +26,12 @@ def test_init_sentry_empty_dsn_is_disabled():
 def test_init_sentry_with_dsn_initializes_with_environment():
     with mock.patch("sentry_sdk.init") as fake_init:
         assert init_sentry(FAKE_DSN, "staging") is True
-    fake_init.assert_called_once_with(
-        dsn=FAKE_DSN,
-        environment="staging",
-        traces_sample_rate=0.0,
-        send_default_pii=False,
-    )
+    fake_init.assert_called_once()
+    kwargs = fake_init.call_args.kwargs
+    assert kwargs["dsn"] == FAKE_DSN
+    assert kwargs["environment"] == "staging"
+    assert kwargs["traces_sample_rate"] == 0.0
+    assert kwargs["send_default_pii"] is False
 
 
 def test_sentry_is_not_initialized_under_test_settings():

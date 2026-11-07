@@ -2,6 +2,9 @@
 Authentication API views for the accounts app (Parts P-017, P-018).
 """
 
+import logging
+
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import generics, status
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -11,13 +14,32 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework.views import APIView
 
 from accounts import services
+from accounts.exceptions import PasswordResetInvalid
 from accounts.serializers import (
     LoginSerializer,
     LogoutSerializer,
     MePreferencesSerializer,
+    PasswordResetConfirmSerializer,
+    PasswordResetRequestSerializer,
+    PasswordResetVerifySerializer,
     RegisterSerializer,
 )
-from accounts.throttles import LoginRateThrottle
+from accounts.tasks import send_password_reset_otp_task
+from accounts.throttles import (
+    LoginRateThrottle,
+    PasswordResetConfirmIdentifierThrottle,
+    PasswordResetConfirmIPThrottle,
+    PasswordResetRequestIdentifierThrottle,
+    PasswordResetRequestIPThrottle,
+    PasswordResetVerifyIdentifierThrottle,
+    PasswordResetVerifyIPThrottle,
+)
+
+logger = logging.getLogger(__name__)
+
+PASSWORD_RESET_REQUEST_MESSAGE = (
+    "If the email is registered, a verification code will be sent."
+)
 
 
 class RegisterView(generics.CreateAPIView):
@@ -155,6 +177,13 @@ class LogoutView(generics.GenericAPIView):
         )
 
 
+# ADD to accounts/views.py
+
+# 1. Add this import alongside the existing rest_framework imports:
+
+# 2. Append this class at the end of the file:
+
+
 class MeView(APIView):
     """
     GET /api/v1/auth/me/
@@ -217,3 +246,106 @@ class MeView(APIView):
             user.save(update_fields=changed + ["updated_at"])
 
         return self.get(request, *args, **kwargs)
+
+
+class PasswordResetRequestView(generics.GenericAPIView):
+    """
+    POST /api/v1/auth/password-reset/request/ (Task P2.4)
+
+    Does exactly the same for every well-formed email: queue one Celery
+    task carrying the email only, then answer immediately with a fixed
+    status and body. No user lookup, Redis or SMTP happens in this
+    request, so response time and content reveal nothing about whether
+    the account exists. A broker failure is logged and answered the same
+    way. Throttled per IP and per email (Task P2.5, accounts/throttles.py).
+    """
+
+    serializer_class = PasswordResetRequestSerializer
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [
+        PasswordResetRequestIPThrottle,
+        PasswordResetRequestIdentifierThrottle,
+    ]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            send_password_reset_otp_task.delay(serializer.validated_data["email"])
+        except Exception as exc:
+            logger.error(
+                "Password reset OTP task enqueue failed (%s).", type(exc).__name__
+            )
+
+        return Response(
+            {"detail": PASSWORD_RESET_REQUEST_MESSAGE},
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+class PasswordResetVerifyView(generics.GenericAPIView):
+    """
+    POST /api/v1/auth/password-reset/verify/ (Task P2.4)
+
+    Exchanges email + OTP for a one-time reset token through
+    services.verify_otp_and_issue_reset_token(). Every failure kind
+    (wrong, expired, attempts used up, unknown email) gets the same
+    unified response. Throttled per IP and per email (Task P2.5).
+    """
+
+    serializer_class = PasswordResetVerifySerializer
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [
+        PasswordResetVerifyIPThrottle,
+        PasswordResetVerifyIdentifierThrottle,
+    ]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        token = services.verify_otp_and_issue_reset_token(
+            serializer.validated_data["email"], serializer.validated_data["otp"]
+        )
+        if token is None:
+            raise PasswordResetInvalid()
+        return Response({"reset_token": token}, status=status.HTTP_200_OK)
+
+
+class PasswordResetConfirmView(generics.GenericAPIView):
+    """
+    POST /api/v1/auth/password-reset/confirm/ (Task P2.4)
+
+    Sets the new password through services.confirm_password_reset(). A
+    weak password is answered with the password errors and leaves the reset
+    token valid; any other failure gets the unified response. Throttled
+    per IP and per email (Task P2.5).
+    """
+
+    serializer_class = PasswordResetConfirmSerializer
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [
+        PasswordResetConfirmIPThrottle,
+        PasswordResetConfirmIdentifierThrottle,
+    ]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            changed = services.confirm_password_reset(
+                data["email"], data["reset_token"], data["new_password"]
+            )
+        except DjangoValidationError as exc:
+            raise ValidationError({"new_password": list(exc.messages)})
+        if not changed:
+            raise PasswordResetInvalid()
+        return Response(
+            {"detail": "Password has been reset."}, status=status.HTTP_200_OK
+        )
