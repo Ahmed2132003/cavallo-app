@@ -23,7 +23,6 @@ from businesses.models import BusinessProfile
 from categories.models import Category
 from core.tests.test_media import _DISGUISED_EXE_BYTES, _VALID_PNG_BYTES
 from products.models import Product, ProductVariant
-from core.tests.test_media import _VALID_PNG_BYTES
 
 pytestmark = pytest.mark.django_db
 
