@@ -38,13 +38,12 @@ services:
   # MinIO console or hit the S3 API directly from the host machine;
   # Django itself never uses the host ports.
   #
-  # NOTE: MinIO's OSS project was archived by MinIO Inc. and the last
-  # image published to Docker Hub (minio/minio, minio/mc) shipped with
-  # an unpatched high-severity CVE, so it's no longer safe/available to
-  # pull from docker.io. Pulling from quay.io/minio instead, which is
-  # still the maintained distribution channel.
+  # NOTE: MinIO Inc. stopped distributing images (Docker Hub and quay.io now
+  # refuse pulls). These are pinned third-party mirrors of MinIO releases,
+  # also used by docker-compose.devicetest.yml. Dev only; for anything real
+  # prefer a maintained S3 provider.
   minio:
-    image: quay.io/minio/minio:latest
+    image: scnd/minio-mirror:RELEASE.2025-09-07T16-13-09Z
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
@@ -69,7 +68,7 @@ services:
   # bucket is already there (e.g. on every `docker compose up` after
   # the first one, since minio_data is a persistent volume).
   createbuckets:
-    image: quay.io/minio/mc:latest
+    image: scnd/mc-mirror:RELEASE.2025-02-04T04-57-50Z
     depends_on:
       minio:
         condition: service_healthy
