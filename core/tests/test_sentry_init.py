@@ -33,6 +33,7 @@ def test_init_sentry_with_dsn_initializes_with_environment():
     assert kwargs["traces_sample_rate"] == 0.0
     assert kwargs["send_default_pii"] is False
 
+
 def test_sentry_is_not_initialized_under_test_settings():
     # The test run uses config.settings.test -> dev -> base. None of them
     # may call sentry_sdk.init, whatever SENTRY_DSN holds in .env.

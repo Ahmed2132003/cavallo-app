@@ -199,9 +199,7 @@ def _reset_payload(endpoint, email):
 # ------------------------------------------------------------- happy path
 
 
-def test_full_flow_over_http_then_login_works_only_with_the_new_password(
-    client, user
-):
+def test_full_flow_over_http_then_login_works_only_with_the_new_password(client, user):
     assert _login(client, user.email, OLD_PASSWORD).status_code == 200
 
     otp = _request_otp(client, user.email)
@@ -265,7 +263,9 @@ def test_confirm_blacklists_refresh_tokens_from_real_logins_and_spares_others(
 
     assert BlacklistedToken.objects.filter(token__user=user).count() == 2
     for pair in (first, second):
-        assert _post(client, URL_REFRESH, {"refresh": pair["refresh"]}).status_code == 401
+        assert (
+            _post(client, URL_REFRESH, {"refresh": pair["refresh"]}).status_code == 401
+        )
     # A session opened with the new password works.
     fresh = _login(client, user.email, NEW_PASSWORD).json()
     assert _post(client, URL_REFRESH, {"refresh": fresh["refresh"]}).status_code == 200
@@ -347,9 +347,7 @@ def test_login_is_unaffected_by_exhausted_reset_throttles(client, settings, user
     wrong = _login(client, user.email, "Wr0ng-Str0ng-Uncommon-Pass!")
     assert wrong.status_code in FAILED_LOGIN
     # The reset scopes stayed exhausted the whole time.
-    assert (
-        _post(client, URL_REQUEST, {"email": user.email}).status_code == 429
-    )
+    assert _post(client, URL_REQUEST, {"email": user.email}).status_code == 429
 
 
 # ------------------------------------------------------------ OTP reissue
@@ -393,7 +391,11 @@ def test_flow_never_leaks_otp_token_or_passwords_into_logs_or_responses(
 
     # The token is returned in the verify body by design, so that body is
     # only checked for the passwords and nothing else.
-    for body in (request.content.decode(), weak.content.decode(), confirmed.content.decode()):
+    for body in (
+        request.content.decode(),
+        weak.content.decode(),
+        confirmed.content.decode(),
+    ):
         for secret in (otp, token, NEW_PASSWORD, OLD_PASSWORD):
             assert secret not in body
     assert NEW_PASSWORD not in verified.content.decode()

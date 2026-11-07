@@ -228,7 +228,9 @@ def test_throttles_are_attached_only_to_the_password_reset_views():
         views.PasswordResetConfirmView,
     ):
         assert len(view.throttle_classes) == 2
-        assert all(t.__name__.startswith("PasswordReset") for t in view.throttle_classes)
+        assert all(
+            t.__name__.startswith("PasswordReset") for t in view.throttle_classes
+        )
 
     assert views.LoginView.throttle_classes == [LoginRateThrottle]
     for view in (
@@ -257,7 +259,9 @@ def test_cache_keys_contain_the_hash_never_the_raw_email(client, endpoint):
     assert keys
     assert local not in joined.lower()
     assert "example.com" not in joined.lower()
-    assert hashlib.sha256(email.strip().casefold().encode("utf-8")).hexdigest() in joined
+    assert (
+        hashlib.sha256(email.strip().casefold().encode("utf-8")).hexdigest() in joined
+    )
 
 
 # ------------------------------------------------------------------- client IP
@@ -290,7 +294,9 @@ def test_forged_x_forwarded_for_cannot_bypass_the_ip_limit(client, settings):
 # ------------------------------------------------------------------ robustness
 
 
-@pytest.mark.parametrize("payload", [{}, {"email": None}, {"email": ["a@example.com"]}, []])
+@pytest.mark.parametrize(
+    "payload", [{}, {"email": None}, {"email": ["a@example.com"]}, []]
+)
 @pytest.mark.parametrize("endpoint", ENDPOINTS)
 def test_unusable_identifier_is_a_400_not_a_server_error(client, endpoint, payload):
     response = client.post(reverse(ENDPOINTS[endpoint][0]), payload, format="json")

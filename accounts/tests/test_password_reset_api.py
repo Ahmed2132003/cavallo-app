@@ -112,6 +112,7 @@ def _redis_keys_for(redis_conn, email):
         if b"throttle_" not in k
     )
 
+
 def _issue_reset_token(email):
     otp = services.create_password_reset_otp(email)
     token = services.verify_otp_and_issue_reset_token(email, otp)
@@ -268,20 +269,30 @@ def test_verify_every_failure_kind_gives_the_same_response(
     # Wrong OTP.
     otp = services.create_password_reset_otp(user.email)
     wrong = "000000" if otp != "000000" else "111111"
-    snapshots.append(_snapshot(_post(client, URL_VERIFY, {"email": user.email, "otp": wrong})))
+    snapshots.append(
+        _snapshot(_post(client, URL_VERIFY, {"email": user.email, "otp": wrong}))
+    )
     # Malformed OTP.
-    snapshots.append(_snapshot(_post(client, URL_VERIFY, {"email": user.email, "otp": "abc"})))
+    snapshots.append(
+        _snapshot(_post(client, URL_VERIFY, {"email": user.email, "otp": "abc"}))
+    )
     # Expired / never issued.
     redis_conn.delete(*services._otp_keys(services._normalize_email(user.email)))
-    snapshots.append(_snapshot(_post(client, URL_VERIFY, {"email": user.email, "otp": otp})))
+    snapshots.append(
+        _snapshot(_post(client, URL_VERIFY, {"email": user.email, "otp": otp}))
+    )
     # Unknown email.
-    snapshots.append(_snapshot(_post(client, URL_VERIFY, {"email": unknown_email, "otp": "123456"})))
+    snapshots.append(
+        _snapshot(_post(client, URL_VERIFY, {"email": unknown_email, "otp": "123456"}))
+    )
     # Attempts used up: the right OTP is refused after five wrong tries.
     good = services.create_password_reset_otp(other.email)
     bad = "000000" if good != "000000" else "111111"
     for _ in range(services.OTP_MAX_ATTEMPTS):
         _post(client, URL_VERIFY, {"email": other.email, "otp": bad})
-    snapshots.append(_snapshot(_post(client, URL_VERIFY, {"email": other.email, "otp": good})))
+    snapshots.append(
+        _snapshot(_post(client, URL_VERIFY, {"email": other.email, "otp": good}))
+    )
 
     assert all(s == snapshots[0] for s in snapshots)
     assert snapshots[0][0] == 400
@@ -297,15 +308,21 @@ def test_confirm_success_changes_password_and_token_is_single_use(client, user):
     response = _confirm(client, user.email, token)
 
     assert response.status_code == 200
-    assert services.authenticate_user(email=user.email, password=NEW_PASSWORD) is not None
+    assert (
+        services.authenticate_user(email=user.email, password=NEW_PASSWORD) is not None
+    )
     assert services.authenticate_user(email=user.email, password=OLD_PASSWORD) is None
     with mock.patch.object(LoginRateThrottle, "allow_request", return_value=True):
-        login = _post(client, "accounts:login", {"email": user.email, "password": NEW_PASSWORD})
+        login = _post(
+            client, "accounts:login", {"email": user.email, "password": NEW_PASSWORD}
+        )
     assert login.status_code == 200
 
     again = _confirm(client, user.email, token, password="An0ther-Str0ng-Pass!")
     assert again.status_code == 400
-    assert services.authenticate_user(email=user.email, password=NEW_PASSWORD) is not None
+    assert (
+        services.authenticate_user(email=user.email, password=NEW_PASSWORD) is not None
+    )
 
 
 def test_confirm_is_case_insensitive_on_email(client, user):
@@ -323,7 +340,9 @@ def test_confirm_token_for_a_different_email_is_rejected(client, user, cleanup):
     response = _confirm(client, user.email, token)
 
     assert response.status_code == 400
-    assert services.authenticate_user(email=user.email, password=OLD_PASSWORD) is not None
+    assert (
+        services.authenticate_user(email=user.email, password=OLD_PASSWORD) is not None
+    )
     # The other user's token was not burned by the failed attempt.
     assert _confirm(client, other.email, token).status_code == 200
 
@@ -392,7 +411,9 @@ def test_confirm_weak_password_is_rejected_and_token_stays_valid(client, user):
 
     assert weak.status_code == 400
     assert "new_password" in str(weak.json())
-    assert services.authenticate_user(email=user.email, password=OLD_PASSWORD) is not None
+    assert (
+        services.authenticate_user(email=user.email, password=OLD_PASSWORD) is not None
+    )
     # Same token still works with a strong password.
     assert _confirm(client, user.email, token).status_code == 200
 
@@ -422,4 +443,6 @@ def test_full_flow_request_verify_confirm(client, user):
 
     confirmed = _confirm(client, user.email, verified.json()["reset_token"])
     assert confirmed.status_code == 200
-    assert services.authenticate_user(email=user.email, password=NEW_PASSWORD) is not None
+    assert (
+        services.authenticate_user(email=user.email, password=NEW_PASSWORD) is not None
+    )
