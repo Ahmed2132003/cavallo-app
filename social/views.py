@@ -38,6 +38,23 @@ from notifications.tasks import enqueue_notification
 
 from .models import Comment, Follow, Like, Save, Share
 
+from django.apps import apps
+from django.contrib.contenttypes.models import ContentType
+from rest_framework.exceptions import ValidationError
+
+from rest_framework.generics import ListAPIView
+
+from core.pagination import StandardCursorPagination
+
+from .serializers import (
+    CommentCreateSerializer,
+    CommentListQuerySerializer,
+    CommentSerializer,
+    SaveSerializer,
+    ShareCreateSerializer,
+)
+
+
 User = get_user_model()
 
 
@@ -129,10 +146,6 @@ class FollowToggleView(APIView):
         _invalidate_home_feed_cache(request.user.id)
         return Response({"following": False})
 
-
-from django.apps import apps
-from django.contrib.contenttypes.models import ContentType
-from rest_framework.exceptions import ValidationError
 
 # Whitelist of content_type strings this endpoint accepts, mapped to
 # (app_label, model_name). Deliberately explicit and closed — NOT
@@ -294,19 +307,6 @@ class SaveToggleView(APIView):
         ).delete()
 
         return Response({"saved": False})
-
-
-from rest_framework.generics import ListAPIView
-
-from core.pagination import StandardCursorPagination
-
-from .serializers import (
-    CommentCreateSerializer,
-    CommentListQuerySerializer,
-    CommentSerializer,
-    SaveSerializer,
-    ShareCreateSerializer,
-)
 
 
 class SaveListView(ListAPIView):

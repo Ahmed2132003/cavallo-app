@@ -228,9 +228,11 @@ def _search_scenario():
 
 def _names(result, content_type):
     return [
-        item.obj.business_name
-        if content_type == CONTENT_TYPE_BUSINESS
-        else item.obj.name
+        (
+            item.obj.business_name
+            if content_type == CONTENT_TYPE_BUSINESS
+            else item.obj.name
+        )
         for item in result["items"]
         if item.content_type == content_type
     ]

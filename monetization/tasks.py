@@ -56,9 +56,7 @@ def expire_featured_subscriptions():
     deactivated by this run) so callers/tests can assert on it.
     """
     now = timezone.now()
-    expired = FeaturedSubscription.objects.filter(
-        is_active=True, expires_at__lte=now
-    )
+    expired = FeaturedSubscription.objects.filter(is_active=True, expires_at__lte=now)
     deactivated = deactivate_subscriptions(expired)
     logger.info(
         "expire_featured_subscriptions finished",

@@ -8,6 +8,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.views import TokenRefreshView
+from rest_framework.views import APIView
 
 from accounts import services
 from accounts.serializers import (
@@ -152,14 +153,6 @@ class LogoutView(generics.GenericAPIView):
         return Response(
             {"detail": "Successfully logged out."}, status=status.HTTP_200_OK
         )
-
-
-# ADD to accounts/views.py
-
-# 1. Add this import alongside the existing rest_framework imports:
-from rest_framework.views import APIView
-
-# 2. Append this class at the end of the file:
 
 
 class MeView(APIView):

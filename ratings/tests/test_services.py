@@ -88,9 +88,7 @@ class TestRateBusinessUpsert:
         customer = _make_user("customer", f"p109-c3-{uuid4().hex[:12]}@example.com")
         business = _make_business(uuid4().hex[:12])
 
-        rate_business(
-            customer=customer, business=business, score=3, review_text="Meh."
-        )
+        rate_business(customer=customer, business=business, score=3, review_text="Meh.")
         rate_business(
             customer=customer,
             business=business,

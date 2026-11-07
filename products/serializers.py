@@ -42,6 +42,7 @@ from .models import Product, ProductVariant
 _ALLOWED_IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"]
 _MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
 
+
 class _FormSafeBooleanField(serializers.BooleanField):
     """
     Part P-094 (finding F-3). DRF treats a MISSING BooleanField in
@@ -54,6 +55,7 @@ class _FormSafeBooleanField(serializers.BooleanField):
     """
 
     default_empty_html = serializers.empty
+
 
 class ProductVariantSerializer(serializers.ModelSerializer):
     """Read-only nested representation of a Product's variants.
