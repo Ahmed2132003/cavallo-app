@@ -312,6 +312,7 @@ DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="") or "noreply@local
 # DRF / JWT
 # ---------------------------------------------------------------------------
 
+
 def _num_proxies(default):
     """
     REST_FRAMEWORK NUM_PROXIES from the NUM_PROXIES env var (Task P2.5).
@@ -325,6 +326,7 @@ def _num_proxies(default):
     """
     raw = env.str("NUM_PROXIES", default="").strip()
     return int(raw) if raw else default
+
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
@@ -378,6 +380,7 @@ SIMPLE_JWT = {
     "UPDATE_LAST_LOGIN": True,
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
+
 
 # ---------------------------------------------------------------------------
 # Password reset throttle rates — Task P2.5 (see accounts/throttles.py).

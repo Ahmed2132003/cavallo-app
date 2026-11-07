@@ -323,9 +323,7 @@ def verify_password_reset_otp(email, otp):
     if not separator:
         return False
     supplied = _otp_digest(normalized, issuance_id, otp)
-    if not hmac.compare_digest(
-        stored_digest.encode("ascii"), supplied.encode("ascii")
-    ):
+    if not hmac.compare_digest(stored_digest.encode("ascii"), supplied.encode("ascii")):
         return False
 
     return _consume_otp(conn, otp_key, attempts_key, stored_value)
@@ -564,6 +562,7 @@ def request_password_reset_otp(email):
         )
     return None
 
+
 # ---------------------------------------------------------------------------
 # Password reset confirm (Task P2.4)
 #
@@ -616,9 +615,7 @@ def confirm_password_reset(email, reset_token, new_password):
     if not normalized:
         return False
 
-    candidates = list(
-        User.objects.filter(email__iexact=normalized, is_active=True)[:2]
-    )
+    candidates = list(User.objects.filter(email__iexact=normalized, is_active=True)[:2])
     if len(candidates) != 1:
         return False
     user = candidates[0]

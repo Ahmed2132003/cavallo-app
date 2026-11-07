@@ -184,7 +184,9 @@ class TestInitSentry:
 
     def test_init_passes_the_scrubber_and_before_send_and_keeps_pii_off(self):
         with mock.patch.object(sentry_config.sentry_sdk, "init") as init:
-            assert sentry_config.init_sentry("https://k@example.invalid/1", "prod") is True
+            assert (
+                sentry_config.init_sentry("https://k@example.invalid/1", "prod") is True
+            )
 
         init.assert_called_once()
         kwargs = init.call_args.kwargs

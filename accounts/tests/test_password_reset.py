@@ -171,7 +171,9 @@ def test_stale_issuance_cannot_consume_reissued_otp(redis_conn, email):
         stale_value = _stored_value(redis_conn, email)
         second = create_password_reset_otp(email)
 
-    assert services._consume_otp(redis_conn, otp_key, attempts_key, stale_value) is False
+    assert (
+        services._consume_otp(redis_conn, otp_key, attempts_key, stale_value) is False
+    )
     assert verify_password_reset_otp(email, second) is True
 
 
@@ -199,6 +201,7 @@ def test_stale_issuance_cannot_consume_reissue_with_identical_otp(redis_conn, em
     assert verify_password_reset_otp(email, second) is True
     assert verify_password_reset_otp(email, second) is False
 
+
 def test_email_with_colon_in_local_part(redis_conn):
     address = f'"a:b-{uuid4().hex}"@example.com'
     try:
@@ -207,6 +210,7 @@ def test_email_with_colon_in_local_part(redis_conn):
         assert verify_password_reset_otp(address, otp) is False
     finally:
         redis_conn.delete(*services._otp_keys(address))
+
 
 def test_email_normalization_is_consistent(email):
     otp = create_password_reset_otp(f"  {email.upper()}  ")
@@ -240,5 +244,7 @@ def test_malformed_otp_rejected_without_consuming_attempt(redis_conn, email, bad
 def test_concurrent_verifications_allow_only_one_success(email):
     otp = create_password_reset_otp(email)
     with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(lambda _: verify_password_reset_otp(email, otp), range(8)))
+        results = list(
+            pool.map(lambda _: verify_password_reset_otp(email, otp), range(8))
+        )
     assert results.count(True) == 1
