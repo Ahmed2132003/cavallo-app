@@ -13584,3 +13584,12 @@ Date 2026-11-05, branch develop. Corrects commit 665a4ee: EMAIL_USE_TLS and EMAI
 - base.py: EMAIL_USE_SSL and EMAIL_USE_TLS are now env-driven (1/true/yes/on; blank = default). TLS defaults to on unless SSL is on. Enabling both raises ImproperlyConfigured.
 - .env.example: added EMAIL_HOST, EMAIL_PORT, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD, EMAIL_USE_TLS, EMAIL_USE_SSL, EMAIL_TIMEOUT, DEFAULT_FROM_EMAIL.
 - dev.py unchanged: still overrides EMAIL_BACKEND with the console backend.
+## Password reset - real SMTP delivery from Docker (dev stack)
+
+Date 2026-11-08, branch develop. Status: PARTIAL.
+- dev.py: EMAIL_USE_REAL_SMTP (default false = console backend; true = SMTP settings from base.py). base.py: DEFAULT_FROM_EMAIL falls back to EMAIL_HOST_USER, then noreply@localhost. TLS+SSL still raises ImproperlyConfigured.
+- docker-compose.yml unchanged: web, celery_worker and celery_beat already get every EMAIL_* variable through env_file: .env.
+- New: python manage.py send_test_email --to <addr> (prints backend/host/port/tls/ssl/from, never the password). .env.example documents the Gmail setup.
+- New tests: accounts/tests/test_email_settings.py, accounts/tests/test_password_reset_otp_not_logged.py.
+- PASSED (Docker, Postgres): accounts/ + core/ = 357 passed, 1 skipped. black --check and flake8 clean on every file of this change. send_test_email against Gmail SMTP (smtp.gmail.com:587, TLS) printed OK, meaning the server accepted the message; the test email arrived in the inbox (confirmed by the owner). prod.py and staging.py have unrelated local edits (W292 + black) that are NOT part of this commit.
+- NOT VERIFIED (deferred until the Flutter password-reset flow is built): full register/request/verify/confirm/login flow with a real OTP email, celery_worker logs checked for OTP/password after a real flow, lockout / expired OTP / unknown-email behaviour against real SMTP.

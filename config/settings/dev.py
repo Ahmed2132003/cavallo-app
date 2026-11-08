@@ -19,5 +19,9 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
 # while iterating locally. Never used in staging/prod.
 CORS_ALLOW_ALL_ORIGINS = True
 
-# Never send real email locally — print it to the runserver console instead.
-EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+# Email: console backend by default (the OTP is printed to the console, which
+# is the ONLY place a raw OTP ever shows up in logs). Set
+# EMAIL_USE_REAL_SMTP=true in .env to use the SMTP settings from base.py
+# (EMAIL_HOST, EMAIL_PORT, EMAIL_HOST_USER, ...) instead.
+if not EMAIL_USE_REAL_SMTP:  # noqa: F405
+    EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"

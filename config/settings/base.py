@@ -306,7 +306,17 @@ if EMAIL_USE_TLS and EMAIL_USE_SSL:
         "EMAIL_USE_TLS and EMAIL_USE_SSL are mutually exclusive; set only one."
     )
 EMAIL_TIMEOUT = int(env.str("EMAIL_TIMEOUT", default="") or 10)
-DEFAULT_FROM_EMAIL = env.str("DEFAULT_FROM_EMAIL", default="") or "noreply@localhost"
+# Only dev.py reads this: false (default) = console backend, true = the real
+# SMTP backend configured above. staging/prod always use SMTP regardless.
+EMAIL_USE_REAL_SMTP = _email_flag("EMAIL_USE_REAL_SMTP", False)
+# Gmail (and most providers) reject a From address that differs from the
+# authenticated user, so when DEFAULT_FROM_EMAIL is blank, fall back to
+# EMAIL_HOST_USER, then to the old placeholder.
+DEFAULT_FROM_EMAIL = (
+    env.str("DEFAULT_FROM_EMAIL", default="").strip()
+    or EMAIL_HOST_USER
+    or "noreply@localhost"
+)
 
 # ---------------------------------------------------------------------------
 # DRF / JWT
