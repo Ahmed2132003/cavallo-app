@@ -7,12 +7,28 @@ SECURE_PROXY_SSL_HEADER (TLS terminates at Nginx). HSTS is still left for an
 owner decision rather than guessed at here.
 """
 
+from django.core.exceptions import ImproperlyConfigured
+
 from .base import *  # noqa: F401,F403
-from .base import REST_FRAMEWORK, SENTRY_DSN, _num_proxies, env
+from .base import (
+    JWT_ACCESS_TTL_MINUTES,
+    REST_FRAMEWORK,
+    SENTRY_DSN,
+    _num_proxies,
+    env,
+)
 
 from config.sentry import init_sentry
 
 DEBUG = False
+
+# Pre-deploy hardening: access tokens stay valid after a password reset until
+# they expire, so refuse to start with a long lifetime.
+if JWT_ACCESS_TTL_MINUTES > 15:
+    raise ImproperlyConfigured(
+        "JWT_ACCESS_TTL_MINUTES must be <= 15 on prod "
+        f"(got {JWT_ACCESS_TTL_MINUTES})."
+    )
 
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
 
@@ -32,7 +48,9 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # Task P2.5: one trusted proxy (Nginx) in front of Django, so the client IP is
 # the LAST X-Forwarded-For entry (the one Nginx appended). Set NUM_PROXIES in
-# .env to override (e.g. 2 if Cloudflare is ever put in front of Nginx).
+# .env to override (e.g. 2 if Cloudflare, or another proxy because HTTP_PORT /
+# HTTPS_PORT are remapped, is in front of Nginx). Too low = every user shares
+# one IP; too high = clients can forge X-Forwarded-For.
 # This is a global DRF setting: it also fixes the IP that LoginRateThrottle sees.
 REST_FRAMEWORK = {**REST_FRAMEWORK, "NUM_PROXIES": _num_proxies(default=1)}
 

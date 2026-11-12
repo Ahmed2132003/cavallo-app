@@ -144,6 +144,15 @@ class User(AbstractUser, TimestampedModel):
         help_text="UI and notification language (ar or en).",
     )
 
+    # Part P-116A-1: profile picture + display name for EVERY user
+    # (Customer/Business/Moderator/Staff), independent of
+    # CustomerProfile/BusinessProfile. The avatar goes through the
+    # default storage (core.storage_backends.MediaStorage). It is only
+    # ever written via accounts.services.update_own_profile(), after
+    # AvatarUploadSerializer-level validation (core.media.validate_upload).
+    avatar = models.FileField(upload_to="avatars/", null=True, blank=True)
+    display_name = models.CharField(max_length=80, blank=True, default="")
+
     class Meta:
         db_table = "accounts_user"
         # Part P-019: initial capability set, defined here (on User)

@@ -7,6 +7,7 @@ import logging
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import generics, status
 from rest_framework.exceptions import ValidationError
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.exceptions import TokenError
@@ -19,6 +20,7 @@ from accounts.serializers import (
     LoginSerializer,
     LogoutSerializer,
     MePreferencesSerializer,
+    MeProfileUpdateSerializer,
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
     PasswordResetVerifySerializer,
@@ -184,6 +186,26 @@ class LogoutView(generics.GenericAPIView):
 # 2. Append this class at the end of the file:
 
 
+def build_me_payload(user, request):
+    """
+    The one place the /auth/me/ response shape is defined (shared by
+    MeView and MeProfileView). ``avatar`` is an absolute URL or null.
+    """
+    avatar_url = None
+    if user.avatar:
+        avatar_url = request.build_absolute_uri(user.avatar.url)
+    return {
+        "id": user.id,
+        "email": user.email,
+        "account_type": user.account_type,
+        "is_moderator": user.is_moderator,
+        "is_staff": user.is_staff,
+        "preferred_language": user.preferred_language,
+        "display_name": user.display_name,
+        "avatar": avatar_url,
+    }
+
+
 class MeView(APIView):
     """
     GET /api/v1/auth/me/
@@ -213,17 +235,8 @@ class MeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        user = request.user
         return Response(
-            {
-                "id": user.id,
-                "email": user.email,
-                "account_type": user.account_type,
-                "is_moderator": user.is_moderator,
-                "is_staff": user.is_staff,
-                "preferred_language": user.preferred_language,
-            },
-            status=status.HTTP_200_OK,
+            build_me_payload(request.user, request), status=status.HTTP_200_OK
         )
 
     def patch(self, request, *args, **kwargs):
@@ -246,6 +259,37 @@ class MeView(APIView):
             user.save(update_fields=changed + ["updated_at"])
 
         return self.get(request, *args, **kwargs)
+
+
+class MeProfileView(APIView):
+    """
+    PATCH /api/v1/auth/me/profile/ (Part P-116A-1)
+
+    Lets ANY authenticated user (Customer, Business, Moderator, Staff -
+    no CustomerProfile/BusinessProfile needed) change their own
+    ``display_name`` and avatar. Always operates on ``request.user``; no
+    id is read from the URL or body, and role/identity fields in the body
+    are never declared on the serializer, so they are ignored. Accepts
+    multipart (for the file) or JSON (display_name / remove_avatar).
+    Responds with the same shape as GET /api/v1/auth/me/.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    http_method_names = ["patch", "options"]
+
+    def patch(self, request, *args, **kwargs):
+        serializer = MeProfileUpdateSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        user = services.update_own_profile(
+            request.user,
+            display_name=data.get("display_name"),
+            avatar=data.get("avatar"),
+            remove_avatar=data.get("remove_avatar", False),
+        )
+        return Response(build_me_payload(user, request), status=status.HTTP_200_OK)
 
 
 class PasswordResetRequestView(generics.GenericAPIView):

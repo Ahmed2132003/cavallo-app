@@ -633,3 +633,71 @@ def confirm_password_reset(email, reset_token, new_password):
         user.save()
         _blacklist_all_outstanding_tokens(user)
     return True
+
+
+def update_own_profile(user, *, display_name=None, avatar=None, remove_avatar=False):
+    """
+    Apply a self-service profile change (Part P-116A-1).
+
+    ``avatar`` must already have been validated by the serializer
+    (core.media.validate_upload) - this function never validates files.
+    Operates on the given ``user`` only.
+
+    Order matters for storage hygiene:
+      1. save the row (the new file is uploaded to storage during save);
+      2. only AFTER the save succeeded, delete the previous file;
+      3. if the save fails, delete the just-uploaded file (no orphan)
+         and re-raise, leaving the old avatar untouched.
+    A failure to delete the OLD file is logged and swallowed: the
+    request already succeeded and a leftover object is harmless.
+
+    display_name sync: User.display_name is the source of truth. When it
+    changes, the value is written through to the user's CustomerProfile
+    (if one exists) in the same transaction, cut to that column's
+    max_length. See PROJECT_PROGRESS notes for P-116A-1.
+    """
+    old_name = user.avatar.name if user.avatar else None
+    update_fields = ["updated_at"]
+
+    if display_name is not None:
+        user.display_name = display_name
+        update_fields.append("display_name")
+    if avatar is not None:
+        user.avatar = avatar
+        update_fields.append("avatar")
+    elif remove_avatar:
+        user.avatar = None
+        update_fields.append("avatar")
+
+    try:
+        with transaction.atomic():
+            user.save(update_fields=update_fields)
+            if display_name is not None:
+                _sync_customer_profile_display_name(user, display_name)
+    except Exception:
+        new_name = user.avatar.name if user.avatar else None
+        if avatar is not None and new_name and new_name != old_name:
+            _delete_stored_file(user.avatar.storage, new_name)
+        raise
+
+    current_name = user.avatar.name if user.avatar else None
+    if old_name and old_name != current_name:
+        _delete_stored_file(user.avatar.storage, old_name)
+    return user
+
+
+def _sync_customer_profile_display_name(user, display_name):
+    # Imported lazily: accounts must not import businesses at module
+    # load time (businesses already imports accounts).
+    from businesses.models import CustomerProfile
+
+    max_length = CustomerProfile._meta.get_field("display_name").max_length
+    value = display_name[:max_length] if max_length else display_name
+    CustomerProfile.objects.filter(user=user).update(display_name=value)
+
+
+def _delete_stored_file(storage, name):
+    try:
+        storage.delete(name)
+    except Exception as exc:  # cleanup must never fail the request
+        logger.warning("Avatar cleanup failed for %s (%s).", name, type(exc).__name__)

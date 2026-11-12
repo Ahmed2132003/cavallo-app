@@ -9,6 +9,7 @@ from django.urls import path
 from accounts.views import (
     LoginView,
     LogoutView,
+    MeProfileView,
     MeView,
     PasswordResetConfirmView,
     PasswordResetRequestView,
@@ -27,6 +28,8 @@ urlpatterns = [
     path("logout/", LogoutView.as_view(), name="logout"),
     # accountType real-value fix: replaces Flutter's P-021a placeholder.
     path("me/", MeView.as_view(), name="me"),
+    # Part P-116A-1: own display_name + avatar (any authenticated user).
+    path("me/profile/", MeProfileView.as_view(), name="me-profile"),
     # Task P2.4: password reset (all public, POST only).
     path(
         "password-reset/request/",

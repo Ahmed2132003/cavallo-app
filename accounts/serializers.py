@@ -12,6 +12,9 @@ P-042), which is why this serializer has no business_type field at all,
 for either account type.
 """
 
+import uuid
+
+import magic
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.contrib.auth.password_validation import validate_password
@@ -19,6 +22,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 
 from accounts.services import authenticate_user
+from core.media import validate_upload
 
 User = get_user_model()
 
@@ -146,6 +150,63 @@ class MePreferencesSerializer(serializers.Serializer):
         choices=[value for value, _label in User.LANGUAGE_CHOICES],
         required=False,
     )
+
+
+# Part P-116A-1: real (sniffed) MIME type -> the only extension the stored
+# object may carry. The client-supplied filename is never kept.
+AVATAR_ALLOWED_TYPES = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
+AVATAR_MAX_BYTES = 5 * 1024 * 1024
+DISPLAY_NAME_MAX_LENGTH = 80
+
+
+class MeProfileUpdateSerializer(serializers.Serializer):
+    """
+    Validates PATCH /api/v1/auth/me/profile/ (Part P-116A-1).
+
+    Only display_name, avatar and remove_avatar are declared, so any other
+    key in the body (is_staff, is_moderator, account_type, email,
+    preferred_language, id, ...) is silently dropped by DRF. Use with
+    ``partial=True``.
+    """
+
+    display_name = serializers.CharField(
+        max_length=DISPLAY_NAME_MAX_LENGTH, allow_blank=True, required=False
+    )
+    avatar = serializers.FileField(required=False)
+    remove_avatar = serializers.BooleanField(required=False)
+
+    def validate_avatar(self, value):
+        # Size + real content type (libmagic), not filename/Content-Type.
+        # Raises Django's ValidationError, which DRF converts into a
+        # field error (see core/media.py's integration note).
+        validate_upload(value, list(AVATAR_ALLOWED_TYPES), AVATAR_MAX_BYTES)
+
+        # Store under a server-generated name with the extension that
+        # matches the real type, so e.g. a PNG uploaded as "x.html" is
+        # never stored/served as HTML.
+        head = value.read(2048)
+        value.seek(0)
+        extension = AVATAR_ALLOWED_TYPES[magic.from_buffer(head, mime=True)]
+        value.name = f"{uuid.uuid4().hex}.{extension}"
+        return value
+
+    def validate(self, attrs):
+        if "avatar" in attrs and attrs.get("remove_avatar"):
+            raise serializers.ValidationError(
+                {"remove_avatar": "Cannot be combined with avatar."}
+            )
+        has_change = (
+            "display_name" in attrs or "avatar" in attrs or attrs.get("remove_avatar")
+        )
+        if not has_change:
+            raise serializers.ValidationError(
+                "Provide at least one of: display_name, avatar, remove_avatar."
+            )
+        return attrs
 
 
 class PasswordResetRequestSerializer(serializers.Serializer):

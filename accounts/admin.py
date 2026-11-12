@@ -29,6 +29,10 @@ class UserAdmin(DjangoUserAdmin):
     fieldsets = DjangoUserAdmin.fieldsets + (
         ("Language (Part P-112)", {"fields": ("preferred_language",)}),
         (
+            "Profile (Part P-116A-1)",
+            {"fields": ("display_name", "avatar")},
+        ),
+        (
             "Account type & roles (Part P-016)",
             {
                 "fields": (
@@ -39,6 +43,10 @@ class UserAdmin(DjangoUserAdmin):
             },
         ),
     )
+    # Part P-116A-1: avatar is read-only here. Uploads only go through
+    # PATCH /api/v1/auth/me/profile/, which runs core.media.validate_upload
+    # (type/size/real-MIME). A plain admin FileField would skip that.
+    readonly_fields = ("avatar",)
     add_fieldsets = DjangoUserAdmin.add_fieldsets + (
         (
             "Account type & roles (Part P-016)",
