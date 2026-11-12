@@ -10,10 +10,11 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from rest_framework.exceptions import NotFound
 
+from accounts.serializers import UserPublicSerializer
 from core.media import validate_upload
 from social.serializers import _preview_for
 
-from .models import Conversation, ConversationParticipant, Message
+from .models import Conversation, Message
 
 # ---------------------------------------------------------------------------
 # Part P-076 — chat media limits (documented, single source of truth).
@@ -459,22 +460,34 @@ class ConversationListSerializer(serializers.ModelSerializer):
 
     def get_other_participant(self, obj):
         request = self.context["request"]
-        participant = (
-            ConversationParticipant.objects.filter(conversation=obj)
-            .exclude(user=request.user)
-            .select_related("user")
-            .first()
+        # P-116A-2: read the participants through the relation so the
+        # list view's Prefetch (participants -> user -> profiles) is used;
+        # picking "the other one" in Python costs no extra query. Without
+        # a prefetch this is still one query per conversation, as before.
+        participant = next(
+            (p for p in obj.participants.all() if p.user_id != request.user.id),
+            None,
         )
         if participant is None:
             # Defensive only — every Conversation always has exactly 2
             # participants per P-066's creation flow; should never happen.
             return None
         user = participant.user
+        # P-116A-2: display_name / avatar come from the shared public
+        # serializer (User.display_name / User.avatar first). The previous
+        # chat-only resolvers stay as the fallback so a user who has set
+        # nothing looks exactly as before (see Findings: that fallback
+        # still derives a name from first/last name or the e-mail prefix).
+        public = UserPublicSerializer(user, context=self.context).data
+        display_name = public["display_name"] or (
+            _resolve_conversation_participant_display_name(user)
+        )
+        avatar = public["avatar"] or _resolve_conversation_participant_avatar(user)
         return {
             "id": user.id,
             "account_type": user.account_type,
-            "display_name": _resolve_conversation_participant_display_name(user),
-            "avatar": _resolve_conversation_participant_avatar(user),
+            "display_name": display_name,
+            "avatar": avatar,
         }
 
     def get_last_message(self, obj):

@@ -12,7 +12,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from django.db.models import F, Max, OuterRef, Subquery
+from django.db.models import F, Max, OuterRef, Prefetch, Subquery
 from rest_framework import generics
 from businesses.models import BusinessProfile
 
@@ -346,9 +346,18 @@ class ConversationListView(generics.ListAPIView):
             .order_by("-created_at")
             .values("created_at")[:1]
         )
+        # P-116A-2: load the other participant's user + both profiles in
+        # one extra query for the whole page (instead of 1 + 2 per row).
+        other_participants = Prefetch(
+            "participants",
+            queryset=ConversationParticipant.objects.exclude(user=user).select_related(
+                "user", "user__business_profile", "user__customer_profile"
+            ),
+        )
         return (
             Conversation.objects.filter(participants__user=user)
             .distinct()
+            .prefetch_related(other_participants)
             .annotate(last_activity_at=Max(last_message_created_at))
             .order_by(F("last_activity_at").desc(nulls_last=True), "-created_at")
         )

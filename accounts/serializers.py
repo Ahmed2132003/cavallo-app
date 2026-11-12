@@ -209,6 +209,63 @@ class MeProfileUpdateSerializer(serializers.Serializer):
         return attrs
 
 
+class UserPublicSerializer(serializers.Serializer):
+    """
+    The ONLY user fields that may be shown to other users (Part P-116A-2).
+
+    Exactly two keys: ``display_name`` and ``avatar``. Nothing else about
+    a user (email, username, phone, role flags, account_type, id) belongs
+    here; callers that need more add it next to this output themselves.
+
+    Read-only; pass a User instance. ``avatar`` is an absolute URL built
+    from ``context["request"]``, or null when the user has no avatar OR
+    there is no request in the context (a relative URL would be useless to
+    the mobile client, so null is returned rather than guessing a host).
+
+    ``display_name`` fallback, in order: User.display_name -> the
+    BusinessProfile business name -> the CustomerProfile display name ->
+    "". Never the e-mail, the username or the first/last name.
+
+    Query cost: the profile lookups read the reverse one-to-one accessors,
+    so list endpoints should ``select_related("business_profile",
+    "customer_profile")`` on the user to stay at zero extra queries.
+    """
+
+    display_name = serializers.SerializerMethodField()
+    avatar = serializers.SerializerMethodField()
+
+    def get_display_name(self, user):
+        own = (user.display_name or "").strip()
+        if own:
+            return own
+
+        # getattr() with a default: the reverse one-to-one descriptor
+        # raises a DoesNotExist that is also an AttributeError subclass,
+        # so a user without that profile yields None here.
+        business_profile = getattr(user, "business_profile", None)
+        if business_profile is not None:
+            business_name = (business_profile.business_name or "").strip()
+            if business_name:
+                return business_name
+
+        customer_profile = getattr(user, "customer_profile", None)
+        if customer_profile is not None:
+            customer_name = (customer_profile.display_name or "").strip()
+            if customer_name:
+                return customer_name
+
+        return ""
+
+    def get_avatar(self, user):
+        request = self.context.get("request")
+        if request is None or not user.avatar:
+            return None
+        try:
+            return request.build_absolute_uri(user.avatar.url)
+        except Exception:  # noqa: BLE001 - a storage hiccup must not break a list
+            return None
+
+
 class PasswordResetRequestSerializer(serializers.Serializer):
     """
     Input for POST /password-reset/request/ (Task P2.4).
