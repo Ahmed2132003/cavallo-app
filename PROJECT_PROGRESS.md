@@ -13659,6 +13659,8 @@ GET /api/v1/auth/me/ (also returned by PATCH /auth/me/ preferences): `{"id", "em
 - Stale names in comments: the User.avatar comment in accounts/models.py mentions "AvatarUploadSerializer", but the serializer that validates the avatar is MeProfileUpdateSerializer; the update_own_profile docstring points to "PROJECT_PROGRESS notes for P-116A-1". Documentation only; not changed.
 - The full run shows 1 skipped and 1 xfailed. The xfail matches the P-096 entry (P-095's strict G-1 marker); the skip was not investigated.
 - manage.py printed "Invalid line" warnings for the SMTP lines of .env (leading spaces), echoing a secret into the terminal output. Not part of P-116A; fix the .env and rotate that secret.
-- Untracked files intentionally NOT committed: DEVICE_TEST.md, P058_review_bundle.txt, accounts.zip, apply_email_smtp_fix.ps1, config/settings/devicetest.py, docker-compose.devicetest.yml, env.example, nginx/devicetest.conf, p116a2a.patch, scripts/deploy/devicetest_deploy.ps1, scripts/deploy/devicetest_up.sh.
+- Untracked files intentionally NOT committed: DEVICE_TEST.md, 
+- Commit db6c209 shows 8 lines deleted and re-added in the older "Password reset - real SMTP delivery from Docker (dev stack)" entry (and the last line of "Phase 1 correction"). `git diff -w` shows no change of content (whitespace/line endings only; 68 insertions, 0 deletions). Not reverted.
+P058_review_bundle.txt, accounts.zip, apply_email_smtp_fix.ps1, config/settings/devicetest.py, docker-compose.devicetest.yml, env.example, nginx/devicetest.conf, p116a2a.patch, scripts/deploy/devicetest_deploy.ps1, scripts/deploy/devicetest_up.sh.
 
 Tracking line: P-116A COMPLETE (backend, 2026-11-13): avatar and display_name available in /auth/me, /auth/me/profile, chat other_participant, comments and ratings; exceptions: the four out-of-scope files inside A1, production storage and the settings change not verified, mobile not yet using the fields.
