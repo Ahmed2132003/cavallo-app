@@ -13593,3 +13593,71 @@ Date 2026-11-08, branch develop. Status: PARTIAL.
 - New tests: accounts/tests/test_email_settings.py, accounts/tests/test_password_reset_otp_not_logged.py.
 - PASSED (Docker, Postgres): accounts/ + core/ = 357 passed, 1 skipped. black --check and flake8 clean on every file of this change. send_test_email against Gmail SMTP (smtp.gmail.com:587, TLS) printed OK, meaning the server accepted the message; the test email arrived in the inbox (confirmed by the owner). prod.py and staging.py have unrelated local edits (W292 + black) that are NOT part of this commit.
 - NOT VERIFIED (deferred until the Flutter password-reset flow is built): full register/request/verify/confirm/login flow with a real OTP email, celery_worker logs checked for OTP/password after a real flow, lockout / expired OTP / unknown-email behaviour against real SMTP.
+
+
+## PART P-116A — Backend: user avatar + display_name (profile, chat, comments, ratings) — STATUS: COMPLETE (with recorded exceptions)
+
+Date 2026-11-13, branch part-116a. Backend only (cavallo-app); cavallo-mobile untouched. One migration (A1 only); A2a, A2b, A2c and A3 add none. No model change after A1.
+
+### What was built
+- A1 (90720df): User.avatar + User.display_name, PATCH /api/v1/auth/me/profile/, new fields on GET /api/v1/auth/me/.
+- A2a (eff5347): UserPublicSerializer (accounts/serializers.py), used for chat other_participant; participants/user/profiles prefetched on the conversation list.
+- A2b (3f7d251): CommentSerializer gets `user_public` via UserPublicSerializer; the bare `user` id stays.
+- A2c (77d3a2c): the public ratings list gets `reviewer` via UserPublicSerializer; queryset uses select_related (no N+1).
+- A3: verification and this entry only (no code change).
+
+### Files created / modified
+Modified: accounts/admin.py, accounts/models.py, accounts/serializers.py, accounts/services.py, accounts/urls.py, accounts/views.py, accounts/tests/test_me.py, chat/serializers.py, chat/views.py, social/serializers.py, social/views.py, ratings/serializers.py, ratings/views.py.
+Created: accounts/migrations/0006_user_avatar_display_name.py, accounts/tests/test_profile_avatar.py, accounts/tests/test_user_public_serializer.py, chat/test_participant_public.py, social/tests/test_comment_user_public.py, ratings/tests/test_reviewer_public.py.
+Also inside commit 90720df but NOT part of P-116A (see Findings): config/settings/prod.py, config/settings/staging.py, docker-compose.prod.yml, docker-compose.staging.yml.
+
+### Endpoint contract (from the code of 90720df)
+PATCH /api/v1/auth/me/profile/ — any authenticated user (Customer, Business, Moderator, Staff); always acts on request.user. Methods allowed: PATCH, OPTIONS. Body: multipart, form or JSON.
+- display_name: string, optional, max 80 characters, blank allowed (clears it).
+- avatar: file, optional. Allowed real types (sniffed with libmagic, not filename or Content-Type): image/jpeg, image/png, image/webp. Max 5 MB. Stored under a server-generated name (uuid + extension of the real type); the client filename is never kept.
+- remove_avatar: boolean, optional. Cannot be combined with avatar.
+- At least one of display_name, avatar, remove_avatar is required. Any other key (id, email, is_staff, is_moderator, account_type, preferred_language, ...) is silently ignored.
+- Response 200: same shape as GET /api/v1/auth/me/ (below).
+- Errors (P-012 envelope): 401 when not authenticated; 400 VALIDATION_ERROR for display_name over 80 characters, avatar of a wrong type or over 5 MB (messages come from core.media.validate_upload), avatar together with remove_avatar ({"remove_avatar": "Cannot be combined with avatar."}), and an empty body ("Provide at least one of: display_name, avatar, remove_avatar."); 405 for other methods.
+
+GET /api/v1/auth/me/ (also returned by PATCH /auth/me/ preferences): `{"id", "email", "account_type", "is_moderator", "is_staff", "preferred_language", "display_name", "avatar"}`. New: display_name (string, "" when unset) and avatar (absolute URL string, or null when the user has none).
+
+### JSON shapes added
+- chat other_participant (A2a): `{"id", "account_type", "display_name", "avatar"}`. Keys are the same as before; display_name and avatar now come from UserPublicSerializer first (User.display_name / User.avatar), with the old chat resolvers as fallback.
+- comment (A2b): new key `user_public` = `{"display_name", "avatar"}` next to the existing `user` (id).
+- rating (A2c), GET /api/v1/businesses/{id}/ratings/, per item: `{"id", "customer", "reviewer": {"display_name", "avatar"}, "score", "review_text", "created_at"}`. Example: `{"id": 7, "customer": 42, "reviewer": {"display_name": "Sara A", "avatar": "http://host/media/avatars/sara.png"}, "score": 5, "review_text": "nice", "created_at": "2026-11-12T10:00:00Z"}`.
+- UserPublicSerializer output is exactly `{"display_name", "avatar"}`. avatar is an absolute URL, or null when there is no avatar or no request in the serializer context. display_name falls back: User.display_name -> BusinessProfile business name -> CustomerProfile display name -> "".
+
+### Decisions
+- Avatar and display_name live on User, not on BusinessProfile/CustomerProfile, so every account type can have them independently of any profile row (a Moderator or Staff user has neither profile).
+- Sync between User.display_name and CustomerProfile.display_name: <<describe exactly what accounts/services.update_own_profile does; not visible in the diffs used for this entry>>.
+- The old `user` / `customer` ids stay in comments and ratings (rule: keep all old keys, only add).
+
+### Results (real, A3, Docker, Postgres)
+- manage.py check: System check identified no issues (0 silenced).
+- makemigrations --check --dry-run: No changes detected.
+- Full suite (pytest -q . , run before the A2b/A2c commits on the same files): 2115 passed, 0 failed, 1 skipped, 1 xfailed in 1717.93s (0:28:37).
+- Last recorded full backend figure with "xfailed" in this file (line 12916): 1762 passed, 1 skipped, 1 xfailed (+1 failed, fixed afterwards). Difference: +353 passed; it covers every part since that entry, not only P-116A.
+- flake8 (no output) and black --check (13 files unchanged): all .py files of A1/A2a (accounts/*, chat/*). A2b files (3): flake8 clean, black unchanged. A2c files (3): flake8 clean, black unchanged.
+- A2c on its own (owner run): pytest ratings accounts -q = 360 passed in 154.39s.
+- config/settings/prod.py, staging.py: flake8 W292 (prod.py:58, staging.py:48); black --check: would reformat both. NOT fixed (outside scope).
+- No test failed, so no fix was made in A3.
+
+### Known issues / Findings (nothing below was changed by this part)
+- Commit 90720df (A1) also contains pre-deploy hardening unrelated to avatar/display_name:
+  - config/settings/prod.py and staging.py: startup check that raises ImproperlyConfigured when JWT_ACCESS_TTL_MINUTES > 15; NUM_PROXIES default 1 for staging; comments.
+  - docker-compose.prod.yml and docker-compose.staging.yml: celery_worker gets an explicit environment (DJANGO_SETTINGS_MODULE, LOG_LEVEL: INFO); comments.
+  Behaviour risk: prod and staging refuse to start when the server .env has JWT_ACCESS_TTL_MINUTES above 15. NOT verified in A3: that these settings load with the real server .env, or that the celery_worker change works. No P-116A test covers these files. Not reverted or rewritten; owner decision needed.
+- Those four files lack a trailing newline. git show also displays added lines as CRLF next to LF lines (^M) in these files and in accounts/serializers.py, chat/serializers.py, social/serializers.py (mixed line endings). flake8 and black reported the .py files of P-116A clean; the two settings files are not clean.
+- chat other_participant still exposes `id` and `account_type` (existing keys, kept). Its display_name fallback (old chat resolver) can still derive a name from first/last name or the e-mail prefix, and its avatar falls back to the old resolver.
+- The public ratings list returns the raw user id in `customer`, and comments return the raw `user` id (both existing keys, kept).
+- RatingsListView returns 200 with an empty list for an unknown business id (RateBusinessView returns 404). S-2 (P-096): a business owner can rate their own business. Not touched.
+- build_me_payload (accounts/views.py) builds the avatar URL without a try/except, while UserPublicSerializer.get_avatar catches storage errors and returns null. Read from the code, not tested: a storage error could make GET /auth/me/ return 500.
+- UserPublicSerializer returns avatar null when the caller passes no request in the context; every new caller must pass it.
+- Avatar URLs were only exercised with the test storage backend; behaviour with the production MediaStorage is NOT verified.
+- The mobile app does not use the new fields yet.
+- The full run shows 1 skipped and 1 xfailed. The xfail matches the P-096 entry (P-095's strict G-1 marker); the skip was not investigated.
+- manage.py printed "Invalid line" warnings for the SMTP lines of .env (leading spaces), echoing a secret into the terminal output. Not part of P-116A; fix the .env and rotate that secret.
+- Untracked files intentionally NOT committed: DEVICE_TEST.md, P058_review_bundle.txt, accounts.zip, apply_email_smtp_fix.ps1, config/settings/devicetest.py, docker-compose.devicetest.yml, env.example, nginx/devicetest.conf, p116a2a.patch, scripts/deploy/devicetest_deploy.ps1, scripts/deploy/devicetest_up.sh.
+
+Tracking line: P-116A COMPLETE (backend, 2026-11-13): avatar and display_name available in /auth/me, /auth/me/profile, chat other_participant, comments and ratings; exceptions: the four out-of-scope files inside A1, production storage and the settings change not verified, mobile not yet using the fields.
