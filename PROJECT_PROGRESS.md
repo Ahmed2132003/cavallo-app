@@ -13630,7 +13630,7 @@ GET /api/v1/auth/me/ (also returned by PATCH /auth/me/ preferences): `{"id", "em
 
 ### Decisions
 - Avatar and display_name live on User, not on BusinessProfile/CustomerProfile, so every account type can have them independently of any profile row (a Moderator or Staff user has neither profile).
-- Sync between User.display_name and CustomerProfile.display_name: <<describe exactly what accounts/services.update_own_profile does; not visible in the diffs used for this entry>>.
+- Sync between User.display_name and CustomerProfile.display_name (accounts/services.update_own_profile, A1): User.display_name is the source of truth. When a profile update changes display_name, the value is written through to the user's CustomerProfile (businesses.models.CustomerProfile), if one exists, in the same transaction, cut to that column's max_length. Users without a CustomerProfile (Business, Moderator, Staff) just keep the value on User. The sync is one-way and runs only inside update_own_profile; no reverse sync appears in the A1 diff of services.py/models.py (not checked elsewhere), so a CustomerProfile.display_name changed by other code does not update User.display_name.
 - The old `user` / `customer` ids stay in comments and ratings (rule: keep all old keys, only add).
 
 ### Results (real, A3, Docker, Postgres)
@@ -13656,6 +13656,7 @@ GET /api/v1/auth/me/ (also returned by PATCH /auth/me/ preferences): `{"id", "em
 - UserPublicSerializer returns avatar null when the caller passes no request in the context; every new caller must pass it.
 - Avatar URLs were only exercised with the test storage backend; behaviour with the production MediaStorage is NOT verified.
 - The mobile app does not use the new fields yet.
+- Stale names in comments: the User.avatar comment in accounts/models.py mentions "AvatarUploadSerializer", but the serializer that validates the avatar is MeProfileUpdateSerializer; the update_own_profile docstring points to "PROJECT_PROGRESS notes for P-116A-1". Documentation only; not changed.
 - The full run shows 1 skipped and 1 xfailed. The xfail matches the P-096 entry (P-095's strict G-1 marker); the skip was not investigated.
 - manage.py printed "Invalid line" warnings for the SMTP lines of .env (leading spaces), echoing a secret into the terminal output. Not part of P-116A; fix the .env and rotate that secret.
 - Untracked files intentionally NOT committed: DEVICE_TEST.md, P058_review_bundle.txt, accounts.zip, apply_email_smtp_fix.ps1, config/settings/devicetest.py, docker-compose.devicetest.yml, env.example, nginx/devicetest.conf, p116a2a.patch, scripts/deploy/devicetest_deploy.ps1, scripts/deploy/devicetest_up.sh.
