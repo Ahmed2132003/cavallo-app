@@ -2,6 +2,7 @@
 
 from rest_framework import serializers
 
+from accounts.serializers import UserPublicSerializer
 from ratings.models import Rating
 
 
@@ -22,16 +23,25 @@ class RatingSerializer(serializers.ModelSerializer):
     """Public representation of a single Rating, for
     GET /api/v1/businesses/{id}/ratings/.
 
-    ``customer`` is deliberately the plain FK id (matches
-    social.CommentSerializer's own "user" field) - no separate public
-    user-summary serializer exists yet in this project to reuse; a
-    future part can extend this if a richer author display (name/
-    avatar) is ever required.
+    ``customer`` is kept as the plain FK id (existing key, unchanged).
+    Part P-116A-2c adds ``reviewer``: the reviewer's public display info
+    (``display_name`` + ``avatar`` only) via accounts.UserPublicSerializer.
+    The view must select_related the customer's profiles (see
+    RatingsListView.get_queryset) to avoid an N+1.
     """
+
+    reviewer = UserPublicSerializer(source="customer", read_only=True)
 
     class Meta:
         model = Rating
-        fields = ("id", "customer", "score", "review_text", "created_at")
+        fields = (
+            "id",
+            "customer",
+            "reviewer",
+            "score",
+            "review_text",
+            "created_at",
+        )
         read_only_fields = fields
 
 
