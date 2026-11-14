@@ -18,6 +18,12 @@ from businesses.models import BusinessProfile
 
 from chat.consumers import presence_cache_key
 from chat.models import Conversation, ConversationParticipant, Message
+from chat.models import ConversationProductInterest
+from chat.product_interest import (
+    record_product_interest,
+    record_shared_product_interest,
+)
+from products.models import Product
 from chat.serializers import (
     ConversationListSerializer,
     ConversationSerializer,
@@ -63,6 +69,16 @@ class ConversationStartView(APIView):
     """
     POST /api/v1/conversations/start/
     Body: {"recipient_id": <int>}   OR   {"business_id": <int>}
+          [+ optional "product_id": <int>, only together with business_id]
+
+    Part BI-01: `product_id` (optional) names the product the customer is
+    asking about. It must belong to `business_id`, be active and not
+    deleted (otherwise 404 "Product not found."); `product_id` with
+    `recipient_id` is a 400. It never changes the response shape: the
+    conversation is returned exactly as before (201 new / 200 existing,
+    never duplicated) and a ConversationProductInterest row is recorded
+    (or its last_opened_at moved). Old requests without product_id behave
+    as before.
 
     Resolves to an existing conversation between request.user and the
     recipient if one exists, or creates a new one plus both
@@ -141,6 +157,32 @@ class ConversationStartView(APIView):
                     {"detail": "Recipient not found."},
                     status=status.HTTP_404_NOT_FOUND,
                 )
+        # Part BI-01: optional product the customer is asking about.
+        product = None
+        raw_product_id = request.data.get("product_id")
+        if raw_product_id not in (None, ""):
+            if not business_id:
+                return Response(
+                    {"detail": "product_id requires business_id."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                if isinstance(raw_product_id, bool):
+                    raise ValueError
+                product_pk = int(raw_product_id)
+            except (TypeError, ValueError):
+                return Response(
+                    {"detail": "product_id must be an integer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            product = Product.objects.filter(
+                pk=product_pk, business=business, is_active=True
+            ).first()
+            if product is None:
+                return Response(
+                    {"detail": "Product not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
         existing = (
             Conversation.objects.filter(participants__user=request.user)
@@ -149,6 +191,14 @@ class ConversationStartView(APIView):
             .first()
         )
         if existing is not None:
+            if product is not None:
+                record_product_interest(
+                    conversation=existing,
+                    customer=request.user,
+                    product=product,
+                    source=ConversationProductInterest.Source.CONVERSATION_START,
+                    touch=True,
+                )
             return Response(
                 ConversationSerializer(existing).data,
                 status=status.HTTP_200_OK,
@@ -162,6 +212,14 @@ class ConversationStartView(APIView):
             ConversationParticipant.objects.create(
                 conversation=conversation, user=recipient
             )
+            if product is not None:
+                record_product_interest(
+                    conversation=conversation,
+                    customer=request.user,
+                    product=product,
+                    source=ConversationProductInterest.Source.CONVERSATION_START,
+                    touch=True,
+                )
 
         return Response(
             ConversationSerializer(conversation).data,
@@ -216,6 +274,21 @@ class MessageSendView(APIView):
         serializer = MessageSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         message = serializer.save(conversation=conversation, sender=request.user)
+
+        # Part BI-01: a customer sharing a Product into a conversation with
+        # that product's business records the interest (only if it is not
+        # recorded yet). Best-effort, like the broadcast below: the message
+        # is already saved and must never turn into an error.
+        try:
+            record_shared_product_interest(message=message, sender=request.user)
+        except Exception:
+            logger.exception(
+                "Best-effort product-interest recording failed for "
+                "conversation_id=%s message_id=%s; message is already "
+                "persisted and the HTTP response is unaffected.",
+                conversation_id,
+                message.id,
+            )
 
         # الحفظ فوق خلص بالفعل ونجح — من هنا لغاية آخر الدالة، أي حاجة
         # تفشل ميرجعش عليها HTTP error ولا يترجع الـ Message تتمسح.
@@ -318,7 +391,7 @@ class MessageFetchSinceView(APIView):
 
         messages = Message.objects.filter(
             conversation_id=conversation_id, id__gt=since_id
-        )
+        ).prefetch_related("orders")
         serializer = MessageSerializer(messages, many=True)
         return Response(serializer.data)
 
@@ -422,7 +495,11 @@ class MessageHistoryView(generics.ListAPIView):
         # Conversation instance — matching MessageSendView/MessageFetchSinceView's
         # existing calls above. Passing the object here originally was a bug.
         _require_participant(conversation_id, self.request.user)
-        return Message.objects.filter(conversation=conversation).order_by("-created_at")
+        return (
+            Message.objects.filter(conversation=conversation)
+            .prefetch_related("orders")
+            .order_by("-created_at")
+        )
 
 
 @csrf_exempt

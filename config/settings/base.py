@@ -91,6 +91,7 @@ INSTALLED_APPS = [
     "analytics",  # Part P-084: daily BusinessDailyStats rollup.
     "monetization",  # Part P-086: Plan + FeaturedSubscription (Featured state).
     "payments",  # Part P-089: payment-side Subscription/Transaction/Invoice.
+    "orders",  # Part BI-01: Merchant-Recorded Orders (no cart/checkout/payment).
 ]
 
 # ---------------------------------------------------------------------------

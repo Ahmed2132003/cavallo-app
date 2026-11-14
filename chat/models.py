@@ -3,6 +3,7 @@ from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
 from django.db.models import Q
+from django.utils import timezone
 
 from core.models import TimestampedModel
 
@@ -119,3 +120,73 @@ class Message(TimestampedModel):
 
     def __str__(self):
         return f"Message #{self.pk} in Conversation #{self.conversation_id}"
+
+
+class ConversationProductInterest(TimestampedModel):
+    """
+    Part BI-01 — "this customer opened a conversation about this product".
+
+    One row per (conversation, product), enforced by the UniqueConstraint
+    below. Re-opening the same conversation for the same product never
+    creates a second row; it only moves `last_opened_at` (see
+    chat/product_interest.py). Pure analytics/lead signal: it is NOT an
+    order and carries no price or quantity.
+
+    `business` is denormalised from product.business on purpose so
+    Analytics can group by business without a join. `customer` is the
+    user who opened the conversation / shared the product (never the
+    business owner).
+    """
+
+    class Source(models.TextChoices):
+        CONVERSATION_START = "conversation_start", "Conversation start"
+        SHARED_PRODUCT = "shared_product", "Shared product"
+
+    business = models.ForeignKey(
+        "businesses.BusinessProfile",
+        on_delete=models.PROTECT,
+        related_name="product_interests",
+    )
+    product = models.ForeignKey(
+        "products.Product",
+        on_delete=models.PROTECT,
+        related_name="conversation_interests",
+    )
+    conversation = models.ForeignKey(
+        Conversation,
+        on_delete=models.CASCADE,
+        related_name="product_interests",
+    )
+    customer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="product_interests",
+    )
+    source = models.CharField(max_length=30, choices=Source.choices)
+    first_opened_at = models.DateTimeField(default=timezone.now)
+    last_opened_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ["-last_opened_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["conversation", "product"],
+                name="chat_interest_unique_conv_product",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["business", "product"],
+                name="chat_interest_biz_product_idx",
+            ),
+            models.Index(
+                fields=["product", "last_opened_at"],
+                name="chat_interest_prod_last_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"Interest: product #{self.product_id} "
+            f"in Conversation #{self.conversation_id}"
+        )

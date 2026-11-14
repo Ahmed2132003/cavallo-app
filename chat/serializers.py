@@ -13,6 +13,7 @@ from rest_framework.exceptions import NotFound
 from accounts.serializers import UserPublicSerializer
 from core.media import validate_upload
 from social.serializers import _preview_for
+from orders.constants import format_order_number
 
 from .models import Conversation, Message
 
@@ -244,6 +245,38 @@ def build_shared_content_payload(message):
     return payload
 
 
+def build_order_summary_payload(message):
+    """
+    Part BI-01 — the order recorded from `message`, or None.
+
+    Viewer-INDEPENDENT on purpose (same payload for REST and for the
+    WebSocket broadcast to both participants): it carries no internal note
+    and no internal event. Every value is a plain str / int (Decimal and
+    datetime are stringified) so the dict also survives the channel layer's
+    serialization.
+
+    Reads the reverse relation `message.orders` (orders.Order.source_message)
+    so chat needs no model import from orders. The message list views
+    prefetch it (prefetch_related("orders")); a single serialized message
+    costs one query.
+    """
+    orders = list(message.orders.all())
+    if not orders:
+        return None
+    order = orders[0]
+    return {
+        "id": order.id,
+        "order_number": format_order_number(order.id),
+        "status": order.status,
+        "quantity": order.quantity,
+        "agreed_unit_price": format(order.agreed_unit_price, "f"),
+        "total_amount": format(order.total_amount, "f"),
+        "currency": order.currency,
+        "product_id": order.product_id,
+        "created_at": serializers.DateTimeField().to_representation(order.created_at),
+    }
+
+
 class ConversationSerializer(serializers.ModelSerializer):
     participant_ids = serializers.SerializerMethodField()
 
@@ -282,6 +315,10 @@ class MessageSerializer(serializers.ModelSerializer):
     )
     shared_content = serializers.SerializerMethodField()
 
+    # Part BI-01 — additive, read-only: the order recorded from this message
+    # (summary dict) or null. Existing keys are unchanged.
+    order = serializers.SerializerMethodField()
+
     class Meta:
         model = Message
         fields = [
@@ -294,6 +331,7 @@ class MessageSerializer(serializers.ModelSerializer):
             "shared_content_type",
             "shared_object_id",
             "shared_content",
+            "order",
             "status",
             "created_at",
         ]
@@ -362,6 +400,9 @@ class MessageSerializer(serializers.ModelSerializer):
 
     def get_shared_content(self, obj):
         return build_shared_content_payload(obj)
+
+    def get_order(self, obj):
+        return build_order_summary_payload(obj)
 
 
 def _resolve_conversation_participant_display_name(user):

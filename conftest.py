@@ -27,3 +27,6 @@ def dispatch_delay():
 
     with mock.patch.object(dispatch_notification, "delay") as mocked_delay:
         yield mocked_delay
+
+
+pytest_plugins = ["orders.tests.fixtures"]

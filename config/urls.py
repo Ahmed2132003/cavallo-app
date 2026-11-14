@@ -115,4 +115,7 @@ urlpatterns = [
     # Part P-092: public, read-only list of purchasable Featured Plans
     # (GET plans/). The Web Dashboard needs the prices before login.
     path("api/v1/monetization/", include("monetization.urls")),
+    # Part BI-01: Merchant-Recorded Orders. The merchant records a sale made
+    # in chat; there is NO cart, checkout, payment or inventory.
+    path("api/v1/orders/", include("orders.urls")),
 ]

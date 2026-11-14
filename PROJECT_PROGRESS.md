@@ -13665,3 +13665,81 @@ GET /api/v1/auth/me/ (also returned by PATCH /auth/me/ preferences): `{"id", "em
 Tracking line: P-116A COMPLETE (backend, 2026-11-13): avatar and display_name available in /auth/me, /auth/me/profile, chat other_participant, comments and ratings; exceptions: the four out-of-scope files inside A1, production storage and the settings change not verified, mobile not yet using the fields.
 
 - P-116A backend real-storage check 2026-11-13 (dev stack, MinIO, port 8095): avatar upload returned an absolute presigned URL (host 10.0.2.2:9010, the Android emulator alias); that URL served 200 image/png when fetched through localhost:9010; /me/ returned the same file; a text file as avatar -> 400; remove_avatar -> null (HTTP 200) and the old URL then returned 404 (object removed). Not verified: that the storage object of the FIRST uploaded test avatar was removed (only the API response was checked); the public URL host for a real device or production; the signature changes on every request.
+
+---
+
+## P-116B: Edit my profile (display name + avatar) for all account types - branch `part-116b-edit-profile` (2026-11-13)
+
+**Scope:** one shared screen where any account type (Customer, Business, Moderator, Staff) edits the display name and the personal photo. Business data stays in `BusinessProfileEditScreen` (not merged).
+
+**Backend contract used:** `PATCH /api/v1/auth/me/profile/` (multipart only when a photo is sent: `display_name`, `avatar`; JSON otherwise, `remove_avatar: true` to remove) and `GET /api/v1/auth/me/` returning `display_name` and `avatar`. Taken from the P-116B brief; the P-116A section of this file was NOT available when this was written, so the response shape was NOT checked against the real backend.
+
+**What was added:**
+- Data: `User` got `displayName` (default `''`) and `avatarUrl` (default null) plus `withProfile(...)`; `MeResponseDto` parses `display_name` / `avatar` (null, empty or missing = no photo). Every existing `User(...)` call site is unchanged because of the defaults.
+- New `MyProfileRepository` (`profile_hub/data/`), separate from `AuthRepository` on purpose (that interface is implemented by many test fakes). It sends bytes + filename, so tests need no real files.
+- `SessionNotifier.updateMyProfile`: writes the result straight into the session (no extra request when the response carries the profile, one `fetchMe` otherwise). It never sets the state to loading, and on failure the session is untouched and the error is rethrown.
+- Screen `edit_my_profile_screen.dart`: tappable avatar -> bottom sheet (gallery / remove), name field (max 80), save with loading, "no changes" sends no request, device check of 5 MB and JPEG/PNG/WebP by magic bytes (the backend is the final judge), localized errors only (`localizedApiError`), the typed edits stay on screen after a failure.
+- Routing: `editMyProfile` / `/profile/edit` (top-level, no guard change), manifest entry for all three audiences (hub row), a new first row in the hub. The hub header now uses the display name and the photo.
+- L10n: 16 keys in EN + AR (one with a placeholder).
+
+**Verification (REAL results):**
+- Targeted tests (`profile_hub`, `auth`, `routing`, `l10n`, `core/widgets`): 00:53 +394: All tests passed! (includes arb parity, no hardcoded strings, navigation reachability)
+- Goldens of this screen: 4 generated (light/dark x en/ar), reviewed visually by Ahmed, stable on a second run (+4).
+- `flutter analyze`: No issues found.
+- Full `flutter test`: 04:16 +1682 -64. The 64 failures are the same old goldens (P-114, P-115, P-116 forgot-password), not related to P-116B.
+
+**Known issues (honest):**
+- The 64 old goldens fail by 0.27% to 2.92% pixel diff. Confirmed with `git stash` that they fail on the code WITHOUT P-116B (28 of them re-run: all failed). Likely a rendering-environment difference on this machine. They were NOT regenerated.
+- Steps D and E not done: avatar in comments, chat participants and unifying initials need the real P-116A contract (the comment payload only carries a bare user id) and the result of the `initialsOf` search.
+- Manual test on a real device with the real backend (port 8095) for Customer, Business, Moderator, restart and chat: NOT done.
+- Backend response shape of `/auth/me/profile/` not verified against the real backend (see above).
+- 3 test files in `profile_hub` were modified outside this work (`language_preference_repository_test`, `business_shortcuts_test`, `hub_selectors_test`) and were deliberately not committed.
+
+**Status: PARTIAL.** Steps A, B, C and the tests are done; D, E and the manual walk-through are open.
+
+
+---
+
+## PART BI-01: Chat -> product interest -> merchant-recorded orders - branch `part-116a` (2026-11-14)
+
+**Decision:** Merchant-Recorded Orders are allowed (the merchant records a sale by hand after agreeing it in chat). Still forbidden: cart, checkout, payment, inventory, SKU.
+
+**What was added:**
+- chat: `ConversationProductInterest` (UniqueConstraint on conversation+product), `chat/product_interest.py`. `POST /conversations/start/` accepts an optional `product_id`. A customer sharing a Product into a conversation records the interest only if it is not recorded yet.
+- chat: `MessageSerializer.order` (additive, null when the message has no order).
+- orders (new app, in INSTALLED_APPS, mounted at `/api/v1/orders/`): `Order`, `OrderEvent` (append-only), `constants.py`, `services.py`, serializers, views, urls, admin, tests.
+- Endpoints: from-chat, merchant list/detail/status/notes/events/by-product, customer my-list/my-detail.
+
+**Definitions (orders/constants.py):**
+- Sales Value = sum of total_amount of orders in confirmed/processing/shipped/delivered. pending and cancelled are excluded.
+- It is merchant-recorded sales, NOT payments received. Totals are per currency only.
+- Allowed transitions live in one dict (ALLOWED_TRANSITIONS): pending -> confirmed -> processing -> shipped -> delivered; cancel allowed before delivered; delivered and cancelled are terminal.
+
+**Decisions:**
+- All identities (business, customer, product, currency) come from the server. The request body is never trusted for them.
+- One order per source message (UniqueConstraint + row lock + IntegrityError path). A replay returns 200 with the same order and ignores the new body.
+- Inactive product: allowed for recording an order (the deal was already agreed). Soft-deleted product: rejected (400). ConversationStart requires an active, non-deleted product of that business (404 otherwise).
+- Non-participant -> 403. Another merchant's order or product -> 404/400 without revealing existence.
+- The customer serializers never expose internal_note, is_internal or the merchant user id; internal events are filtered in the queryset too.
+- Migrations: chat 0004_conversationproductinterest, orders 0001_initial. New tables only, no backfill, no existing table altered.
+- ConversationProductInterest is registered in the admin from orders/admin.py (read-only), not from chat/admin.py.
+
+**Known limits (from reading the code, not tested here):**
+- "Customer-only" is enforced by the queryset (customer == request.user), not by account_type.
+- OrderEvent is append-only at the model level; QuerySet.update/delete bypass it.
+- Analytics is not wired yet (only the constants exist). No notification and no WebSocket event is sent for orders.
+- Date filters use UTC calendar dates (TIME_ZONE = UTC).
+- conftest.py was modified in this part; see git diff.
+- config/urls.py shows 3 extra deleted/re-added lines in git diff: line endings only (CRLF -> LF) in the old payments/monetization lines. `git diff --ignore-space-at-eol` shows 3 insertions, 0 deletions.
+
+**Verification (REAL results, Docker, Postgres, 2026-11-14):**
+- manage.py check: System check identified no issues (0 silenced).
+- makemigrations --check --dry-run: No changes detected.
+- migrate: chat.0004_conversationproductinterest and orders.0001_initial applied OK.
+- Targeted tests (orders, chat/test_product_interest.py, test_message_order_field.py, test_start_by_business.py, test_shared_content.py, test_permission_sweep.py, test_consumers.py): 178 passed, 2 skipped in 205.16s.
+- Full suite (pytest -q .): 2214 passed, 3 skipped, 1 xfailed, 0 failed in 1226.36s (0:20:26). Previous recorded figure: 2115 passed, 1 skipped, 1 xfailed. The extra 2 skipped were NOT investigated.
+- flake8 orders chat config: only the old W292 in config/settings/prod.py and staging.py (listed under the P-116A known issues).
+- black --check orders chat config: only prod.py and staging.py would be reformatted (old). config/urls.py was reformatted by hand (one blank line removed) and is clean.
+- Not verified: behaviour on a real device / mobile client, and the deploy path (CI deploy runs only from develop/main).
+
+Tracking line: PART BI-01 COMPLETE (backend, 2026-11-14): chat product interest + merchant-recorded orders; full suite green (2214 passed); mobile client and deploy not verified; Analytics not wired yet.
