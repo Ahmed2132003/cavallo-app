@@ -502,6 +502,18 @@ LANGUAGES = [
 # Docker image has no GNU gettext; see core/i18n_tools.py).
 LOCALE_PATHS = [BASE_DIR / "locale"]
 TIME_ZONE = "UTC"
+
+# ---------------------------------------------------------------------------
+# Part BI-02 - view tracking (analytics app).
+# ANALYTICS_REEL_MIN_WATCH_MS: a reel view below this watch time is ignored.
+# Throttle rates apply to POST /api/v1/analytics/events/views/ only.
+# ANALYTICS_VIEWER_KEY_SALT: blank = fall back to SECRET_KEY. Changing it
+# changes every viewer_key, so it breaks Unique View continuity.
+# ---------------------------------------------------------------------------
+ANALYTICS_REEL_MIN_WATCH_MS = env.int("ANALYTICS_REEL_MIN_WATCH_MS", default=3000)
+ANALYTICS_VIEW_EVENT_ANON_RATE = _rate("ANALYTICS_VIEW_EVENT_ANON_RATE", "60/min")
+ANALYTICS_VIEW_EVENT_USER_RATE = _rate("ANALYTICS_VIEW_EVENT_USER_RATE", "120/min")
+ANALYTICS_VIEWER_KEY_SALT = env.str("ANALYTICS_VIEWER_KEY_SALT", default="")
 USE_I18N = True
 USE_TZ = True
 
