@@ -117,3 +117,65 @@ class FeaturedSubscription(TimestampedModel):
                     days=self.plan.duration_days
                 )
         super().save(*args, **kwargs)
+
+
+class Subscription(TimestampedModel):
+    """
+    BE-02. The CURRENT storage-plan subscription of one business
+    (exactly one row per BusinessProfile). Separate from
+    FeaturedSubscription, which keeps per-purchase Featured history.
+
+    ``status`` is the STORED value; whether a business is actually
+    locked is computed from the dates by
+    monetization.services.effective_state() / is_locked().
+    This model enforces nothing by itself (no locking, no purge).
+    """
+
+    STATUS_TRIALING = "trialing"
+    STATUS_ACTIVE = "active"
+    STATUS_EXPIRED = "expired"
+    STATUS_LOCKED = "locked"
+    STATUS_CHOICES = [
+        (STATUS_TRIALING, "Trialing"),
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_EXPIRED, "Expired"),
+        (STATUS_LOCKED, "Locked"),
+    ]
+
+    business = models.OneToOneField(
+        "businesses.BusinessProfile",
+        on_delete=models.CASCADE,
+        related_name="subscription",
+    )
+    # related_name differs from FeaturedSubscription.plan ("subscriptions").
+    plan = models.ForeignKey(
+        Plan,
+        on_delete=models.PROTECT,
+        related_name="storage_subscriptions",
+    )
+    status = models.CharField(
+        max_length=10, choices=STATUS_CHOICES, default=STATUS_TRIALING
+    )
+    started_at = models.DateTimeField()
+    trial_ends_at = models.DateTimeField(null=True, blank=True)
+    current_period_start = models.DateTimeField(null=True, blank=True)
+    current_period_end = models.DateTimeField(null=True, blank=True)
+    # The quota actually applied (custom plans differ from plan.storage_bytes).
+    quota_bytes = models.PositiveBigIntegerField()
+    custom_gb = models.PositiveIntegerField(null=True, blank=True)
+    is_featured_effective = models.BooleanField(default=False)
+    purge_at = models.DateTimeField(null=True, blank=True)
+    pending_plan = models.ForeignKey(
+        Plan,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    canceled_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return (
+            f"Subscription({self.pk}) business={self.business_id} "
+            f"plan={self.plan_id} status={self.status}"
+        )

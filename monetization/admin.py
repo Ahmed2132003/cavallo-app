@@ -1,6 +1,6 @@
 from django.contrib import admin, messages
 
-from monetization.models import FeaturedSubscription, Plan
+from monetization.models import FeaturedSubscription, Plan, Subscription
 from monetization.services import activate_subscription, deactivate_subscriptions
 
 
@@ -117,3 +117,28 @@ class FeaturedSubscriptionAdmin(admin.ModelAdmin):
             f"Deactivated {updated} subscription(s).",
             messages.SUCCESS,
         )
+
+
+@admin.register(Subscription)
+class SubscriptionAdmin(admin.ModelAdmin):
+    """BE-02: storage-plan subscription state (no enforcement here)."""
+
+    list_display = (
+        "id",
+        "business",
+        "plan",
+        "status",
+        "started_at",
+        "trial_ends_at",
+        "current_period_end",
+        "quota_bytes",
+        "custom_gb",
+        "purge_at",
+        "pending_plan",
+        "canceled_at",
+    )
+    list_filter = ("status", "plan")
+    list_select_related = ("business", "plan", "pending_plan")
+    raw_id_fields = ("business",)
+    ordering = ("-id",)
+    readonly_fields = ("created_at", "updated_at")

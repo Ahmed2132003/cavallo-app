@@ -22,12 +22,23 @@ drift out of sync. Setting is_active=False directly elsewhere is
 discouraged for the same reason.
 """
 
+import logging
+import math
+from datetime import timedelta
+
 from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
 from businesses.models import BusinessProfile
-from monetization.models import FeaturedSubscription
+from monetization.constants import (
+    FREE_QUOTA_BYTES_DEFAULT,
+    PURGE_GRACE_DAYS,
+    TRIAL_DAYS_DEFAULT,
+)
+from monetization.models import FeaturedSubscription, Plan, Subscription
+
+logger = logging.getLogger(__name__)
 
 
 def _sync_business_featured_flag(business_ids):
@@ -151,3 +162,100 @@ def deactivate_subscriptions(subscriptions):
 
         _sync_business_featured_flag(business_ids)
         return updated
+
+
+# ---------------------------------------------------------------------
+# BE-02: storage-plan subscription state (read-only logic, no enforcement)
+# ---------------------------------------------------------------------
+
+
+def create_free_subscription(business, now=None):
+    """
+    Create the Free trial subscription for ``business`` if it has none.
+    Idempotent: returns the existing row when there is one. Returns None
+    (and logs a warning) if no Plan with code="free" exists.
+    """
+    existing = Subscription.objects.filter(business_id=business.pk).first()
+    if existing is not None:
+        return existing
+
+    plan = Plan.objects.filter(code="free").first()
+    if plan is None:
+        logger.warning("No 'free' Plan; skipping subscription for %s", business.pk)
+        return None
+
+    now = now or timezone.now()
+    trial_ends_at = now + timedelta(days=plan.trial_days or TRIAL_DAYS_DEFAULT)
+    return Subscription.objects.create(
+        business_id=business.pk,
+        plan=plan,
+        status=Subscription.STATUS_TRIALING,
+        started_at=now,
+        trial_ends_at=trial_ends_at,
+        purge_at=trial_ends_at + timedelta(days=PURGE_GRACE_DAYS),
+        quota_bytes=(
+            plan.storage_bytes
+            if plan.storage_bytes is not None
+            else FREE_QUOTA_BYTES_DEFAULT
+        ),
+    )
+
+
+def get_subscription(business):
+    """The business's current Subscription (plan preloaded) or None."""
+    return (
+        Subscription.objects.select_related("plan")
+        .filter(business_id=business.pk)
+        .first()
+    )
+
+
+def _state(state, days_left, locked, sub):
+    return {
+        "state": state,
+        "days_left": days_left,
+        "locked": locked,
+        "purge_at": sub.purge_at if sub is not None else None,
+    }
+
+
+def effective_state(business, now=None):
+    """
+    Subscription state computed from the DATES, not only the stored
+    ``status``. Returns {state, days_left, locked, purge_at}.
+
+    state: "trialing" | "active" | "expired" | "locked" | "none".
+      - stored "locked"/"expired"  -> locked, regardless of dates.
+      - trialing: ends at trial_ends_at; active: ends at
+        current_period_end. now >= end  -> "expired", locked.
+      - an unset end date means open-ended (never expires by date).
+      - no subscription row -> "none", not locked (customers,
+        moderators and legacy rows are never locked).
+    days_left: whole days remaining, rounded up; 0 once ended; None when
+    open-ended.
+    """
+    now = now or timezone.now()
+    sub = get_subscription(business)
+    if sub is None:
+        return _state("none", 0, False, None)
+    if sub.status == Subscription.STATUS_LOCKED:
+        return _state("locked", 0, True, sub)
+    if sub.status == Subscription.STATUS_EXPIRED:
+        return _state("expired", 0, True, sub)
+
+    end = (
+        sub.trial_ends_at
+        if sub.status == Subscription.STATUS_TRIALING
+        else sub.current_period_end
+    )
+    if end is None:
+        return _state(sub.status, None, False, sub)
+    if now >= end:
+        return _state("expired", 0, True, sub)
+    days_left = math.ceil((end - now).total_seconds() / 86400)
+    return _state(sub.status, days_left, False, sub)
+
+
+def is_locked(business, now=None):
+    """True when the business's subscription has ended or is locked."""
+    return effective_state(business, now=now)["locked"]

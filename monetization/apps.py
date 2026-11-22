@@ -10,3 +10,7 @@ class MonetizationConfig(AppConfig):
 
     default_auto_field = "django.db.models.BigAutoField"
     name = "monetization"
+
+    def ready(self):
+        # BE-02: Free subscription on BusinessProfile creation.
+        import monetization.signals  # noqa: F401
