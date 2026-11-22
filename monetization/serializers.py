@@ -10,6 +10,7 @@ as a STRING (e.g. "250.00") by default; the API contract documents this.
 from rest_framework import serializers
 
 from monetization.models import Plan
+from monetization.services import parse_gb
 
 
 class PlanSerializer(serializers.ModelSerializer):
@@ -33,3 +34,25 @@ class PlanSerializer(serializers.ModelSerializer):
             "sort_order",
         ]
         read_only_fields = fields
+
+
+class CustomQuoteRequestSerializer(serializers.Serializer):
+    """
+    BE-03 input: ``gb``. Kept as text until parse_gb() so floats never
+    enter the price math. Range checks live in calculate_custom_price().
+    """
+
+    gb = serializers.CharField()
+
+    def validate(self, attrs):
+        attrs["gb"] = parse_gb(attrs["gb"])
+        return attrs
+
+
+class CustomQuoteResponseSerializer(serializers.Serializer):
+    """BE-03 output. Decimals render as strings ("630.00"), like Plan.price."""
+
+    gb = serializers.DecimalField(max_digits=8, decimal_places=2)
+    price_egp = serializers.DecimalField(max_digits=10, decimal_places=2)
+    quota_bytes = serializers.IntegerField()
+    is_featured = serializers.BooleanField()

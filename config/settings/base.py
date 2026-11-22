@@ -604,6 +604,18 @@ PAYMOB_NOTIFICATION_URL = env("PAYMOB_NOTIFICATION_URL", default="")
 PAYMOB_REDIRECTION_URL = env("PAYMOB_REDIRECTION_URL", default="")
 PAYMOB_TIMEOUT_SECONDS = env.int("PAYMOB_TIMEOUT_SECONDS", default=15)
 
+# ---------------------------------------------------------------------------
+# Part BE-03 - Infinity (custom storage plan) pricing (D4 / D4b). Read at call
+# time by monetization.services.calculate_custom_price(). Decimal on purpose
+# (no float rounding). A blank/unset env var falls back to the default.
+# ---------------------------------------------------------------------------
+from decimal import Decimal  # noqa: E402
+
+CUSTOM_MIN_GB = Decimal(_rate("CUSTOM_MIN_GB", "13"))
+CUSTOM_MAX_GB = Decimal(_rate("CUSTOM_MAX_GB", "500"))
+CUSTOM_PRICE_PER_GB = Decimal(_rate("CUSTOM_PRICE_PER_GB", "31.5"))
+CUSTOM_MIN_PRICE = Decimal(_rate("CUSTOM_MIN_PRICE", "500"))
+
 STORAGES = {
     "default": {
         "BACKEND": "core.storage_backends.MediaStorage",

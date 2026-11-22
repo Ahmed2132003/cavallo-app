@@ -18,6 +18,9 @@ Category 2: no client can create, change or delete a Plan or a
             owner cannot make themselves Featured over HTTP).
 Category 3: no capability-gated route exists in this app (Plans and
             subscriptions are managed in Django Admin only).
+BE-03:      GET/POST subscriptions/custom-quote/ is merchant-only (401
+            anonymous/garbage token, 403 customer), read-only (no write
+            side effects) and rejects every other method with 405.
 """
 
 import pytest
@@ -29,7 +32,7 @@ from core.tests.sweep_factories import (
     make_user,
 )
 from core.tests.sweep_helpers import assert_error_envelope
-from monetization.models import FeaturedSubscription, Plan
+from monetization.models import FeaturedSubscription, Plan, Subscription
 from payments.tests.factories import make_plan
 
 pytestmark = pytest.mark.django_db
@@ -128,6 +131,66 @@ def test_a_business_owner_cannot_make_themselves_featured_over_http(path):
     )
 
     assert response.status_code in (404, 405)
+    assert FeaturedSubscription.objects.count() == 0
+    business.refresh_from_db()
+    assert business.is_featured is False
+
+
+QUOTE_URL = "/api/v1/monetization/subscriptions/custom-quote/"
+
+
+def _quote_call(client, method):
+    if method == "get":
+        return client.get(QUOTE_URL, {"gb": "20"})
+    return client.post(QUOTE_URL, {"gb": 20}, format="json")
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+@pytest.mark.parametrize(
+    "client_factory",
+    [client_for, garbage_token_client],
+    ids=["anonymous", "garbage-token"],
+)
+def test_custom_quote_requires_authentication(client_factory, method):
+    response = _quote_call(client_factory(), method)
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+def test_custom_quote_is_forbidden_for_a_customer(method):
+    response = _quote_call(client_for(make_user()), method)
+
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+def test_custom_quote_works_for_a_business_owner(method):
+    response = _quote_call(client_for(make_business().user), method)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"gb", "price_egp", "quota_bytes", "is_featured"}
+    assert body["price_egp"] == "630.00"
+
+
+@pytest.mark.parametrize("method", ["put", "patch", "delete"])
+def test_custom_quote_rejects_other_methods(method):
+    client = client_for(make_business().user)
+
+    response = getattr(client, method)(QUOTE_URL, {"gb": 20}, format="json")
+
+    assert_error_envelope(response, 405, "METHOD_NOT_ALLOWED")
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+def test_custom_quote_has_no_side_effects(method):
+    business = make_business()
+
+    response = _quote_call(client_for(business.user), method)
+
+    assert response.status_code == 200
+    assert Subscription.objects.count() == 0
     assert FeaturedSubscription.objects.count() == 0
     business.refresh_from_db()
     assert business.is_featured is False

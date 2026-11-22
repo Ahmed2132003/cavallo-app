@@ -24,14 +24,19 @@ discouraged for the same reason.
 
 import logging
 import math
+import re
 from datetime import timedelta
+from decimal import Decimal
 
+from django.conf import settings
 from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError
 
 from businesses.models import BusinessProfile
 from monetization.constants import (
+    BYTES_PER_GB,
     FREE_QUOTA_BYTES_DEFAULT,
     PURGE_GRACE_DAYS,
     TRIAL_DAYS_DEFAULT,
@@ -259,3 +264,74 @@ def effective_state(business, now=None):
 def is_locked(business, now=None):
     """True when the business's subscription has ended or is locked."""
     return effective_state(business, now=now)["locked"]
+
+
+# ---------------------------------------------------------------------
+# BE-03: Infinity (custom storage plan) pricing. Pure functions, no DB.
+# ---------------------------------------------------------------------
+
+# Plain decimal only: no sign, no exponent, at most 2 decimal places.
+_GB_RE = re.compile(r"\d{1,6}(?:\.\d{1,2})?")
+_TWO_PLACES = Decimal("0.01")
+
+
+def _custom_pricing_config():
+    """(min_gb, max_gb, price_per_gb, min_price) as Decimals, read at call time."""
+    return (
+        Decimal(str(settings.CUSTOM_MIN_GB)),
+        Decimal(str(settings.CUSTOM_MAX_GB)),
+        Decimal(str(settings.CUSTOM_PRICE_PER_GB)),
+        Decimal(str(settings.CUSTOM_MIN_PRICE)),
+    )
+
+
+def _fmt(value):
+    return format(value.normalize(), "f")
+
+
+def parse_gb(raw):
+    """
+    Turn user input (str / int / float / Decimal) into a Decimal GB value
+    WITHOUT going through binary float math: the value is converted via
+    its text form. Rejects bool, None, signs, exponents ("1e2"), NaN /
+    Infinity and more than two decimal places. Raises DRF ValidationError
+    keyed on "gb" (-> 400 in the project's error envelope).
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (str, int, float, Decimal)):
+        raise ValidationError({"gb": "A numeric gb value is required."})
+    text = str(raw).strip()
+    if not _GB_RE.fullmatch(text):
+        raise ValidationError(
+            {"gb": "gb must be a plain number with at most two decimal places."}
+        )
+    return Decimal(text)
+
+
+def calculate_custom_price(gb):
+    """
+    Price in EGP (Decimal, 2 places) of a custom Infinity plan of ``gb`` GB:
+    ceil(gb * CUSTOM_PRICE_PER_GB), then at least CUSTOM_MIN_PRICE.
+
+    ``gb`` may be a Decimal, str, int or float (max two decimals). Raises
+    ValidationError when gb is invalid or outside
+    [CUSTOM_MIN_GB, CUSTOM_MAX_GB].
+    """
+    gb = parse_gb(gb)
+    min_gb, max_gb, price_per_gb, min_price = _custom_pricing_config()
+    if gb < min_gb:
+        raise ValidationError({"gb": f"gb must be at least {_fmt(min_gb)}."})
+    if gb > max_gb:
+        raise ValidationError({"gb": f"gb must be at most {_fmt(max_gb)}."})
+
+    price = max(Decimal(math.ceil(gb * price_per_gb)), min_price)
+    return price.quantize(_TWO_PLACES)
+
+
+def custom_quota_bytes(gb):
+    """
+    Bytes for ``gb`` GB, using BYTES_PER_GB (1024**3, same as the BE-01
+    catalog seed). Fractions of a byte are dropped (floor): never promise
+    more storage than was paid for. Does NOT range-check; call
+    calculate_custom_price() for validation.
+    """
+    return int(parse_gb(gb) * BYTES_PER_GB)
