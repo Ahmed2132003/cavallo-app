@@ -6,9 +6,27 @@ from monetization.services import activate_subscription, deactivate_subscription
 
 @admin.register(Plan)
 class PlanAdmin(admin.ModelAdmin):
-    list_display = ("id", "name", "duration_days", "price", "currency", "updated_at")
-    list_filter = ("currency",)
-    search_fields = ("name",)
+    list_display = (
+        "id",
+        "code",
+        "name",
+        "name_ar",
+        "name_en",
+        "duration_days",
+        "price",
+        "price_egp",
+        "currency",
+        "storage_bytes",
+        "is_featured",
+        "trial_days",
+        "is_custom",
+        "is_active",
+        "sort_order",
+        "updated_at",
+    )
+    list_filter = ("currency", "code", "is_active", "is_featured", "is_custom")
+    search_fields = ("name", "name_ar", "name_en", "code")
+    ordering = ("sort_order", "id")
     readonly_fields = ("created_at", "updated_at")
 
 

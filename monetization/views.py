@@ -27,7 +27,9 @@ from monetization.serializers import PlanSerializer
 
 
 class PlanListView(ListAPIView):
-    queryset = Plan.objects.order_by("duration_days", "id")
+    queryset = Plan.objects.filter(is_active=True).order_by(
+        "sort_order", "duration_days", "id"
+    )
     serializer_class = PlanSerializer
     permission_classes = [AllowAny]
     authentication_classes = []

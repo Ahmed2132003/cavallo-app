@@ -15,5 +15,21 @@ from monetization.models import Plan
 class PlanSerializer(serializers.ModelSerializer):
     class Meta:
         model = Plan
-        fields = ["id", "name", "duration_days", "price", "currency"]
+        # First five = legacy contract (unchanged). The rest are BE-01 additions.
+        fields = [
+            "id",
+            "name",
+            "duration_days",
+            "price",
+            "currency",
+            "code",
+            "name_ar",
+            "name_en",
+            "price_egp",
+            "storage_bytes",
+            "is_featured",
+            "trial_days",
+            "is_custom",
+            "sort_order",
+        ]
         read_only_fields = fields

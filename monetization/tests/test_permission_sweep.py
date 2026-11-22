@@ -35,7 +35,30 @@ from payments.tests.factories import make_plan
 pytestmark = pytest.mark.django_db
 
 URL = "/api/v1/monetization/plans/"
-PLAN_FIELDS = {"id", "name", "duration_days", "price", "currency"}
+# Legacy five + BE-01 catalog fields (additive, nothing removed).
+PLAN_FIELDS = {
+    "id",
+    "name",
+    "duration_days",
+    "price",
+    "currency",
+    "code",
+    "name_ar",
+    "name_en",
+    "price_egp",
+    "storage_bytes",
+    "is_featured",
+    "trial_days",
+    "is_custom",
+    "sort_order",
+}
+
+
+@pytest.fixture(autouse=True)
+def _no_seeded_plans(db):
+    # BE-01's migration seeds the catalog; these tests assert on exact
+    # contents and counts, so each starts from an empty Plan table.
+    Plan.objects.all().delete()
 
 
 @pytest.mark.parametrize(

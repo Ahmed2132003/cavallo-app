@@ -23,6 +23,39 @@ class Plan(TimestampedModel):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     currency = models.CharField(max_length=3, choices=Product.CURRENCY_CHOICES)
 
+    # ---- BE-01: subscription catalog fields -------------------------
+    # Legacy Featured plans keep code=NULL (unique allows many NULLs).
+    CODE_CHOICES = [
+        ("free", "Free"),
+        ("pro", "Pro"),
+        ("max", "Max"),
+        ("ultra", "Ultra"),
+        ("infinity", "Infinity"),
+    ]
+    code = models.CharField(
+        max_length=20, unique=True, null=True, blank=True, choices=CODE_CHOICES
+    )
+    name_ar = models.CharField(max_length=100, blank=True, default="")
+    name_en = models.CharField(max_length=100, blank=True, default="")
+    # NULL = not fixed in advance (infinity / is_custom).
+    price_egp = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    storage_bytes = models.PositiveBigIntegerField(null=True, blank=True)
+    is_featured = models.BooleanField(default=False)
+    trial_days = models.PositiveIntegerField(default=0)
+    is_custom = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    sort_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(trial_days=0) | Q(code="free"),
+                name="plan_trial_days_only_free",
+            ),
+        ]
+
     def __str__(self):
         return f"{self.name} ({self.duration_days}d, {self.price} {self.currency})"
 
