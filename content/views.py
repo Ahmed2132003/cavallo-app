@@ -10,6 +10,7 @@ from content.serializers import (
 )
 from content.tasks import transcode_reel
 from core.pagination import StandardCursorPagination
+from monetization.quota import quota_guard
 
 
 def _get_post_or_404(pk):
@@ -58,7 +59,8 @@ class PostListCreateView(generics.ListCreateAPIView):
             raise PermissionDenied(
                 "Only an authenticated business account can create posts."
             )
-        serializer.save(business=business)
+        with quota_guard(business, serializer):
+            serializer.save(business=business)
 
 
 class PostDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -90,7 +92,8 @@ class PostDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_update(self, serializer):
         self._check_ownership(serializer.instance)
-        serializer.save()
+        with quota_guard(serializer.instance.business, serializer):
+            serializer.save()
 
     def perform_destroy(self, instance):
         self._check_ownership(instance)
@@ -157,7 +160,8 @@ class ReelListCreateView(generics.ListCreateAPIView):
             raise PermissionDenied(
                 "Only an authenticated business account can create reels."
             )
-        reel = serializer.save(business=business)
+        with quota_guard(business, serializer):
+            reel = serializer.save(business=business)
         transcode_reel.delay(reel.id)
 
 
@@ -188,7 +192,8 @@ class ReelDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_update(self, serializer):
         self._check_ownership(serializer.instance)
-        serializer.save()
+        with quota_guard(serializer.instance.business, serializer):
+            serializer.save()
 
     def perform_destroy(self, instance):
         self._check_ownership(instance)

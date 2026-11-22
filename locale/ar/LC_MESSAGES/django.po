@@ -94,3 +94,6 @@ msgstr "تم رفض المحتوى الخاص بك"
 #, python-format
 msgid "Reason: %(reason)s"
 msgstr "السبب: %(reason)s"
+
+msgid "Your storage is full. Upgrade your plan to upload more."
+msgstr "مساحة التخزين ممتلئة. قم بترقية باقتك لرفع المزيد."

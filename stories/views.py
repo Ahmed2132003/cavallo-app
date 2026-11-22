@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.pagination import StandardCursorPagination
+from monetization.quota import quota_guard
 from stories.models import Story, StoryView
 from stories.serializers import StorySerializer
 
@@ -49,7 +50,8 @@ class StoryListCreateView(generics.ListCreateAPIView):
             raise PermissionDenied(
                 "Only an authenticated business account can create stories."
             )
-        serializer.save(business=business)
+        with quota_guard(business, serializer):
+            serializer.save(business=business)
 
 
 class StoryPublicListView(generics.ListAPIView):

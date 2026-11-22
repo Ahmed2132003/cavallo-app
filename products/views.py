@@ -38,6 +38,7 @@ from rest_framework import generics, permissions
 from rest_framework.exceptions import NotFound, PermissionDenied
 
 from core.pagination import StandardCursorPagination
+from monetization.quota import quota_guard
 
 from .models import Product, ProductVariant
 from .serializers import ProductSerializer, ProductVariantWriteSerializer
@@ -98,7 +99,8 @@ class ProductListCreateView(generics.ListCreateAPIView):
         # and only place a Product's owner is actually assigned, always
         # from request.user — mirroring P-026's proven
         # create_business_profile(user=request.user, ...) pattern.
-        serializer.save(business=business)
+        with quota_guard(business, serializer):
+            serializer.save(business=business)
 
 
 class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -146,7 +148,8 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_update(self, serializer):
         self._check_owner(serializer.instance)
-        serializer.save()
+        with quota_guard(serializer.instance.business, serializer):
+            serializer.save()
 
     def perform_destroy(self, instance):
         self._check_owner(instance)
