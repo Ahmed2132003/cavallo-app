@@ -95,3 +95,5 @@ msgstr ""
 msgid "Reason: %(reason)s"
 msgstr ""
 
+msgid "Your storage is full. Upgrade your plan to upload more."
+msgstr "Your storage is full. Upgrade your plan to upload more."
