@@ -179,3 +179,41 @@ class Subscription(TimestampedModel):
             f"Subscription({self.pk}) business={self.business_id} "
             f"plan={self.plan_id} status={self.status}"
         )
+
+
+class StoredFile(TimestampedModel):
+    """
+    BE-04. Ledger of the files that count toward a business's storage
+    usage: ONE row per (model, object_id, field) slot, holding the size
+    captured at upload time (no per-read S3 HEAD calls).
+
+    Written ONLY by monetization.storage_usage / storage_signals.
+    Used bytes = SUM(size_bytes) of a business's rows. Chat media and
+    avatars are deliberately never recorded here (D10).
+    """
+
+    business = models.ForeignKey(
+        "businesses.BusinessProfile",
+        on_delete=models.CASCADE,
+        related_name="stored_files",
+    )
+    # Model label, e.g. "content.Reel".
+    model = models.CharField(max_length=60)
+    object_id = models.PositiveBigIntegerField()
+    field = models.CharField(max_length=30)
+    file_name = models.CharField(max_length=255)
+    size_bytes = models.PositiveBigIntegerField(default=0)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["model", "object_id", "field"],
+                name="uniq_stored_file_slot",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["file_name"], name="storedfile_name_idx"),
+        ]
+
+    def __str__(self):
+        return f"StoredFile({self.model}#{self.object_id}.{self.field}, {self.size_bytes}B)"

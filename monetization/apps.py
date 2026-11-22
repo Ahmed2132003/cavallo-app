@@ -14,3 +14,6 @@ class MonetizationConfig(AppConfig):
     def ready(self):
         # BE-02: Free subscription on BusinessProfile creation.
         import monetization.signals  # noqa: F401
+
+        # BE-04: storage usage ledger kept in sync with uploads/deletes.
+        import monetization.storage_signals  # noqa: F401
