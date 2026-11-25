@@ -5,7 +5,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.pagination import StandardCursorPagination
+from monetization.permissions import HasActiveSubscription
 from monetization.quota import quota_guard
+from monetization.visibility import exclude_locked_businesses
 from stories.models import Story, StoryView
 from stories.serializers import StorySerializer
 
@@ -35,7 +37,7 @@ class StoryListCreateView(generics.ListCreateAPIView):
     """
 
     serializer_class = StorySerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveSubscription]
     pagination_class = StandardCursorPagination
 
     def get_queryset(self):
@@ -88,6 +90,7 @@ class StoryPublicListView(generics.ListAPIView):
             status=Story.Status.PUBLISHED,
             expires_at__gt=timezone.now(),
         )
+        queryset = exclude_locked_businesses(queryset)
         business_id = self.request.query_params.get("business_id")
         if business_id is not None:
             queryset = queryset.filter(business_id=business_id)
@@ -152,7 +155,7 @@ class StoryViewCountView(APIView):
     literal accessor name this part's own spec calls out.
     """
 
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveSubscription]
 
     def get(self, request, pk):
         story = _get_story_or_404(pk)

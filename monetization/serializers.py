@@ -49,6 +49,30 @@ class CustomQuoteRequestSerializer(serializers.Serializer):
         return attrs
 
 
+class PlanBriefSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Plan
+        fields = ["id", "code", "name", "name_ar", "name_en"]
+        read_only_fields = fields
+
+
+class SubscriptionMeSerializer(serializers.Serializer):
+    """BE-06 output of GET /subscription/me/."""
+
+    plan = PlanBriefSerializer()
+    status = serializers.CharField()
+    state = serializers.CharField()
+    days_left = serializers.IntegerField(allow_null=True)
+    trial_ends_at = serializers.DateTimeField(allow_null=True)
+    current_period_end = serializers.DateTimeField(allow_null=True)
+    purge_at = serializers.DateTimeField(allow_null=True)
+    quota_bytes = serializers.IntegerField()
+    used_bytes = serializers.IntegerField()
+    is_featured_effective = serializers.BooleanField()
+    pending_plan = PlanBriefSerializer(allow_null=True)
+    locked = serializers.BooleanField()
+
+
 class CustomQuoteResponseSerializer(serializers.Serializer):
     """BE-03 output. Decimals render as strings ("630.00"), like Plan.price."""
 

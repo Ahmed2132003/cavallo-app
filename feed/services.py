@@ -58,6 +58,7 @@ from django.db.models import Q
 
 from businesses.models import BusinessProfile
 from content.models import Post, Reel
+from monetization.visibility import exclude_locked_businesses
 from social.models import Follow
 from feed.cursor import (
     CONTENT_TYPE_POST,
@@ -186,6 +187,7 @@ def fetch_following_tier(
     entries = []
     for content_type, model in _CONTENT_SOURCES:
         queryset = model.published_objects.filter(business_id__in=business_ids)
+        queryset = exclude_locked_businesses(queryset)
         queryset = queryset.select_related("business")
         if after is not None:
             queryset = queryset.filter(_following_rows_after(content_type, after))
@@ -218,6 +220,7 @@ def fetch_backfill_tier(
     entries = []
     for content_type, model in _CONTENT_SOURCES:
         queryset = model.published_objects.exclude(business_id__in=excluded_ids)
+        queryset = exclude_locked_businesses(queryset)
         if after is not None:
             queryset = queryset.filter(_backfill_rows_after(content_type, after))
         queryset = queryset.select_related("business").order_by(

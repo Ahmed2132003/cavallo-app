@@ -8,12 +8,13 @@ monetization/services.py: activate_subscription()).
 
 from django.urls import path
 
-from monetization.views import CustomQuoteView, PlanListView
+from monetization.views import CustomQuoteView, PlanListView, SubscriptionMeView
 
 app_name = "monetization"
 
 urlpatterns = [
     path("plans/", PlanListView.as_view(), name="plan-list"),
+    path("subscription/me/", SubscriptionMeView.as_view(), name="subscription-me"),
     path(
         "subscriptions/custom-quote/",
         CustomQuoteView.as_view(),

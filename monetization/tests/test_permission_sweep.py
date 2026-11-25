@@ -194,3 +194,43 @@ def test_custom_quote_has_no_side_effects(method):
     assert FeaturedSubscription.objects.count() == 0
     business.refresh_from_db()
     assert business.is_featured is False
+
+
+# ---- BE-06: GET /api/v1/monetization/subscription/me/ ----------------
+ME_URL = "/api/v1/monetization/subscription/me/"
+
+
+@pytest.mark.parametrize(
+    "client_factory",
+    [client_for, garbage_token_client],
+    ids=["anonymous", "garbage-token"],
+)
+def test_subscription_me_requires_authentication(client_factory):
+    assert client_factory().get(ME_URL).status_code == 401
+
+
+def test_subscription_me_is_forbidden_for_a_customer():
+    assert client_for(make_user()).get(ME_URL).status_code == 403
+
+
+@pytest.mark.parametrize("method", ["post", "put", "patch", "delete"])
+def test_subscription_me_rejects_write_methods(method):
+    client = client_for(make_business().user)
+
+    response = getattr(client, method)(ME_URL, {"plan": 1}, format="json")
+
+    assert_error_envelope(response, 405, "METHOD_NOT_ALLOWED")
+
+
+def test_subscription_me_is_scoped_to_the_caller_and_has_no_side_effects():
+    from monetization.tests.helpers import give_subscription
+
+    mine, other = make_business(), make_business()
+    give_subscription(mine, "trialing", trial_days=3)
+    give_subscription(other, "active", period_days=30)
+    before = Subscription.objects.count()
+
+    body = client_for(mine.user).get(ME_URL).json()
+
+    assert body["status"] == "trialing"
+    assert Subscription.objects.count() == before

@@ -39,6 +39,8 @@ from rest_framework.exceptions import NotFound, PermissionDenied
 
 from core.pagination import StandardCursorPagination
 from monetization.quota import quota_guard
+from monetization.permissions import HasActiveSubscription
+from monetization.visibility import exclude_locked_businesses
 
 from .models import Product, ProductVariant
 from .serializers import ProductSerializer, ProductVariantWriteSerializer
@@ -65,7 +67,7 @@ class ProductListCreateView(generics.ListCreateAPIView):
     """
 
     serializer_class = ProductSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveSubscription]
     pagination_class = StandardCursorPagination
 
     def get_queryset(self):
@@ -133,7 +135,7 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_permissions(self):
         if self.request.method in permissions.SAFE_METHODS:
             return [permissions.AllowAny()]
-        return [permissions.IsAuthenticated()]
+        return [permissions.IsAuthenticated(), HasActiveSubscription()]
 
     def _check_owner(self, product):
         """
@@ -183,6 +185,7 @@ class ProductPublicListView(generics.ListAPIView):
 
     def get_queryset(self):
         queryset = Product.objects.filter(is_active=True).select_related("business")
+        queryset = exclude_locked_businesses(queryset)
         business_id = self.request.query_params.get("business_id")
         if business_id is not None:
             queryset = queryset.filter(business_id=business_id)
@@ -226,7 +229,7 @@ class ProductVariantCreateView(_ProductVariantParentMixin, generics.CreateAPIVie
     """
 
     serializer_class = ProductVariantWriteSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveSubscription]
 
     def perform_create(self, serializer):
         product = self._get_product()
@@ -269,7 +272,7 @@ class ProductVariantDetailView(
     def get_permissions(self):
         if self.request.method in permissions.SAFE_METHODS:
             return [permissions.AllowAny()]
-        return [permissions.IsAuthenticated()]
+        return [permissions.IsAuthenticated(), HasActiveSubscription()]
 
     def _check_owner(self, variant):
         """

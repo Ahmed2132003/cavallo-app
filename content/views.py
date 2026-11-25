@@ -10,7 +10,9 @@ from content.serializers import (
 )
 from content.tasks import transcode_reel
 from core.pagination import StandardCursorPagination
+from monetization.permissions import HasActiveSubscription
 from monetization.quota import quota_guard
+from monetization.visibility import exclude_locked_businesses
 
 
 def _get_post_or_404(pk):
@@ -44,7 +46,7 @@ class PostListCreateView(generics.ListCreateAPIView):
     """
 
     serializer_class = PostSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveSubscription]
     pagination_class = StandardCursorPagination
 
     def get_queryset(self):
@@ -78,7 +80,7 @@ class PostDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_permissions(self):
         if self.request.method in ("PATCH", "PUT", "DELETE"):
-            return [permissions.IsAuthenticated()]
+            return [permissions.IsAuthenticated(), HasActiveSubscription()]
         return [permissions.AllowAny()]
 
     def get_object(self):
@@ -125,6 +127,7 @@ class PostPublicListView(generics.ListAPIView):
 
     def get_queryset(self):
         queryset = Post.published_objects.select_related("business")
+        queryset = exclude_locked_businesses(queryset)
         business_id = self.request.query_params.get("business_id")
         if business_id is not None:
             queryset = queryset.filter(business_id=business_id)
@@ -145,7 +148,7 @@ class ReelListCreateView(generics.ListCreateAPIView):
     """
 
     serializer_class = ReelSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveSubscription]
     pagination_class = StandardCursorPagination
 
     def get_queryset(self):
@@ -178,7 +181,7 @@ class ReelDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_permissions(self):
         if self.request.method in ("PATCH", "PUT", "DELETE"):
-            return [permissions.IsAuthenticated()]
+            return [permissions.IsAuthenticated(), HasActiveSubscription()]
         return [permissions.AllowAny()]
 
     def get_object(self):
@@ -215,6 +218,7 @@ class ReelPublicListView(generics.ListAPIView):
 
     def get_queryset(self):
         queryset = Reel.published_objects.select_related("business")
+        queryset = exclude_locked_businesses(queryset)
         business_id = self.request.query_params.get("business_id")
         if business_id is not None:
             queryset = queryset.filter(business_id=business_id)
