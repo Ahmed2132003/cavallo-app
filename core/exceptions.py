@@ -57,6 +57,8 @@ _EXCEPTION_CODE_MAP = {
     "service_unavailable": "SERVICE_UNAVAILABLE",
     # Part BE-05: upload refused because the storage quota is full (403).
     "storage_quota_exceeded": "STORAGE_QUOTA_EXCEEDED",
+    # Part BE-06: merchant subscription expired/locked (403).
+    "subscription_required": "SUBSCRIPTION_REQUIRED",
 }
 
 # Human-readable fallback messages, used only when the exception itself
