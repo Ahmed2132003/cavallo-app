@@ -40,6 +40,7 @@ import logging
 from celery import shared_task
 from django.utils import timezone
 
+from monetization.lifecycle import expire_storage_subscriptions, send_due_reminders
 from monetization.models import FeaturedSubscription
 from monetization.services import deactivate_subscriptions
 
@@ -63,3 +64,19 @@ def expire_featured_subscriptions():
         extra={"deactivated": deactivated},
     )
     return {"deactivated": deactivated}
+
+
+@shared_task(name="monetization.expire_subscriptions", ignore_result=True)
+def expire_subscriptions():
+    """BE-08: end due storage periods / start pending plans. Idempotent."""
+    counts = expire_storage_subscriptions()
+    logger.info("expire_subscriptions finished", extra=counts)
+    return counts
+
+
+@shared_task(name="monetization.send_subscription_reminders", ignore_result=True)
+def send_subscription_reminders():
+    """BE-08: 3-day and 1-day reminders, each sent once per period."""
+    sent = send_due_reminders()
+    logger.info("send_subscription_reminders finished", extra={"sent": sent})
+    return {"sent": sent}

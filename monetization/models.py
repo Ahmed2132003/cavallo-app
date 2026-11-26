@@ -172,6 +172,8 @@ class Subscription(TimestampedModel):
         on_delete=models.SET_NULL,
         related_name="+",
     )
+    # BE-08: quota paid for the pending (downgrade) plan.
+    pending_quota_bytes = models.PositiveBigIntegerField(null=True, blank=True)
     canceled_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
@@ -217,3 +219,25 @@ class StoredFile(TimestampedModel):
 
     def __str__(self):
         return f"StoredFile({self.model}#{self.object_id}.{self.field}, {self.size_bytes}B)"
+
+
+class SubscriptionReminder(TimestampedModel):
+    """BE-08. One row per reminder sent, so it is never sent twice."""
+
+    subscription = models.ForeignKey(
+        Subscription, on_delete=models.CASCADE, related_name="reminders"
+    )
+    event = models.CharField(max_length=30)
+    # The end date the reminder was about; a new period gets new reminders.
+    period_end = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["subscription", "event", "period_end"],
+                name="uniq_sub_reminder",
+            ),
+        ]
+
+    def __str__(self):
+        return f"SubscriptionReminder({self.subscription_id}, {self.event})"

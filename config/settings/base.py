@@ -283,6 +283,15 @@ CELERY_BEAT_SCHEDULE = {
         "task": "payments.reconcile_pending_transactions",
         "schedule": crontab(hour=1, minute=0),
     },
+    # Part BE-08. Frequent, so a paid pending plan starts quickly.
+    "expire-storage-subscriptions": {
+        "task": "monetization.expire_subscriptions",
+        "schedule": crontab(minute="*/15"),
+    },
+    "send-subscription-reminders": {
+        "task": "monetization.send_subscription_reminders",
+        "schedule": crontab(minute=10),
+    },
 }
 
 EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"

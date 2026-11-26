@@ -23,6 +23,7 @@ from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from monetization.lifecycle import PurchaseBlocked, check_purchase_allowed
 from monetization.permissions import IsBusinessAccount
 from payments.gateways.base import PaymentGatewayError
 from payments.initiate_views import PaymentServiceUnavailable
@@ -58,6 +59,21 @@ class SubscriptionCheckoutView(APIView):
             serializer.validated_data["plan"],
             serializer.validated_data.get("gb"),
         )
+        try:
+            check_purchase_allowed(
+                business, quote.plan, serializer.validated_data.get("gb")
+            )
+        except PurchaseBlocked as exc:
+            return Response(
+                {
+                    "error": {
+                        "code": exc.code,
+                        "message": exc.message,
+                        "fields": exc.fields,
+                    }
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
         try:
             payment, checkout_url = initiate_storage_payment(business, quote)
