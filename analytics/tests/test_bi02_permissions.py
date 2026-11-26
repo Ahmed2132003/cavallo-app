@@ -16,7 +16,9 @@ from analytics.tests.bi02_helpers import (
     url,
 )
 from core.tests.sweep_factories import client_for, garbage_token_client
+from monetization.tests.helpers import give_subscription
 from core.tests.sweep_helpers import (
+    assert_error_envelope,
     assert_forbidden,
     assert_not_found,
     assert_unauthenticated,
@@ -164,3 +166,21 @@ def test_each_merchant_only_sees_their_own_numbers(s):
         .json()["results"]
     }
     assert s.post.pk not in content_ids
+
+
+# ---- BE-06: Subscription Gate on the owner dashboard -----------------
+GATED = [n for n in NAMES if n != "daily"]  # "daily" lives in analytics/views.py
+
+
+@pytest.mark.parametrize("name", GATED)
+def test_locked_owner_gets_subscription_required(s, name):
+    give_subscription(s.business, "locked")
+    r = client_for(s.business.user).get(endpoints(s)[name])
+    assert_error_envelope(r, 403, "SUBSCRIPTION_REQUIRED")
+
+
+@pytest.mark.parametrize("name", GATED)
+def test_owner_with_running_trial_is_not_gated(s, name):
+    give_subscription(s.business, "trialing", trial_days=5)
+    r = client_for(s.business.user).get(endpoints(s)[name])
+    assert r.status_code != 403

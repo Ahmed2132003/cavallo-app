@@ -70,6 +70,7 @@ from django.db.models import F, FloatField, Q, QuerySet, Value
 from django.db.models.functions import Cast, Coalesce
 
 from businesses.models import BusinessProfile
+from monetization.visibility import exclude_locked_businesses
 from products.models import Product
 
 from search.cursor import (
@@ -235,11 +236,11 @@ def build_business_queryset(filters: SearchFilters) -> QuerySet:
     adds business-side category filtering to Search, so leaving it
     out now would mean it never gets added at all — see this part's
     own handoff note."""
-    qs = BusinessProfile.objects.all()
+    qs = exclude_locked_businesses(BusinessProfile.objects.all(), prefix="")    
     if filters.category_id is not None:
         qs = qs.filter(category_id=filters.category_id)
     if filters.country:
-        qs = qs.filter(country=filters.country)
+        qs = qs.filter(country=filters.country)        
     if filters.city:
         qs = qs.filter(city=filters.city)
     if filters.business_type:
@@ -255,7 +256,7 @@ def build_product_queryset(filters: SearchFilters) -> QuerySet:
     """Product rows matching every present filter that applies to
     products. `country`/`city` join through `business__...` since
     Product has no such fields of its own."""
-    qs = Product.objects.filter(is_active=True)
+    qs = exclude_locked_businesses(Product.objects.filter(is_active=True))
     if filters.category_id is not None:
         qs = qs.filter(category_id=filters.category_id)
     if filters.country:

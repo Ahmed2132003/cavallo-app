@@ -21,6 +21,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.pagination import StandardCursorPagination
+from monetization.permissions import HasActiveSubscription
 from products.models import Product
 
 from .constants import OrderStatus, parse_order_number
@@ -130,7 +131,7 @@ class OrderFromChatView(APIView):
     order when the message already has one.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasActiveSubscription]
 
     def post(self, request):
         serializer = OrderFromChatSerializer(data=request.data)
@@ -153,7 +154,7 @@ class MerchantOrderListView(generics.ListAPIView):
     """
 
     serializer_class = MerchantOrderSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasActiveSubscription]
     pagination_class = StandardCursorPagination
 
     def get_queryset(self):
@@ -183,7 +184,7 @@ class MerchantOrderDetailView(generics.RetrieveAPIView):
     """GET /api/v1/orders/<id>/"""
 
     serializer_class = MerchantOrderSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasActiveSubscription]
 
     def get_object(self):
         business = get_owner_business(self.request.user)
@@ -193,7 +194,7 @@ class MerchantOrderDetailView(generics.RetrieveAPIView):
 class MerchantOrderStatusView(APIView):
     """POST /api/v1/orders/<id>/status/  {"status": ..., "note": ...}"""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasActiveSubscription]
 
     def post(self, request, pk):
         business = get_owner_business(request.user)
@@ -212,7 +213,7 @@ class MerchantOrderStatusView(APIView):
 class MerchantOrderNoteView(APIView):
     """POST /api/v1/orders/<id>/notes/  {"note": ..., "is_internal": bool}"""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasActiveSubscription]
 
     def post(self, request, pk):
         business = get_owner_business(request.user)
@@ -236,7 +237,7 @@ class MerchantOrderEventListView(APIView):
     oldest first. Not paginated: an order has a handful of events.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, HasActiveSubscription]
 
     def get(self, request, pk):
         business = get_owner_business(request.user)

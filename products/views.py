@@ -132,6 +132,13 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
 
+    def get_queryset(self):
+        # BE-06: a locked merchant's product is a 404 on public reads.
+        queryset = Product.objects.all()
+        if self.request.method in permissions.SAFE_METHODS:
+            queryset = exclude_locked_businesses(queryset)
+        return queryset
+
     def get_permissions(self):
         if self.request.method in permissions.SAFE_METHODS:
             return [permissions.AllowAny()]
@@ -267,7 +274,10 @@ class ProductVariantDetailView(
     serializer_class = ProductVariantWriteSerializer
 
     def get_queryset(self):
-        return ProductVariant.objects.filter(product_id=self.kwargs["product_pk"])
+        queryset = ProductVariant.objects.filter(product_id=self.kwargs["product_pk"])
+        if self.request.method in permissions.SAFE_METHODS:
+            queryset = exclude_locked_businesses(queryset, prefix="product__business")
+        return queryset
 
     def get_permissions(self):
         if self.request.method in permissions.SAFE_METHODS:

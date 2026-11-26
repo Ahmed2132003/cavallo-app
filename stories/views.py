@@ -97,14 +97,17 @@ class StoryPublicListView(generics.ListAPIView):
         return queryset
 
 
-def _get_story_or_404(pk):
+def _get_story_or_404(pk, hide_locked=False):
     """
     Part P-049. Same DRF-NotFound-explicitly convention as
     content/views.py's _get_post_or_404 — a genuine 404 with the
     NOT_FOUND error code, not django.shortcuts.get_object_or_404's
     generic Http404.
     """
-    story = Story.objects.filter(pk=pk).first()
+    queryset = Story.objects.filter(pk=pk)
+    if hide_locked:
+        queryset = exclude_locked_businesses(queryset)
+    story = queryset.first()
     if story is None:
         raise NotFound("Story not found.")
     return story
@@ -132,7 +135,7 @@ class StoryViewRecordView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        story = _get_story_or_404(pk)
+        story = _get_story_or_404(pk, hide_locked=True)
         StoryView.objects.get_or_create(story=story, viewer=request.user)
         return Response(status=status.HTTP_200_OK)
 

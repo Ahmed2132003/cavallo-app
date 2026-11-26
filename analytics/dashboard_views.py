@@ -25,12 +25,13 @@ from analytics.models import ExternalContentMetricSnapshot
 from analytics.permissions import IsAnalyticsBusinessOwner
 from analytics.utils import iso
 from businesses.models import BusinessProfile
+from monetization.permissions import HasActiveSubscription
 from django.utils import timezone
 from products.models import Product
 
 
 class BusinessAnalyticsBaseView(APIView):
-    permission_classes = [IsAnalyticsBusinessOwner]
+    permission_classes = [IsAnalyticsBusinessOwner, HasActiveSubscription]
 
     def get_business(self, request, pk):
         business = BusinessProfile.objects.filter(pk=pk).first()

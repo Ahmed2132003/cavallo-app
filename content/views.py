@@ -15,20 +15,26 @@ from monetization.quota import quota_guard
 from monetization.visibility import exclude_locked_businesses
 
 
-def _get_post_or_404(pk):
+def _get_post_or_404(pk, hide_locked=False):
     """
     DRF NotFound explicitly, not django.shortcuts.get_object_or_404 —
     per the P-038 rule, so the error envelope's code is NOT_FOUND, not
     the generic ERROR fallback.
     """
-    post = Post.objects.filter(pk=pk).first()
+    queryset = Post.objects.filter(pk=pk)
+    if hide_locked:
+        queryset = exclude_locked_businesses(queryset)
+    post = queryset.first()
     if post is None:
         raise NotFound("Post not found.")
     return post
 
 
-def _get_reel_or_404(pk):
-    reel = Reel.objects.filter(pk=pk).first()
+def _get_reel_or_404(pk, hide_locked=False):
+    queryset = Reel.objects.filter(pk=pk)
+    if hide_locked:
+        queryset = exclude_locked_businesses(queryset)
+    reel = queryset.first()
     if reel is None:
         raise NotFound("Reel not found.")
     return reel
@@ -84,7 +90,10 @@ class PostDetailView(generics.RetrieveUpdateDestroyAPIView):
         return [permissions.AllowAny()]
 
     def get_object(self):
-        post = _get_post_or_404(self.kwargs["pk"])
+        post = _get_post_or_404(
+            self.kwargs["pk"],
+            hide_locked=self.request.method in permissions.SAFE_METHODS,
+        )
         self.check_object_permissions(self.request, post)
         return post
 
@@ -185,7 +194,10 @@ class ReelDetailView(generics.RetrieveUpdateDestroyAPIView):
         return [permissions.AllowAny()]
 
     def get_object(self):
-        reel = _get_reel_or_404(self.kwargs["pk"])
+        reel = _get_reel_or_404(
+            self.kwargs["pk"],
+            hide_locked=self.request.method in permissions.SAFE_METHODS,
+        )
         self.check_object_permissions(self.request, reel)
         return reel
 

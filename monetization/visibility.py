@@ -26,6 +26,29 @@ def locked_businesses_q(prefix="business", now=None):
     )
 
 
+def lock_state(business_id, now=None):
+    """
+    One query. Returns (locked, end) where ``end`` is the datetime at which
+    an unlocked subscription will lock (None = open-ended / no row / locked).
+    Same rule as services.effective_state().
+    """
+    now = now or timezone.now()
+    row = (
+        Subscription.objects.filter(business_id=business_id)
+        .values_list("status", "trial_ends_at", "current_period_end")
+        .first()
+    )
+    if row is None:
+        return False, None
+    status, trial_end, period_end = row
+    if status in (Subscription.STATUS_LOCKED, Subscription.STATUS_EXPIRED):
+        return True, None
+    end = trial_end if status == Subscription.STATUS_TRIALING else period_end
+    if end is not None and now >= end:
+        return True, None
+    return False, end
+
+
 def exclude_locked_businesses(queryset, prefix="business", now=None):
     """Hide content of locked merchants. Add AFTER the published/moderation filters."""
     return queryset.exclude(locked_businesses_q(prefix, now))
