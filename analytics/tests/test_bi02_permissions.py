@@ -169,7 +169,7 @@ def test_each_merchant_only_sees_their_own_numbers(s):
 
 
 # ---- BE-06: Subscription Gate on the owner dashboard -----------------
-GATED = [n for n in NAMES if n != "daily"]  # "daily" lives in analytics/views.py
+GATED = list(NAMES)
 
 
 @pytest.mark.parametrize("name", GATED)

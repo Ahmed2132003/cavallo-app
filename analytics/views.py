@@ -8,6 +8,7 @@ from analytics.serializers import (
     DailyStatsQuerySerializer,
 )
 from businesses.models import BusinessProfile
+from monetization.permissions import HasActiveSubscription
 
 
 class BusinessDailyStatsListView(generics.ListAPIView):
@@ -32,7 +33,7 @@ class BusinessDailyStatsListView(generics.ListAPIView):
     """
 
     serializer_class = BusinessDailyStatsSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveSubscription]
     pagination_class = DailyStatsCursorPagination
 
     def get_queryset(self):
