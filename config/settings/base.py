@@ -635,3 +635,15 @@ STORAGES = {
 }
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+
+# BE-09: destructive storage purge. Off until explicitly enabled.
+import os  # noqa: E402
+
+from celery.schedules import crontab  # noqa: E402
+
+STORAGE_PURGE_ENABLED = os.environ.get("STORAGE_PURGE_ENABLED", "").lower() == "true"
+CELERY_BEAT_SCHEDULE["purge-expired-free-trials"] = {
+    "task": "monetization.purge_expired_free_trials",
+    "schedule": crontab(hour=1, minute=20),
+}

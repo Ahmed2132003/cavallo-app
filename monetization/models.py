@@ -175,6 +175,8 @@ class Subscription(TimestampedModel):
     # BE-08: quota paid for the pending (downgrade) plan.
     pending_quota_bytes = models.PositiveBigIntegerField(null=True, blank=True)
     canceled_at = models.DateTimeField(null=True, blank=True)
+    # BE-09: last time the business content was permanently purged.
+    purged_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return (
@@ -241,3 +243,20 @@ class SubscriptionReminder(TimestampedModel):
 
     def __str__(self):
         return f"SubscriptionReminder({self.subscription_id}, {self.event})"
+
+
+class PendingFileDeletion(TimestampedModel):
+    """
+    BE-09 outbox: a storage object that must still be deleted. Written in
+    the same transaction as the purge and removed only after the storage
+    delete succeeds, so a storage failure never loses the file name.
+    """
+
+    # Plain integer, not a FK: the record must survive anything.
+    business_id = models.PositiveBigIntegerField(db_index=True)
+    file_name = models.CharField(max_length=255, unique=True)
+    attempts = models.PositiveIntegerField(default=0)
+    last_error = models.TextField(blank=True, default="")
+
+    def __str__(self):
+        return f"PendingFileDeletion({self.file_name}, attempts={self.attempts})"
