@@ -35,11 +35,12 @@ from core.tests.sweep_factories import client_for, garbage_token_client, make_us
 from core.tests.sweep_helpers import (
     assert_error_envelope,
     assert_forbidden,
+    assert_not_found,
     assert_unauthenticated,
 )
 from monetization.models import FeaturedSubscription
 from payments.models import STATUS_COMPLETED, Subscription, Transaction
-from payments.tests.factories import make_business, make_plan
+from payments.tests.factories import make_business, make_plan, make_storage_plan
 from payments.tests.webhook_helpers import (
     SECRET,
     WEBHOOK_URL,
@@ -150,3 +151,90 @@ def test_webhook_only_accepts_post_and_changes_nothing(method):
 
     assert_error_envelope(response, 405, "METHOD_NOT_ALLOWED")
     assert db_snapshot() == before
+
+
+# ------------------------------------------------- BE-07: subscription checkout
+#
+# POST subscriptions/checkout/ and GET subscriptions/checkout/<id>/status/
+# are merchant-only (IsBusinessAccount). Category 1: 401 anonymous/garbage
+# token. Category 2: the owner is always request.user's business, so
+# another merchant's payment id is a 404 (nothing leaks); other methods
+# are 405. Category 3: a Customer account gets 403.
+
+CHECKOUT_URL = "/api/v1/payments/subscriptions/checkout/"
+CHECKOUT_STATUS_URL = CHECKOUT_URL + "{}/status/"
+
+
+@pytest.mark.parametrize("client_factory", [client_for, garbage_token_client])
+def test_checkout_unauthenticated_gets_401_and_creates_nothing(
+    fake_gateway, client_factory
+):
+    make_storage_plan()
+
+    response = client_factory().post(CHECKOUT_URL, {"plan": "pro"}, format="json")
+
+    assert_unauthenticated(response)
+    assert _payment_rows() == (0, 0)
+
+
+def test_checkout_wrong_role_customer_gets_403_and_creates_nothing(fake_gateway):
+    make_storage_plan()
+
+    response = client_for(make_user("customer")).post(
+        CHECKOUT_URL, {"plan": "pro"}, format="json"
+    )
+
+    assert_forbidden(response)
+    assert _payment_rows() == (0, 0)
+
+
+@pytest.mark.parametrize("method", ["get", "put", "patch", "delete"])
+def test_checkout_only_accepts_post(fake_gateway, method):
+    owner = make_business("owner").user
+
+    response = getattr(client_for(owner), method)(CHECKOUT_URL)
+
+    assert_error_envelope(response, 405, "METHOD_NOT_ALLOWED")
+    assert _payment_rows() == (0, 0)
+
+
+@pytest.mark.parametrize("client_factory", [client_for, garbage_token_client])
+def test_checkout_status_unauthenticated_gets_401(client_factory):
+    response = client_factory().get(CHECKOUT_STATUS_URL.format(1))
+
+    assert_unauthenticated(response)
+
+
+def test_checkout_status_wrong_role_customer_gets_403():
+    response = client_for(make_user("customer")).get(CHECKOUT_STATUS_URL.format(1))
+
+    assert_forbidden(response)
+
+
+@pytest.mark.parametrize("method", ["post", "put", "patch", "delete"])
+def test_checkout_status_only_accepts_get(fake_gateway, method):
+    owner = make_business("owner").user
+
+    response = getattr(client_for(owner), method)(CHECKOUT_STATUS_URL.format(1))
+
+    assert_error_envelope(response, 405, "METHOD_NOT_ALLOWED")
+
+
+def test_checkout_status_of_another_owners_payment_is_404_and_changes_nothing(
+    fake_gateway,
+):
+    make_storage_plan()
+    owner = make_business("owner")
+    other = make_business("other", phone_number="+201001234568")
+    created = client_for(owner.user).post(
+        CHECKOUT_URL, {"plan": "pro"}, format="json"
+    )
+    payment_id = created.json()["payment_id"]
+    rows_before = _payment_rows()
+
+    stranger = client_for(other.user).get(CHECKOUT_STATUS_URL.format(payment_id))
+    mine = client_for(owner.user).get(CHECKOUT_STATUS_URL.format(payment_id))
+
+    assert_not_found(stranger)
+    assert mine.status_code == 200
+    assert _payment_rows() == rows_before

@@ -45,3 +45,28 @@ def make_subscription(suffix="a", **plan_kwargs):
     return Subscription.objects.create(
         business=make_business(suffix), plan=make_plan(**plan_kwargs)
     )
+
+
+def make_storage_plan(
+    code="pro", price_egp="199.00", storage_gb=50, is_custom=False
+):
+    """
+    BE-07: a catalog (storage) Plan by code. update_or_create, because
+    BE-01's migration already seeds codes like "pro" / "infinity".
+    """
+    return Plan.objects.update_or_create(
+        code=code,
+        defaults={
+            "name": code.title(),
+            "duration_days": 30,
+            "price": Decimal(price_egp or "0"),
+            "currency": "EGP",
+            "price_egp": Decimal(price_egp) if price_egp is not None else None,
+            "storage_bytes": (
+                storage_gb * 1024**3 if storage_gb is not None else None
+            ),
+            "is_custom": is_custom,
+            "is_active": True,
+            "trial_days": 0,
+        },
+    )[0]
