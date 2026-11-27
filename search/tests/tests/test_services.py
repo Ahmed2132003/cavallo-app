@@ -54,7 +54,9 @@ def make_business(
     )
     updates = {}
     if featured:
+        # BE-10: .update() bypasses the sync signal, so set both flags.
         updates["is_featured"] = True
+        updates["is_featured_effective"] = True
     if rating is not None:
         updates["average_rating"] = Decimal(str(rating))
         updates["ratings_count"] = 1
