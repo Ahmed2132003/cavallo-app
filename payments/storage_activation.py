@@ -27,6 +27,7 @@ from monetization.lifecycle import (
     target_quota_bytes,
 )
 from monetization.models import Subscription as StorageSubscription
+from monetization.notifications import notify_subscription_event
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,14 @@ def activate_storage_subscription(business, plan, gb, payment):
         sub.canceled_at = None
         sub.save()
         drop_profile_cache(business.pk)
+        # BE-11: scheduled on commit (the webhook's outer transaction too).
+        # A notification problem must never roll back a paid activation.
+        try:
+            notify_subscription_event(business, "subscription_activated")
+        except Exception:
+            logger.exception(
+                "subscription_activated notification failed: business=%s", business.pk
+            )
     logger.info(
         "Storage subscription activated: business=%s plan=%s payment=%s",
         business.pk,

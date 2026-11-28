@@ -201,6 +201,7 @@ COVERED_BY_THIS_SWEEP = {
     "comment_on_content",
 }
 COVERED_BY_P094 = {"new_follower", "chat_message"}
+COVERED_BY_BE11 = {"subscription"}  # test_subscription_notifications.py
 DOCUMENTED_GAPS_G1 = {  # defined but no source ever sends them
     "new_like",
     "new_share",
@@ -211,5 +212,10 @@ DOCUMENTED_GAPS_G1 = {  # defined but no source ever sends them
 
 def test_every_notification_type_is_classified():
     """A new NotificationType must be covered or documented as a gap."""
-    classified = COVERED_BY_THIS_SWEEP | COVERED_BY_P094 | DOCUMENTED_GAPS_G1
+    classified = (
+        COVERED_BY_THIS_SWEEP
+        | COVERED_BY_P094
+        | COVERED_BY_BE11
+        | DOCUMENTED_GAPS_G1
+    )
     assert set(Notification.NotificationType.values) == classified

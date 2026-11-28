@@ -105,6 +105,7 @@ class TestRenderNotification:
             "system_announcement": {"title": "T", "body": "B"},
             "comment_on_content": {"text": "x"},
             "chat_message": {"text": "x"},
+            "subscription": {"event": "trial_expired"},
         }
         for value in Notification.NotificationType.values:
             params = samples.get(value, {"item": "post"})

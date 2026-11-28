@@ -167,6 +167,21 @@ def expire_storage_subscriptions(now=None):
         counts["renewed"] += int(renewed)
         if ended:
             counts[sub.status] += 1
+            # Runs once per ended period: the status change above was
+            # committed under the row lock, so a re-run finds nothing.
+            event = (
+                "trial_expired"
+                if sub.status == Subscription.STATUS_LOCKED
+                else "subscription_expired"
+            )
+            try:
+                notify_subscription_event(sub.business, event)
+            except Exception:  # a notification failure must not stop the sweep
+                logger.exception(
+                    "notify_subscription_event failed: business=%s event=%s",
+                    sub.business_id,
+                    event,
+                )
     return counts
 
 

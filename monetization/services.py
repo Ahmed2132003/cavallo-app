@@ -41,6 +41,7 @@ from monetization.constants import (
     PURGE_GRACE_DAYS,
     TRIAL_DAYS_DEFAULT,
 )
+from monetization.featured import sync_featured_effective
 from monetization.models import FeaturedSubscription, Plan, Subscription
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,9 @@ def _sync_business_featured_flag(business_ids):
     BusinessProfile.all_objects.filter(pk__in=business_ids - featured_ids).update(
         is_featured=False, updated_at=now
     )
+    # BE-10: the effective flag (manual OR plan) follows the manual flag
+    # in the same transaction. Cache drop is scheduled just below.
+    sync_featured_effective(business_ids, drop_cache=False)
 
     # Part P-094 (finding F-9): the public Business Profile response is
     # cached for 5 minutes (P-030) and exposes is_featured, but the
@@ -125,6 +129,7 @@ def activate_subscription(business, plan):
 
         _sync_business_featured_flag([business.pk])
         business.is_featured = True
+        business.is_featured_effective = True
         return subscription
 
 

@@ -38,10 +38,17 @@ def _set_preference(user, **fields):
     NotificationPreference.objects.filter(user=user).update(**fields)
 
 
-def test_mapping_covers_every_type_except_system_announcement():
+# Types with NO preference toggle: always delivered (critical/system).
+ALWAYS_DELIVERED_TYPES = {
+    "system_announcement",
+    "subscription",  # BE-11, billing-critical
+}
+
+
+def test_mapping_covers_every_type_except_the_always_delivered_ones():
     all_types = set(Notification.NotificationType.values)
     mapped = set(NOTIFICATION_TYPE_TO_PREFERENCE_FIELD)
-    assert all_types - mapped == {"system_announcement"}
+    assert all_types - mapped == ALWAYS_DELIVERED_TYPES
     assert mapped <= all_types
 
 

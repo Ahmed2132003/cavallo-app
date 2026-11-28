@@ -25,6 +25,7 @@ from django.utils import timezone
 from monetization.constants import PURGE_GRACE_DAYS
 from monetization.lifecycle import PAID_PURGE_GRACE_DAYS, drop_profile_cache
 from monetization.models import PendingFileDeletion, StoredFile, Subscription
+from monetization.notifications import notify_subscription_event
 from monetization.storage_usage import TRACKED_FIELDS, get_used_bytes
 
 logger = logging.getLogger(__name__)
@@ -187,8 +188,18 @@ def purge_business_content(business, dry_run=False, now=None):
         sub.save(update_fields=["purged_at", "is_featured_effective", "updated_at"])
         drop_profile_cache(business_id)
         transaction.on_commit(lambda: process_pending_file_deletions(business_id))
+        # BE-11: tell the owner only once the purge has been committed.
+        owner = sub.business
+        transaction.on_commit(lambda: _notify_purge_done(owner))
         report.purged = True
     return report
+
+
+def _notify_purge_done(business):
+    try:
+        notify_subscription_event(business, "purge_done")
+    except Exception:  # never turn a committed purge into a failure
+        logger.exception("purge_done notification failed business=%s", business.pk)
 
 
 def process_pending_file_deletions(business_id=None):
