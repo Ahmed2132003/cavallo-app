@@ -103,6 +103,61 @@ def _system_announcement(params):
     return str(title), str(body)
 
 
+def _subscription(params):
+    """BE-11. params = {"event": <canonical subscription event>}."""
+    event = params.get("event")
+    if event == "trial_ending_3d":
+        return (
+            _("Your free trial ends in 3 days"),
+            _("Choose a plan before it ends to keep uploading and keep your content."),
+        )
+    if event == "trial_ending_1d":
+        return (
+            _("Your free trial ends tomorrow"),
+            _("Choose a plan today to keep uploading and keep your content."),
+        )
+    if event == "trial_expired":
+        return (
+            _("Your free trial has ended"),
+            _(
+                "Your account is locked. Subscribe within 2 days or your "
+                "content will be permanently deleted."
+            ),
+        )
+    if event == "purge_done":
+        return (
+            _("Your content has been deleted"),
+            _(
+                "Your content was permanently deleted because no plan was "
+                "activated. You can subscribe and start again."
+            ),
+        )
+    if event == "subscription_activated":
+        return (
+            _("Your subscription is active"),
+            _("Thank you! Your plan is now active."),
+        )
+    if event == "subscription_ending_3d":
+        return (
+            _("Your subscription ends in 3 days"),
+            _("Renew your plan to avoid losing access."),
+        )
+    if event == "subscription_ending_1d":
+        return (
+            _("Your subscription ends tomorrow"),
+            _("Renew your plan today to avoid losing access."),
+        )
+    if event == "subscription_expired":
+        return (
+            _("Your subscription has ended"),
+            _(
+                "Your account is locked. Renew within 60 days or your "
+                "content will be permanently deleted."
+            ),
+        )
+    return None
+
+
 _BUILDERS = {
     "new_follower": _new_follower,
     "comment_on_content": _comment_on_content,
@@ -113,6 +168,7 @@ _BUILDERS = {
     "moderation_approved": _moderation_approved,
     "moderation_rejected": _moderation_rejected,
     "system_announcement": _system_announcement,
+    "subscription": _subscription,
 }
 
 

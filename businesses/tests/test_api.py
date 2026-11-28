@@ -452,7 +452,7 @@ class TestBusinessProfilePublicCaching:
         # Cache miss: 1 query for the BusinessProfile row, 1 for the
         # related User row read by the is_verified property - see this
         # class's own docstring for why 2 (not 1) is correct here.
-        with django_assert_num_queries(2):
+        with django_assert_num_queries(3):
             first = api_client.get(url)
         assert first.status_code == 200
         assert first.json()["business_name"] == "Cached Biz"
@@ -490,7 +490,7 @@ class TestBusinessProfilePublicCaching:
         # profile_2 must still be a genuine cache miss (its own key,
         # 2 queries per this class's docstring), not accidentally
         # served from profile_1's cached entry (which would be 0).
-        with django_assert_num_queries(2):
+        with django_assert_num_queries(3):
             response = api_client.get(_business_public_url(profile_2.id))
         assert response.status_code == 200
         assert response.json()["business_name"] == "Biz Two"

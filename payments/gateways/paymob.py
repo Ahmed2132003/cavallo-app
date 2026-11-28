@@ -38,6 +38,7 @@ from payments.gateways.base import (
     PaymentGateway,
     PaymentGatewayError,
 )
+from payments.models import KIND_STORAGE
 
 logger = logging.getLogger(__name__)
 
@@ -160,17 +161,24 @@ class PaymobGateway(PaymentGateway):
 
     def build_intention_body(self, subscription) -> dict:
         plan = subscription.plan
-        cents = amount_to_cents(plan.price)
+        # BE-07: charge the amount snapshotted on the Transaction (server-
+        # computed for storage plans); falls back to the plan price.
+        amount, currency = subscription.charge_amount()
+        cents = amount_to_cents(amount)
         body = {
             "amount": cents,
-            "currency": plan.currency,
+            "currency": currency,
             "payment_methods": [int(settings.PAYMOB_INTEGRATION_ID)],
             # Paymob requires amount == sum of the items' amounts.
             "items": [
                 {
                     "name": plan.name,
                     "amount": cents,
-                    "description": f"Featured plan: {plan.duration_days} days",
+                    "description": (
+                        f"Storage plan: {plan.code}"
+                        if subscription.kind == KIND_STORAGE
+                        else f"Featured plan: {plan.duration_days} days"
+                    ),
                     "quantity": 1,
                 }
             ],

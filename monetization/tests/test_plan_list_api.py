@@ -20,6 +20,13 @@ URL = "/api/v1/monetization/plans/"
 User = get_user_model()
 
 
+@pytest.fixture(autouse=True)
+def _no_seeded_plans(db):
+    # BE-01's migration seeds the catalog; these tests assert on exact
+    # contents, so each starts from an empty Plan table.
+    Plan.objects.all().delete()
+
+
 def _make_plan(name, days, price, currency="EGP"):
     return Plan.objects.create(
         name=name,
@@ -53,6 +60,15 @@ def test_returns_every_plan_with_exactly_the_public_fields():
             "duration_days": 30,
             "price": "250.00",
             "currency": "EGP",
+            "code": None,
+            "name_ar": "",
+            "name_en": "",
+            "price_egp": None,
+            "storage_bytes": None,
+            "is_featured": False,
+            "trial_days": 0,
+            "is_custom": False,
+            "sort_order": 0,
         }
     ]
 
@@ -125,3 +141,24 @@ def test_list_uses_a_single_query(django_assert_num_queries):
         response = APIClient().get(URL)
 
     assert response.status_code == 200
+
+
+def test_inactive_plans_are_excluded():
+    _make_plan("Visible", 30, "100.00")
+    hidden = _make_plan("Hidden", 30, "100.00")
+    Plan.objects.filter(pk=hidden.pk).update(is_active=False)
+
+    names = [row["name"] for row in APIClient().get(URL).json()]
+
+    assert names == ["Visible"]
+
+
+def test_sort_order_takes_precedence_over_duration():
+    a = _make_plan("A", 7, "10.00")
+    b = _make_plan("B", 90, "10.00")
+    Plan.objects.filter(pk=a.pk).update(sort_order=2)
+    Plan.objects.filter(pk=b.pk).update(sort_order=1)
+
+    ids = [row["id"] for row in APIClient().get(URL).json()]
+
+    assert ids == [b.id, a.id]

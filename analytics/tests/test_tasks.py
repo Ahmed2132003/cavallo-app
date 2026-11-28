@@ -323,9 +323,7 @@ class TestResilience:
         assert result["businesses_processed"] == 1
         assert result["businesses_failed"] == 1
         assert BusinessDailyStats.objects.filter(business=good, date=DAY).exists()
-        assert not BusinessDailyStats.objects.filter(
-            business=broken, date=DAY
-        ).exists()
+        assert not BusinessDailyStats.objects.filter(business=broken, date=DAY).exists()
 
 
 class TestBeatRegistration:

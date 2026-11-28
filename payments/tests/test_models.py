@@ -138,9 +138,12 @@ class TestNoCardData:
             "plan",
             "status",
             "gateway_reference",
+            "kind",
+            "gb",
             "created_at",
             "updated_at",
         }
+                
         assert names(Transaction) == {
             "subscription",
             "transaction_id",

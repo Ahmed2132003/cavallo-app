@@ -38,6 +38,9 @@ from rest_framework import generics, permissions
 from rest_framework.exceptions import NotFound, PermissionDenied
 
 from core.pagination import StandardCursorPagination
+from monetization.quota import quota_guard
+from monetization.permissions import HasActiveSubscription
+from monetization.visibility import exclude_locked_businesses
 
 from .models import Product, ProductVariant
 from .serializers import ProductSerializer, ProductVariantWriteSerializer
@@ -64,7 +67,7 @@ class ProductListCreateView(generics.ListCreateAPIView):
     """
 
     serializer_class = ProductSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveSubscription]
     pagination_class = StandardCursorPagination
 
     def get_queryset(self):
@@ -98,7 +101,8 @@ class ProductListCreateView(generics.ListCreateAPIView):
         # and only place a Product's owner is actually assigned, always
         # from request.user — mirroring P-026's proven
         # create_business_profile(user=request.user, ...) pattern.
-        serializer.save(business=business)
+        with quota_guard(business, serializer):
+            serializer.save(business=business)
 
 
 class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -128,10 +132,17 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
 
+    def get_queryset(self):
+        # BE-06: a locked merchant's product is a 404 on public reads.
+        queryset = Product.objects.all()
+        if self.request.method in permissions.SAFE_METHODS:
+            queryset = exclude_locked_businesses(queryset)
+        return queryset
+
     def get_permissions(self):
         if self.request.method in permissions.SAFE_METHODS:
             return [permissions.AllowAny()]
-        return [permissions.IsAuthenticated()]
+        return [permissions.IsAuthenticated(), HasActiveSubscription()]
 
     def _check_owner(self, product):
         """
@@ -146,7 +157,8 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_update(self, serializer):
         self._check_owner(serializer.instance)
-        serializer.save()
+        with quota_guard(serializer.instance.business, serializer):
+            serializer.save()
 
     def perform_destroy(self, instance):
         self._check_owner(instance)
@@ -180,6 +192,7 @@ class ProductPublicListView(generics.ListAPIView):
 
     def get_queryset(self):
         queryset = Product.objects.filter(is_active=True).select_related("business")
+        queryset = exclude_locked_businesses(queryset)
         business_id = self.request.query_params.get("business_id")
         if business_id is not None:
             queryset = queryset.filter(business_id=business_id)
@@ -223,7 +236,7 @@ class ProductVariantCreateView(_ProductVariantParentMixin, generics.CreateAPIVie
     """
 
     serializer_class = ProductVariantWriteSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveSubscription]
 
     def perform_create(self, serializer):
         product = self._get_product()
@@ -261,12 +274,15 @@ class ProductVariantDetailView(
     serializer_class = ProductVariantWriteSerializer
 
     def get_queryset(self):
-        return ProductVariant.objects.filter(product_id=self.kwargs["product_pk"])
+        queryset = ProductVariant.objects.filter(product_id=self.kwargs["product_pk"])
+        if self.request.method in permissions.SAFE_METHODS:
+            queryset = exclude_locked_businesses(queryset, prefix="product__business")
+        return queryset
 
     def get_permissions(self):
         if self.request.method in permissions.SAFE_METHODS:
             return [permissions.AllowAny()]
-        return [permissions.IsAuthenticated()]
+        return [permissions.IsAuthenticated(), HasActiveSubscription()]
 
     def _check_owner(self, variant):
         """

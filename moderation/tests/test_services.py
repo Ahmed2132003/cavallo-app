@@ -73,9 +73,7 @@ class TestApprove:
         assert _fresh_queue_status(queue_item) == ModerationQueue.Status.APPROVED
         assert _fresh_content_status(content) == DummyContent.Status.PUBLISHED
 
-    def test_approve_creates_log_row_with_approved_action(
-        self, queue_item, reviewer
-    ):
+    def test_approve_creates_log_row_with_approved_action(self, queue_item, reviewer):
         log = approve(queue_item, reviewer)
 
         stored = ModerationLog.objects.get(queue_item_id=queue_item.pk)
@@ -85,9 +83,7 @@ class TestApprove:
         assert stored.reason == ""
         assert _log_count(queue_item) == 1
 
-    def test_approve_syncs_callers_in_memory_queue_item(
-        self, queue_item, reviewer
-    ):
+    def test_approve_syncs_callers_in_memory_queue_item(self, queue_item, reviewer):
         approve(queue_item, reviewer)
 
         assert queue_item.status == ModerationQueue.Status.APPROVED
@@ -103,9 +99,7 @@ class TestReject:
         assert _fresh_queue_status(queue_item) == ModerationQueue.Status.REJECTED
         assert _fresh_content_status(content) == DummyContent.Status.REJECTED
 
-    def test_reject_stores_reason_and_reviewer_in_log(
-        self, queue_item, reviewer
-    ):
+    def test_reject_stores_reason_and_reviewer_in_log(self, queue_item, reviewer):
         log = reject(queue_item, reviewer, "  Blurry product photos  ")
 
         stored = ModerationLog.objects.get(queue_item_id=queue_item.pk)
@@ -255,9 +249,7 @@ class TestModerationLogModel:
     def test_moderation_log_has_no_all_objects_manager(self):
         assert not hasattr(ModerationLog, "all_objects")
 
-    def test_queue_item_with_a_log_entry_cannot_be_deleted(
-        self, queue_item, reviewer
-    ):
+    def test_queue_item_with_a_log_entry_cannot_be_deleted(self, queue_item, reviewer):
         approve(queue_item, reviewer)
 
         with pytest.raises(ProtectedError):
@@ -266,9 +258,7 @@ class TestModerationLogModel:
         assert ModerationQueue.objects.filter(pk=queue_item.pk).exists()
         assert _log_count(queue_item) == 1
 
-    def test_reviewer_with_a_log_entry_cannot_be_deleted(
-        self, queue_item, reviewer
-    ):
+    def test_reviewer_with_a_log_entry_cannot_be_deleted(self, queue_item, reviewer):
         approve(queue_item, reviewer)
 
         with pytest.raises(ProtectedError):

@@ -39,7 +39,10 @@ def make_business(name: str, *, featured: bool = False) -> BusinessProfile:
         city="Ismailia",
     )
     if featured:
-        BusinessProfile.objects.filter(pk=business.pk).update(is_featured=True)
+        # BE-10: .update() bypasses the sync signal, so set both flags.
+        BusinessProfile.objects.filter(pk=business.pk).update(
+            is_featured=True, is_featured_effective=True
+        )
         business.refresh_from_db()
     return business
 

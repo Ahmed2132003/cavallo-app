@@ -18,6 +18,9 @@ Category 2: no client can create, change or delete a Plan or a
             owner cannot make themselves Featured over HTTP).
 Category 3: no capability-gated route exists in this app (Plans and
             subscriptions are managed in Django Admin only).
+BE-03:      GET/POST subscriptions/custom-quote/ is merchant-only (401
+            anonymous/garbage token, 403 customer), read-only (no write
+            side effects) and rejects every other method with 405.
 """
 
 import pytest
@@ -29,13 +32,36 @@ from core.tests.sweep_factories import (
     make_user,
 )
 from core.tests.sweep_helpers import assert_error_envelope
-from monetization.models import FeaturedSubscription, Plan
+from monetization.models import FeaturedSubscription, Plan, Subscription
 from payments.tests.factories import make_plan
 
 pytestmark = pytest.mark.django_db
 
 URL = "/api/v1/monetization/plans/"
-PLAN_FIELDS = {"id", "name", "duration_days", "price", "currency"}
+# Legacy five + BE-01 catalog fields (additive, nothing removed).
+PLAN_FIELDS = {
+    "id",
+    "name",
+    "duration_days",
+    "price",
+    "currency",
+    "code",
+    "name_ar",
+    "name_en",
+    "price_egp",
+    "storage_bytes",
+    "is_featured",
+    "trial_days",
+    "is_custom",
+    "sort_order",
+}
+
+
+@pytest.fixture(autouse=True)
+def _no_seeded_plans(db):
+    # BE-01's migration seeds the catalog; these tests assert on exact
+    # contents and counts, so each starts from an empty Plan table.
+    Plan.objects.all().delete()
 
 
 @pytest.mark.parametrize(
@@ -108,3 +134,103 @@ def test_a_business_owner_cannot_make_themselves_featured_over_http(path):
     assert FeaturedSubscription.objects.count() == 0
     business.refresh_from_db()
     assert business.is_featured is False
+
+
+QUOTE_URL = "/api/v1/monetization/subscriptions/custom-quote/"
+
+
+def _quote_call(client, method):
+    if method == "get":
+        return client.get(QUOTE_URL, {"gb": "20"})
+    return client.post(QUOTE_URL, {"gb": 20}, format="json")
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+@pytest.mark.parametrize(
+    "client_factory",
+    [client_for, garbage_token_client],
+    ids=["anonymous", "garbage-token"],
+)
+def test_custom_quote_requires_authentication(client_factory, method):
+    response = _quote_call(client_factory(), method)
+
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+def test_custom_quote_is_forbidden_for_a_customer(method):
+    response = _quote_call(client_for(make_user()), method)
+
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+def test_custom_quote_works_for_a_business_owner(method):
+    response = _quote_call(client_for(make_business().user), method)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"gb", "price_egp", "quota_bytes", "is_featured"}
+    assert body["price_egp"] == "630.00"
+
+
+@pytest.mark.parametrize("method", ["put", "patch", "delete"])
+def test_custom_quote_rejects_other_methods(method):
+    client = client_for(make_business().user)
+
+    response = getattr(client, method)(QUOTE_URL, {"gb": 20}, format="json")
+
+    assert_error_envelope(response, 405, "METHOD_NOT_ALLOWED")
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+def test_custom_quote_has_no_side_effects(method):
+    business = make_business()
+
+    response = _quote_call(client_for(business.user), method)
+
+    assert response.status_code == 200
+    assert Subscription.objects.count() == 0
+    assert FeaturedSubscription.objects.count() == 0
+    business.refresh_from_db()
+    assert business.is_featured is False
+
+
+# ---- BE-06: GET /api/v1/monetization/subscription/me/ ----------------
+ME_URL = "/api/v1/monetization/subscription/me/"
+
+
+@pytest.mark.parametrize(
+    "client_factory",
+    [client_for, garbage_token_client],
+    ids=["anonymous", "garbage-token"],
+)
+def test_subscription_me_requires_authentication(client_factory):
+    assert client_factory().get(ME_URL).status_code == 401
+
+
+def test_subscription_me_is_forbidden_for_a_customer():
+    assert client_for(make_user()).get(ME_URL).status_code == 403
+
+
+@pytest.mark.parametrize("method", ["post", "put", "patch", "delete"])
+def test_subscription_me_rejects_write_methods(method):
+    client = client_for(make_business().user)
+
+    response = getattr(client, method)(ME_URL, {"plan": 1}, format="json")
+
+    assert_error_envelope(response, 405, "METHOD_NOT_ALLOWED")
+
+
+def test_subscription_me_is_scoped_to_the_caller_and_has_no_side_effects():
+    from monetization.tests.helpers import give_subscription
+
+    mine, other = make_business(), make_business()
+    give_subscription(mine, "trialing", trial_days=3)
+    give_subscription(other, "active", period_days=30)
+    before = Subscription.objects.count()
+
+    body = client_for(mine.user).get(ME_URL).json()
+
+    assert body["status"] == "trialing"
+    assert Subscription.objects.count() == before

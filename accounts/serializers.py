@@ -12,6 +12,9 @@ P-042), which is why this serializer has no business_type field at all,
 for either account type.
 """
 
+import uuid
+
+import magic
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.contrib.auth.password_validation import validate_password
@@ -19,6 +22,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 
 from accounts.services import authenticate_user
+from core.media import validate_upload
 
 User = get_user_model()
 
@@ -145,4 +149,157 @@ class MePreferencesSerializer(serializers.Serializer):
     preferred_language = serializers.ChoiceField(
         choices=[value for value, _label in User.LANGUAGE_CHOICES],
         required=False,
+    )
+
+
+# Part P-116A-1: real (sniffed) MIME type -> the only extension the stored
+# object may carry. The client-supplied filename is never kept.
+AVATAR_ALLOWED_TYPES = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
+AVATAR_MAX_BYTES = 5 * 1024 * 1024
+DISPLAY_NAME_MAX_LENGTH = 80
+
+
+class MeProfileUpdateSerializer(serializers.Serializer):
+    """
+    Validates PATCH /api/v1/auth/me/profile/ (Part P-116A-1).
+
+    Only display_name, avatar and remove_avatar are declared, so any other
+    key in the body (is_staff, is_moderator, account_type, email,
+    preferred_language, id, ...) is silently dropped by DRF. Use with
+    ``partial=True``.
+    """
+
+    display_name = serializers.CharField(
+        max_length=DISPLAY_NAME_MAX_LENGTH, allow_blank=True, required=False
+    )
+    avatar = serializers.FileField(required=False)
+    remove_avatar = serializers.BooleanField(required=False)
+
+    def validate_avatar(self, value):
+        # Size + real content type (libmagic), not filename/Content-Type.
+        # Raises Django's ValidationError, which DRF converts into a
+        # field error (see core/media.py's integration note).
+        validate_upload(value, list(AVATAR_ALLOWED_TYPES), AVATAR_MAX_BYTES)
+
+        # Store under a server-generated name with the extension that
+        # matches the real type, so e.g. a PNG uploaded as "x.html" is
+        # never stored/served as HTML.
+        head = value.read(2048)
+        value.seek(0)
+        extension = AVATAR_ALLOWED_TYPES[magic.from_buffer(head, mime=True)]
+        value.name = f"{uuid.uuid4().hex}.{extension}"
+        return value
+
+    def validate(self, attrs):
+        if "avatar" in attrs and attrs.get("remove_avatar"):
+            raise serializers.ValidationError(
+                {"remove_avatar": "Cannot be combined with avatar."}
+            )
+        has_change = (
+            "display_name" in attrs or "avatar" in attrs or attrs.get("remove_avatar")
+        )
+        if not has_change:
+            raise serializers.ValidationError(
+                "Provide at least one of: display_name, avatar, remove_avatar."
+            )
+        return attrs
+
+
+class UserPublicSerializer(serializers.Serializer):
+    """
+    The ONLY user fields that may be shown to other users (Part P-116A-2).
+
+    Exactly two keys: ``display_name`` and ``avatar``. Nothing else about
+    a user (email, username, phone, role flags, account_type, id) belongs
+    here; callers that need more add it next to this output themselves.
+
+    Read-only; pass a User instance. ``avatar`` is an absolute URL built
+    from ``context["request"]``, or null when the user has no avatar OR
+    there is no request in the context (a relative URL would be useless to
+    the mobile client, so null is returned rather than guessing a host).
+
+    ``display_name`` fallback, in order: User.display_name -> the
+    BusinessProfile business name -> the CustomerProfile display name ->
+    "". Never the e-mail, the username or the first/last name.
+
+    Query cost: the profile lookups read the reverse one-to-one accessors,
+    so list endpoints should ``select_related("business_profile",
+    "customer_profile")`` on the user to stay at zero extra queries.
+    """
+
+    display_name = serializers.SerializerMethodField()
+    avatar = serializers.SerializerMethodField()
+
+    def get_display_name(self, user):
+        own = (user.display_name or "").strip()
+        if own:
+            return own
+
+        # getattr() with a default: the reverse one-to-one descriptor
+        # raises a DoesNotExist that is also an AttributeError subclass,
+        # so a user without that profile yields None here.
+        business_profile = getattr(user, "business_profile", None)
+        if business_profile is not None:
+            business_name = (business_profile.business_name or "").strip()
+            if business_name:
+                return business_name
+
+        customer_profile = getattr(user, "customer_profile", None)
+        if customer_profile is not None:
+            customer_name = (customer_profile.display_name or "").strip()
+            if customer_name:
+                return customer_name
+
+        return ""
+
+    def get_avatar(self, user):
+        request = self.context.get("request")
+        if request is None or not user.avatar:
+            return None
+        try:
+            return request.build_absolute_uri(user.avatar.url)
+        except Exception:  # noqa: BLE001 - a storage hiccup must not break a list
+            return None
+
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    """
+    Input for POST /password-reset/request/ (Task P2.4).
+
+    Format check only. Deliberately no database lookup: the view must do
+    the same work for every well-formed email.
+    """
+
+    email = serializers.EmailField()
+
+
+class PasswordResetVerifySerializer(serializers.Serializer):
+    """
+    Input for POST /password-reset/verify/ (Task P2.4).
+
+    The OTP is not pattern-checked here: a malformed OTP must produce the
+    same unified failure as a wrong one (services handles it).
+    """
+
+    email = serializers.EmailField()
+    otp = serializers.CharField()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    """
+    Input for POST /password-reset/confirm/ (Task P2.4).
+
+    Password strength is checked in services.confirm_password_reset(), not
+    here, because it must run after the user lookup and before the token is
+    consumed.
+    """
+
+    email = serializers.EmailField()
+    reset_token = serializers.CharField()
+    new_password = serializers.CharField(
+        write_only=True, style={"input_type": "password"}, trim_whitespace=False
     )

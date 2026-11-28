@@ -146,7 +146,10 @@ def test_missing_file_is_a_validation_error():
 
 
 def test_unauthenticated_is_401():
-    assert APIClient().post(AVATAR_URL, {"avatar": _png()}, format="multipart").status_code == 401
+    assert (
+        APIClient().post(AVATAR_URL, {"avatar": _png()}, format="multipart").status_code
+        == 401
+    )
     assert APIClient().delete(AVATAR_URL).status_code == 401
 
 
@@ -164,7 +167,9 @@ def test_customer_account_cannot_set_a_business_avatar():
 def test_business_without_a_profile_yet_gets_a_validation_error():
     user = _make_user("avatar-noprofile@example.com")
 
-    response = _client_for(user).post(AVATAR_URL, {"avatar": _png()}, format="multipart")
+    response = _client_for(user).post(
+        AVATAR_URL, {"avatar": _png()}, format="multipart"
+    )
 
     assert response.status_code == 400
 

@@ -94,3 +94,54 @@ msgstr "تم رفض المحتوى الخاص بك"
 #, python-format
 msgid "Reason: %(reason)s"
 msgstr "السبب: %(reason)s"
+
+msgid "Your storage is full. Upgrade your plan to upload more."
+msgstr "مساحة التخزين ممتلئة. قم بترقية باقتك لرفع المزيد."
+
+msgid "Your free trial ends in 3 days"
+msgstr "تنتهي تجربتك المجانية خلال 3 أيام"
+
+msgid "Choose a plan before it ends to keep uploading and keep your content."
+msgstr "اختر باقة قبل انتهائها لتواصل الرفع وتحافظ على محتواك."
+
+msgid "Your free trial ends tomorrow"
+msgstr "تنتهي تجربتك المجانية غدًا"
+
+msgid "Choose a plan today to keep uploading and keep your content."
+msgstr "اختر باقة اليوم لتواصل الرفع وتحافظ على محتواك."
+
+msgid "Your free trial has ended"
+msgstr "انتهت تجربتك المجانية"
+
+msgid "Your account is locked. Subscribe within 2 days or your content will be permanently deleted."
+msgstr "تم قفل حسابك. اشترك خلال يومين وإلا سيتم حذف محتواك نهائيًا."
+
+msgid "Your content has been deleted"
+msgstr "تم حذف محتواك"
+
+msgid "Your content was permanently deleted because no plan was activated. You can subscribe and start again."
+msgstr "تم حذف محتواك نهائيًا لعدم تفعيل أي باقة. يمكنك الاشتراك والبدء من جديد."
+
+msgid "Your subscription is active"
+msgstr "تم تفعيل اشتراكك"
+
+msgid "Thank you! Your plan is now active."
+msgstr "شكرًا لك! باقتك مفعّلة الآن."
+
+msgid "Your subscription ends in 3 days"
+msgstr "ينتهي اشتراكك خلال 3 أيام"
+
+msgid "Renew your plan to avoid losing access."
+msgstr "جدّد باقتك لتتجنب فقدان الوصول."
+
+msgid "Your subscription ends tomorrow"
+msgstr "ينتهي اشتراكك غدًا"
+
+msgid "Renew your plan today to avoid losing access."
+msgstr "جدّد باقتك اليوم لتتجنب فقدان الوصول."
+
+msgid "Your subscription has ended"
+msgstr "انتهى اشتراكك"
+
+msgid "Your account is locked. Renew within 60 days or your content will be permanently deleted."
+msgstr "تم قفل حسابك. جدّد خلال 60 يومًا وإلا سيتم حذف محتواك نهائيًا."

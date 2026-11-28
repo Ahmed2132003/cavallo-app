@@ -9,10 +9,25 @@ Payments URLs, mounted at api/v1/payments/ in config/urls.py.
 
 from django.urls import path
 
+from payments.checkout_views import (
+    SubscriptionCheckoutStatusView,
+    SubscriptionCheckoutView,
+)
 from payments.initiate_views import PaymentInitiateView
 from payments.views import PaymobWebhookView
 
 urlpatterns = [
     path("webhook/paymob/", PaymobWebhookView.as_view(), name="paymob-webhook"),
     path("initiate/", PaymentInitiateView.as_view(), name="payment-initiate"),
+    # BE-07: storage-plan checkout + polling (merchants only).
+    path(
+        "subscriptions/checkout/",
+        SubscriptionCheckoutView.as_view(),
+        name="subscription-checkout",
+    ),
+    path(
+        "subscriptions/checkout/<int:payment_id>/status/",
+        SubscriptionCheckoutStatusView.as_view(),
+        name="subscription-checkout-status",
+    ),
 ]

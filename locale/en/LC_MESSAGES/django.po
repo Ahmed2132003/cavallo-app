@@ -95,3 +95,68 @@ msgstr ""
 msgid "Reason: %(reason)s"
 msgstr ""
 
+msgid "Your storage is full. Upgrade your plan to upload more."
+msgstr "Your storage is full. Upgrade your plan to upload more."
+
+msgid "Your free trial ends in 3 days"
+msgstr ""
+
+msgid "Choose a plan before it ends to keep uploading and keep your content."
+msgstr ""
+
+msgid "Your free trial ends tomorrow"
+msgstr ""
+
+msgid "Choose a plan today to keep uploading and keep your content."
+msgstr ""
+
+msgid "Your free trial has ended"
+msgstr ""
+
+msgid ""
+"Your account is locked. Subscribe within 2 days or your content will be "
+"permanently deleted."
+msgstr ""
+
+msgid "Your content has been deleted"
+msgstr ""
+
+msgid ""
+"Your content was permanently deleted because no plan was activated. You can "
+"subscribe and start again."
+msgstr ""
+
+msgid "Your subscription is active"
+msgstr ""
+
+msgid "Thank you! Your plan is now active."
+msgstr ""
+
+msgid "Your subscription ends in 3 days"
+msgstr ""
+
+msgid "Renew your plan to avoid losing access."
+msgstr ""
+
+msgid "Your subscription ends tomorrow"
+msgstr ""
+
+msgid "Renew your plan today to avoid losing access."
+msgstr ""
+
+msgid "Your subscription has ended"
+msgstr ""
+
+msgid ""
+"Your account is locked. Renew within 60 days or your content will be "
+"permanently deleted."
+msgstr ""
+
+msgid "Your account is locked. Subscribe within 2 days or your content will be permanently deleted."
+msgstr "Your account is locked. Subscribe within 2 days or your content will be permanently deleted."
+
+msgid "Your content was permanently deleted because no plan was activated. You can subscribe and start again."
+msgstr "Your content was permanently deleted because no plan was activated. You can subscribe and start again."
+
+msgid "Your account is locked. Renew within 60 days or your content will be permanently deleted."
+msgstr "Your account is locked. Renew within 60 days or your content will be permanently deleted."

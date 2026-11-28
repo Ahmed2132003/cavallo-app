@@ -91,6 +91,7 @@ INSTALLED_APPS = [
     "analytics",  # Part P-084: daily BusinessDailyStats rollup.
     "monetization",  # Part P-086: Plan + FeaturedSubscription (Featured state).
     "payments",  # Part P-089: payment-side Subscription/Transaction/Invoice.
+    "orders",  # Part BI-01: Merchant-Recorded Orders (no cart/checkout/payment).
 ]
 
 # ---------------------------------------------------------------------------
@@ -282,11 +283,71 @@ CELERY_BEAT_SCHEDULE = {
         "task": "payments.reconcile_pending_transactions",
         "schedule": crontab(hour=1, minute=0),
     },
+    # Part BE-08. Frequent, so a paid pending plan starts quickly.
+    "expire-storage-subscriptions": {
+        "task": "monetization.expire_subscriptions",
+        "schedule": crontab(minute="*/15"),
+    },
+    "send-subscription-reminders": {
+        "task": "monetization.send_subscription_reminders",
+        "schedule": crontab(minute=10),
+    },
 }
+
+EMAIL_BACKEND = "django.core.mail.backends.smtp.EmailBackend"
+EMAIL_HOST = env.str("EMAIL_HOST", default="")
+EMAIL_PORT = int(env.str("EMAIL_PORT", default="") or 587)
+EMAIL_HOST_USER = env.str("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = env.str("EMAIL_HOST_PASSWORD", default="")
+from django.core.exceptions import ImproperlyConfigured  # noqa: E402
+
+
+def _email_flag(name, default):
+    # str -> strip -> lowercase -> in ("1","true","yes","on"); blank = default.
+    raw = env.str(name, default="").strip().lower()
+    return default if raw == "" else raw in ("1", "true", "yes", "on")
+
+
+EMAIL_USE_SSL = _email_flag("EMAIL_USE_SSL", False)
+# STARTTLS (port 587) is the default; it is off by default when SSL is on.
+EMAIL_USE_TLS = _email_flag("EMAIL_USE_TLS", not EMAIL_USE_SSL)
+if EMAIL_USE_TLS and EMAIL_USE_SSL:
+    raise ImproperlyConfigured(
+        "EMAIL_USE_TLS and EMAIL_USE_SSL are mutually exclusive; set only one."
+    )
+EMAIL_TIMEOUT = int(env.str("EMAIL_TIMEOUT", default="") or 10)
+# Only dev.py reads this: false (default) = console backend, true = the real
+# SMTP backend configured above. staging/prod always use SMTP regardless.
+EMAIL_USE_REAL_SMTP = _email_flag("EMAIL_USE_REAL_SMTP", False)
+# Gmail (and most providers) reject a From address that differs from the
+# authenticated user, so when DEFAULT_FROM_EMAIL is blank, fall back to
+# EMAIL_HOST_USER, then to the old placeholder.
+DEFAULT_FROM_EMAIL = (
+    env.str("DEFAULT_FROM_EMAIL", default="").strip()
+    or EMAIL_HOST_USER
+    or "noreply@localhost"
+)
 
 # ---------------------------------------------------------------------------
 # DRF / JWT
 # ---------------------------------------------------------------------------
+
+
+def _num_proxies(default):
+    """
+    REST_FRAMEWORK NUM_PROXIES from the NUM_PROXIES env var (Task P2.5).
+
+    = number of trusted reverse proxies in front of Django. DRF's
+    get_ident() then takes the client IP from X-Forwarded-For counting
+    from the RIGHT, so a client cannot forge it. 0 = ignore the header and
+    use REMOTE_ADDR only. Unset in DRF would trust the whole header, which
+    a client can rotate to dodge per-IP throttles, so it is always set
+    explicitly here. Blank/unset env value = `default`.
+    """
+    raw = env.str("NUM_PROXIES", default="").strip()
+    return int(raw) if raw else default
+
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
@@ -307,6 +368,8 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "login": "5/min",
     },
+    # Task P2.5: see _num_proxies() above. prod.py overrides the default (1).
+    "NUM_PROXIES": _num_proxies(default=0),
 }
 
 # ---------------------------------------------------------------------------
@@ -338,6 +401,29 @@ SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
+
+# ---------------------------------------------------------------------------
+# Password reset throttle rates — Task P2.5 (see accounts/throttles.py).
+# DRF format "N/period" (second|minute|hour|day). Each endpoint has two
+# independent layers: per client IP and per (normalized, hashed) email.
+# A blank/unset env var falls back to the default below.
+# ---------------------------------------------------------------------------
+def _rate(name, default):
+    return env.str(name, default="").strip() or default
+
+
+PASSWORD_RESET_REQUEST_IDENTIFIER_RATE = _rate(
+    "PASSWORD_RESET_REQUEST_IDENTIFIER_RATE", "5/hour"
+)
+PASSWORD_RESET_REQUEST_IP_RATE = _rate("PASSWORD_RESET_REQUEST_IP_RATE", "20/hour")
+PASSWORD_RESET_VERIFY_IDENTIFIER_RATE = _rate(
+    "PASSWORD_RESET_VERIFY_IDENTIFIER_RATE", "10/hour"
+)
+PASSWORD_RESET_VERIFY_IP_RATE = _rate("PASSWORD_RESET_VERIFY_IP_RATE", "30/hour")
+PASSWORD_RESET_CONFIRM_IDENTIFIER_RATE = _rate(
+    "PASSWORD_RESET_CONFIRM_IDENTIFIER_RATE", "5/hour"
+)
+PASSWORD_RESET_CONFIRM_IP_RATE = _rate("PASSWORD_RESET_CONFIRM_IP_RATE", "20/hour")
 
 # ---------------------------------------------------------------------------
 # Logging — Part P-015. Every log line is JSON, and every line emitted
@@ -425,6 +511,18 @@ LANGUAGES = [
 # Docker image has no GNU gettext; see core/i18n_tools.py).
 LOCALE_PATHS = [BASE_DIR / "locale"]
 TIME_ZONE = "UTC"
+
+# ---------------------------------------------------------------------------
+# Part BI-02 - view tracking (analytics app).
+# ANALYTICS_REEL_MIN_WATCH_MS: a reel view below this watch time is ignored.
+# Throttle rates apply to POST /api/v1/analytics/events/views/ only.
+# ANALYTICS_VIEWER_KEY_SALT: blank = fall back to SECRET_KEY. Changing it
+# changes every viewer_key, so it breaks Unique View continuity.
+# ---------------------------------------------------------------------------
+ANALYTICS_REEL_MIN_WATCH_MS = env.int("ANALYTICS_REEL_MIN_WATCH_MS", default=3000)
+ANALYTICS_VIEW_EVENT_ANON_RATE = _rate("ANALYTICS_VIEW_EVENT_ANON_RATE", "60/min")
+ANALYTICS_VIEW_EVENT_USER_RATE = _rate("ANALYTICS_VIEW_EVENT_USER_RATE", "120/min")
+ANALYTICS_VIEWER_KEY_SALT = env.str("ANALYTICS_VIEWER_KEY_SALT", default="")
 USE_I18N = True
 USE_TZ = True
 
@@ -515,6 +613,18 @@ PAYMOB_NOTIFICATION_URL = env("PAYMOB_NOTIFICATION_URL", default="")
 PAYMOB_REDIRECTION_URL = env("PAYMOB_REDIRECTION_URL", default="")
 PAYMOB_TIMEOUT_SECONDS = env.int("PAYMOB_TIMEOUT_SECONDS", default=15)
 
+# ---------------------------------------------------------------------------
+# Part BE-03 - Infinity (custom storage plan) pricing (D4 / D4b). Read at call
+# time by monetization.services.calculate_custom_price(). Decimal on purpose
+# (no float rounding). A blank/unset env var falls back to the default.
+# ---------------------------------------------------------------------------
+from decimal import Decimal  # noqa: E402
+
+CUSTOM_MIN_GB = Decimal(_rate("CUSTOM_MIN_GB", "13"))
+CUSTOM_MAX_GB = Decimal(_rate("CUSTOM_MAX_GB", "500"))
+CUSTOM_PRICE_PER_GB = Decimal(_rate("CUSTOM_PRICE_PER_GB", "31.5"))
+CUSTOM_MIN_PRICE = Decimal(_rate("CUSTOM_MIN_PRICE", "500"))
+
 STORAGES = {
     "default": {
         "BACKEND": "core.storage_backends.MediaStorage",
@@ -525,3 +635,15 @@ STORAGES = {
 }
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+
+# BE-09: destructive storage purge. Off until explicitly enabled.
+import os  # noqa: E402
+
+from celery.schedules import crontab  # noqa: E402
+
+STORAGE_PURGE_ENABLED = os.environ.get("STORAGE_PURGE_ENABLED", "").lower() == "true"
+CELERY_BEAT_SCHEDULE["purge-expired-free-trials"] = {
+    "task": "monetization.purge_expired_free_trials",
+    "schedule": crontab(hour=1, minute=20),
+}

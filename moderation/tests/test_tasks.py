@@ -38,9 +38,7 @@ def _backdated_queue_item(*, priority, age):
         status=ModerationQueue.Status.PENDING,
         priority=priority,
     )
-    ModerationQueue.objects.filter(pk=item.pk).update(
-        created_at=timezone.now() - age
-    )
+    ModerationQueue.objects.filter(pk=item.pk).update(created_at=timezone.now() - age)
     item.refresh_from_db()
     return item
 
@@ -96,9 +94,7 @@ class TestCheckModerationSlaBreachDetection:
             result = check_moderation_sla()
 
         assert result["fast_path_breaches"] == 0
-        assert not any(
-            r.message == "moderation_sla_breach" for r in caplog.records
-        )
+        assert not any(r.message == "moderation_sla_breach" for r in caplog.records)
 
     def test_approved_item_past_threshold_is_not_logged(self, caplog):
         """
@@ -120,16 +116,12 @@ class TestCheckModerationSlaBreachDetection:
             result = check_moderation_sla()
 
         assert result["fast_path_breaches"] == 0
-        assert not any(
-            r.message == "moderation_sla_breach" for r in caplog.records
-        )
+        assert not any(r.message == "moderation_sla_breach" for r in caplog.records)
 
 
 @pytest.mark.django_db
 class TestCheckModerationSlaIdempotency:
-    def test_running_twice_logs_the_same_still_breaching_item_both_times(
-        self, caplog
-    ):
+    def test_running_twice_logs_the_same_still_breaching_item_both_times(self, caplog):
         """
         Section 5 rule 8 / the part's explicit idempotency requirement:
         a still-breaching item must be logged again on every run, not
@@ -145,10 +137,14 @@ class TestCheckModerationSlaIdempotency:
             first_result = check_moderation_sla()
             second_result = check_moderation_sla()
 
-        assert first_result == second_result == {
-            "fast_path_breaches": 1,
-            "normal_breaches": 0,
-        }
+        assert (
+            first_result
+            == second_result
+            == {
+                "fast_path_breaches": 1,
+                "normal_breaches": 0,
+            }
+        )
 
         breach_records = [
             r for r in caplog.records if r.message == "moderation_sla_breach"
@@ -167,10 +163,12 @@ class TestCheckModerationSlaIdempotency:
             result = check_moderation_sla()
             result_again = check_moderation_sla()
 
-        assert result == result_again == {
-            "fast_path_breaches": 0,
-            "normal_breaches": 0,
-        }
-        assert not any(
-            r.message == "moderation_sla_breach" for r in caplog.records
+        assert (
+            result
+            == result_again
+            == {
+                "fast_path_breaches": 0,
+                "normal_breaches": 0,
+            }
         )
+        assert not any(r.message == "moderation_sla_breach" for r in caplog.records)

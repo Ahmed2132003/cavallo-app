@@ -2,6 +2,8 @@ from django.conf import settings
 from django.db import models
 
 from core.models import SoftDeleteModel, TimestampedModel
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 
 
 class Follow(TimestampedModel):
@@ -34,10 +36,6 @@ class Follow(TimestampedModel):
 
     def __str__(self):
         return f"user:{self.follower_id} -> business:{self.business_id}"
-
-
-from django.contrib.contenttypes.fields import GenericForeignKey
-from django.contrib.contenttypes.models import ContentType
 
 
 class Like(TimestampedModel):

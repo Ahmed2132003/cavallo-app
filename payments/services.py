@@ -26,6 +26,8 @@ from payments.models import (
 
 logger = logging.getLogger(__name__)
 
+STORAGE_CURRENCY = "EGP"
+
 
 def _mark_failed(subscription: Subscription, txn: Transaction) -> None:
     subscription.status = STATUS_FAILED
@@ -80,6 +82,36 @@ def initiate_subscription_payment(
     except PaymentGatewayError:
         logger.warning(
             "Payment initiation failed for payments.Subscription %s", subscription.pk
+        )
+        _mark_failed(subscription, txn)
+        raise
+
+    subscription.gateway_reference = str(gateway_reference)
+    subscription.save(update_fields=["gateway_reference", "updated_at"])
+    return payment_url
+
+
+# ---------------------------------------------------------------------
+# BE-07: storage-plan checkout. The amount is ALWAYS computed here.
+# ---------------------------------------------------------------------
+
+
+def _start_at_gateway(gateway: PaymentGateway, subscription, txn) -> str:
+    try:
+        result = gateway.initiate_payment(subscription)
+        payment_url = result["payment_url"]
+        gateway_reference = result["gateway_reference"]
+        if not payment_url or not gateway_reference:
+            raise KeyError("empty payment_url / gateway_reference")
+    except (KeyError, TypeError) as exc:
+        _mark_failed(subscription, txn)
+        raise PaymentGatewayError(
+            "Gateway returned an invalid initiate_payment result"
+        ) from exc
+    except PaymentGatewayError:
+        logger.warning(
+            "Storage payment initiation failed for payments.Subscription %s",
+            subscription.pk,
         )
         _mark_failed(subscription, txn)
         raise

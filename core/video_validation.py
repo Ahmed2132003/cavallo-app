@@ -61,8 +61,16 @@ def _has_video_stream(file):
             path = handle.name
         result = subprocess.run(
             [
-                "ffprobe", "-v", "error", "-select_streams", "v:0",
-                "-show_entries", "stream=codec_type", "-of", "json", path,
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_type",
+                "-of",
+                "json",
+                path,
             ],
             capture_output=True,
             text=True,
@@ -95,7 +103,10 @@ def validate_video_upload(file):
             "Video is too large (%(size)d MB). Maximum allowed size is "
             "%(max_size)d MB.",
             code="file_too_large",
-            params={"size": size // (1024 * 1024), "max_size": max_size // (1024 * 1024)},
+            params={
+                "size": size // (1024 * 1024),
+                "max_size": max_size // (1024 * 1024),
+            },
         )
 
     file.seek(0)

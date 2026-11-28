@@ -29,6 +29,7 @@ new_like              -> social_notifications_enabled
 new_share             -> social_notifications_enabled
 new_rating            -> social_notifications_enabled
 system_announcement   -> (no toggle: always delivered)
+subscription          -> (no toggle: always delivered - BE-11, billing-critical)
 
 ----------------------------------------------------------------------
 IDEMPOTENCY - honest statement (Section 5 rule 8)
@@ -66,7 +67,8 @@ logger = logging.getLogger(__name__)
 User = get_user_model()
 
 # A notification_type that is NOT in this dict has no toggle and is
-# always delivered (today only system_announcement).
+# always delivered: system_announcement and subscription (BE-11,
+# billing-critical).
 NOTIFICATION_TYPE_TO_PREFERENCE_FIELD = {
     Notification.NotificationType.CHAT_MESSAGE.value: "chat_notifications_enabled",
     Notification.NotificationType.MODERATION_APPROVED.value: (

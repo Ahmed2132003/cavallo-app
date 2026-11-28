@@ -38,9 +38,12 @@ support it as a future enhancement.
 import logging
 
 from celery import shared_task
+from django.conf import settings
 from django.utils import timezone
 
+from monetization.lifecycle import expire_storage_subscriptions, send_due_reminders
 from monetization.models import FeaturedSubscription
+from monetization.purge import process_pending_file_deletions, purge_due_businesses
 from monetization.services import deactivate_subscriptions
 
 logger = logging.getLogger(__name__)
@@ -56,12 +59,45 @@ def expire_featured_subscriptions():
     deactivated by this run) so callers/tests can assert on it.
     """
     now = timezone.now()
-    expired = FeaturedSubscription.objects.filter(
-        is_active=True, expires_at__lte=now
-    )
+    expired = FeaturedSubscription.objects.filter(is_active=True, expires_at__lte=now)
     deactivated = deactivate_subscriptions(expired)
     logger.info(
         "expire_featured_subscriptions finished",
         extra={"deactivated": deactivated},
     )
     return {"deactivated": deactivated}
+
+
+@shared_task(name="monetization.expire_subscriptions", ignore_result=True)
+def expire_subscriptions():
+    """BE-08: end due storage periods / start pending plans. Idempotent."""
+    counts = expire_storage_subscriptions()
+    logger.info("expire_subscriptions finished", extra=counts)
+    return counts
+
+
+@shared_task(name="monetization.send_subscription_reminders", ignore_result=True)
+def send_subscription_reminders():
+    """BE-08: 3-day and 1-day reminders, each sent once per period."""
+    sent = send_due_reminders()
+    logger.info("send_subscription_reminders finished", extra={"sent": sent})
+    return {"sent": sent}
+
+
+@shared_task(name="monetization.purge_expired_free_trials", ignore_result=True)
+def purge_expired_free_trials():
+    """
+    BE-09: retry pending file deletions, then purge due businesses (free
+    AND paid, despite the name). Purges only if STORAGE_PURGE_ENABLED.
+    """
+    files = process_pending_file_deletions()
+    enabled = getattr(settings, "STORAGE_PURGE_ENABLED", False)
+    summary = purge_due_businesses(dry_run=not enabled)
+    summary.pop("reports")
+    logger.info(
+        "purge_expired_free_trials enabled=%s summary=%s retries=%s",
+        enabled,
+        summary,
+        files,
+    )
+    return summary

@@ -2,21 +2,46 @@
 Authentication API views for the accounts app (Parts P-017, P-018).
 """
 
+import logging
+
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import generics, status
 from rest_framework.exceptions import ValidationError
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.views import TokenRefreshView
+from rest_framework.views import APIView
 
 from accounts import services
+from accounts.exceptions import PasswordResetInvalid
 from accounts.serializers import (
     LoginSerializer,
     LogoutSerializer,
     MePreferencesSerializer,
+    MeProfileUpdateSerializer,
+    PasswordResetConfirmSerializer,
+    PasswordResetRequestSerializer,
+    PasswordResetVerifySerializer,
     RegisterSerializer,
 )
-from accounts.throttles import LoginRateThrottle
+from accounts.tasks import send_password_reset_otp_task
+from accounts.throttles import (
+    LoginRateThrottle,
+    PasswordResetConfirmIdentifierThrottle,
+    PasswordResetConfirmIPThrottle,
+    PasswordResetRequestIdentifierThrottle,
+    PasswordResetRequestIPThrottle,
+    PasswordResetVerifyIdentifierThrottle,
+    PasswordResetVerifyIPThrottle,
+)
+
+logger = logging.getLogger(__name__)
+
+PASSWORD_RESET_REQUEST_MESSAGE = (
+    "If the email is registered, a verification code will be sent."
+)
 
 
 class RegisterView(generics.CreateAPIView):
@@ -157,9 +182,28 @@ class LogoutView(generics.GenericAPIView):
 # ADD to accounts/views.py
 
 # 1. Add this import alongside the existing rest_framework imports:
-from rest_framework.views import APIView
 
 # 2. Append this class at the end of the file:
+
+
+def build_me_payload(user, request):
+    """
+    The one place the /auth/me/ response shape is defined (shared by
+    MeView and MeProfileView). ``avatar`` is an absolute URL or null.
+    """
+    avatar_url = None
+    if user.avatar:
+        avatar_url = request.build_absolute_uri(user.avatar.url)
+    return {
+        "id": user.id,
+        "email": user.email,
+        "account_type": user.account_type,
+        "is_moderator": user.is_moderator,
+        "is_staff": user.is_staff,
+        "preferred_language": user.preferred_language,
+        "display_name": user.display_name,
+        "avatar": avatar_url,
+    }
 
 
 class MeView(APIView):
@@ -191,17 +235,8 @@ class MeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, *args, **kwargs):
-        user = request.user
         return Response(
-            {
-                "id": user.id,
-                "email": user.email,
-                "account_type": user.account_type,
-                "is_moderator": user.is_moderator,
-                "is_staff": user.is_staff,
-                "preferred_language": user.preferred_language,
-            },
-            status=status.HTTP_200_OK,
+            build_me_payload(request.user, request), status=status.HTTP_200_OK
         )
 
     def patch(self, request, *args, **kwargs):
@@ -224,3 +259,137 @@ class MeView(APIView):
             user.save(update_fields=changed + ["updated_at"])
 
         return self.get(request, *args, **kwargs)
+
+
+class MeProfileView(APIView):
+    """
+    PATCH /api/v1/auth/me/profile/ (Part P-116A-1)
+
+    Lets ANY authenticated user (Customer, Business, Moderator, Staff -
+    no CustomerProfile/BusinessProfile needed) change their own
+    ``display_name`` and avatar. Always operates on ``request.user``; no
+    id is read from the URL or body, and role/identity fields in the body
+    are never declared on the serializer, so they are ignored. Accepts
+    multipart (for the file) or JSON (display_name / remove_avatar).
+    Responds with the same shape as GET /api/v1/auth/me/.
+    """
+
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    http_method_names = ["patch", "options"]
+
+    def patch(self, request, *args, **kwargs):
+        serializer = MeProfileUpdateSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        user = services.update_own_profile(
+            request.user,
+            display_name=data.get("display_name"),
+            avatar=data.get("avatar"),
+            remove_avatar=data.get("remove_avatar", False),
+        )
+        return Response(build_me_payload(user, request), status=status.HTTP_200_OK)
+
+
+class PasswordResetRequestView(generics.GenericAPIView):
+    """
+    POST /api/v1/auth/password-reset/request/ (Task P2.4)
+
+    Does exactly the same for every well-formed email: queue one Celery
+    task carrying the email only, then answer immediately with a fixed
+    status and body. No user lookup, Redis or SMTP happens in this
+    request, so response time and content reveal nothing about whether
+    the account exists. A broker failure is logged and answered the same
+    way. Throttled per IP and per email (Task P2.5, accounts/throttles.py).
+    """
+
+    serializer_class = PasswordResetRequestSerializer
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [
+        PasswordResetRequestIPThrottle,
+        PasswordResetRequestIdentifierThrottle,
+    ]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            send_password_reset_otp_task.delay(serializer.validated_data["email"])
+        except Exception as exc:
+            logger.error(
+                "Password reset OTP task enqueue failed (%s).", type(exc).__name__
+            )
+
+        return Response(
+            {"detail": PASSWORD_RESET_REQUEST_MESSAGE},
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+class PasswordResetVerifyView(generics.GenericAPIView):
+    """
+    POST /api/v1/auth/password-reset/verify/ (Task P2.4)
+
+    Exchanges email + OTP for a one-time reset token through
+    services.verify_otp_and_issue_reset_token(). Every failure kind
+    (wrong, expired, attempts used up, unknown email) gets the same
+    unified response. Throttled per IP and per email (Task P2.5).
+    """
+
+    serializer_class = PasswordResetVerifySerializer
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [
+        PasswordResetVerifyIPThrottle,
+        PasswordResetVerifyIdentifierThrottle,
+    ]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        token = services.verify_otp_and_issue_reset_token(
+            serializer.validated_data["email"], serializer.validated_data["otp"]
+        )
+        if token is None:
+            raise PasswordResetInvalid()
+        return Response({"reset_token": token}, status=status.HTTP_200_OK)
+
+
+class PasswordResetConfirmView(generics.GenericAPIView):
+    """
+    POST /api/v1/auth/password-reset/confirm/ (Task P2.4)
+
+    Sets the new password through services.confirm_password_reset(). A
+    weak password is answered with the password errors and leaves the reset
+    token valid; any other failure gets the unified response. Throttled
+    per IP and per email (Task P2.5).
+    """
+
+    serializer_class = PasswordResetConfirmSerializer
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [
+        PasswordResetConfirmIPThrottle,
+        PasswordResetConfirmIdentifierThrottle,
+    ]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            changed = services.confirm_password_reset(
+                data["email"], data["reset_token"], data["new_password"]
+            )
+        except DjangoValidationError as exc:
+            raise ValidationError({"new_password": list(exc.messages)})
+        if not changed:
+            raise PasswordResetInvalid()
+        return Response(
+            {"detail": "Password has been reset."}, status=status.HTTP_200_OK
+        )

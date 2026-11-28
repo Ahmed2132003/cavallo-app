@@ -48,6 +48,10 @@
 # Optional: HTTP_PORT (80), HTTPS_PORT (443) if the VPS already uses them,
 #   GUNICORN_WORKERS, CELERY_CONCURRENCY, REDIS_MAXMEMORY,
 #   REDIS_MAXMEMORY_POLICY.
+# Pre-deploy hardening (no secrets): NUM_PROXIES (default 1 = nginx is the only
+#   proxy; 2 if Cloudflare or another proxy is in front of nginx, e.g. when
+#   HTTP_PORT/HTTPS_PORT are remapped), JWT_ACCESS_TTL_MINUTES (<= 15, enforced
+#   at startup by config.settings.prod).
 #
 # FIRST CERTIFICATE (one time, before the first full start; host port 80 must
 # be free; replace DOMAIN and EMAIL):
@@ -177,6 +181,14 @@ services:
 
   celery_worker:
     <<: *app
+    # Log level: config/celery.py's setup_logging handler re-applies Django's
+    # LOGGING, so LOG_LEVEL (not --loglevel below) decides what the worker logs.
+    # Pinned to INFO because task args (send_password_reset_otp) hold a raw
+    # e-mail address and DEBUG can log task arguments. An explicit `environment`
+    # replaces the one inherited from x-app, so DJANGO_SETTINGS_MODULE is repeated.
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.prod
+      LOG_LEVEL: INFO
     command: celery -A config worker --loglevel=info --concurrency=${CELERY_CONCURRENCY:-2}
     # Conservative placeholder pending real sibling-project usage data (Section 7 item 6) - revisit once known.
     # Reel transcoding (ffmpeg, up to 100 MB uploads) is the heavy path; not yet tested under this limit (L-5).

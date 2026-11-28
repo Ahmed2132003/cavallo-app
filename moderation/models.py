@@ -18,6 +18,7 @@ from django.db import models
 
 from core.models import TimestampedModel
 
+
 class ModerationQueue(TimestampedModel):
     """
     Append-only queue of content awaiting/having undergone moderation.
@@ -200,8 +201,7 @@ class Moderatable(models.Model):
 
     class Meta:
         abstract = True
-        
-    
+
     def get_moderation_preview(self):
         """
         Return a small, content-type-agnostic preview of this object for
@@ -228,7 +228,6 @@ class Moderatable(models.Model):
             "preview_text": str(self)[:200],
             "preview_image_url": None,
         }
-
 
 
 class ModerationLog(TimestampedModel):

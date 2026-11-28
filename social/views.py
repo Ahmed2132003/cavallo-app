@@ -38,6 +38,23 @@ from notifications.tasks import enqueue_notification
 
 from .models import Comment, Follow, Like, Save, Share
 
+from django.apps import apps
+from django.contrib.contenttypes.models import ContentType
+from rest_framework.exceptions import ValidationError
+
+from rest_framework.generics import ListAPIView
+
+from core.pagination import StandardCursorPagination
+
+from .serializers import (
+    CommentCreateSerializer,
+    CommentListQuerySerializer,
+    CommentSerializer,
+    SaveSerializer,
+    ShareCreateSerializer,
+)
+
+
 User = get_user_model()
 
 
@@ -129,10 +146,6 @@ class FollowToggleView(APIView):
         _invalidate_home_feed_cache(request.user.id)
         return Response({"following": False})
 
-
-from django.apps import apps
-from django.contrib.contenttypes.models import ContentType
-from rest_framework.exceptions import ValidationError
 
 # Whitelist of content_type strings this endpoint accepts, mapped to
 # (app_label, model_name). Deliberately explicit and closed — NOT
@@ -296,19 +309,6 @@ class SaveToggleView(APIView):
         return Response({"saved": False})
 
 
-from rest_framework.generics import ListAPIView
-
-from core.pagination import StandardCursorPagination
-
-from .serializers import (
-    CommentCreateSerializer,
-    CommentListQuerySerializer,
-    CommentSerializer,
-    SaveSerializer,
-    ShareCreateSerializer,
-)
-
-
 class SaveListView(ListAPIView):
     """
     GET /api/v1/saves/me/ — the authenticated user's own saved items,
@@ -422,7 +422,10 @@ class CommentCreateView(APIView):
                 params={"text": data["text"][:100]},
             )
 
-        return Response(CommentSerializer(comment).data, status=201)
+        return Response(
+            CommentSerializer(comment, context={"request": request}).data,
+            status=201,
+        )
 
 
 # Reuses P-019's capability factory (same check the moderation API uses)
@@ -460,7 +463,12 @@ class CommentListView(ListAPIView):
 
         queryset = Comment.objects.filter(
             content_type=content_type, object_id=obj.pk
-        ).select_related("content_type")
+        ).select_related(
+            "content_type",
+            "user",
+            "user__business_profile",
+            "user__customer_profile",
+        )
 
         user = self.request.user
         if user.is_authenticated:

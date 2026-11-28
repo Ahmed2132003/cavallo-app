@@ -35,6 +35,15 @@ STATUS_CHOICES = [
     (STATUS_FAILED, "Failed"),
 ]
 
+# BE-07: what a payment record is for. Existing rows are all Featured.
+KIND_FEATURED = "featured"
+KIND_STORAGE = "storage"
+
+KIND_CHOICES = [
+    (KIND_FEATURED, "Featured"),
+    (KIND_STORAGE, "Storage plan"),
+]
+
 
 class Subscription(TimestampedModel):
     """
@@ -67,6 +76,26 @@ class Subscription(TimestampedModel):
         default="",
         db_index=True,
     )
+    # BE-07: payment context. ``kind`` decides what a completed payment
+    # activates (Featured vs storage plan). ``gb`` is only set for the
+    # custom (Infinity) storage plan.
+    kind = models.CharField(
+        max_length=20,
+        choices=KIND_CHOICES,
+        default=KIND_FEATURED,
+    )
+    gb = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+
+    def charge_amount(self):
+        """
+        (amount, currency) to charge at the gateway: the snapshot on the
+        first Transaction (server-computed for storage plans), falling
+        back to the plan price for rows without a Transaction.
+        """
+        txn = self.transactions.order_by("pk").first()
+        if txn is not None:
+            return txn.amount, txn.currency
+        return self.plan.price, self.plan.currency
 
     def __str__(self):
         return (

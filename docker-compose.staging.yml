@@ -30,6 +30,10 @@
 #   OBJECT_STORAGE_* (including OBJECT_STORAGE_ENDPOINT_URL if not AWS S3).
 # Optional: WEB_HOST_PORT (default 8000) to avoid clashing with the other
 # projects on the shared VPS.
+# Pre-deploy hardening (no secrets): NUM_PROXIES (default 1 in
+#   config.settings.staging = the reverse proxy on the VPS is the only proxy;
+#   2 if Cloudflare is also in front of it), JWT_ACCESS_TTL_MINUTES (<= 15,
+#   enforced at startup by config.settings.staging).
 
 x-app: &app
   build: .
@@ -98,6 +102,14 @@ services:
 
   celery_worker:
     <<: *app
+    # Log level: config/celery.py's setup_logging handler re-applies Django's
+    # LOGGING, so LOG_LEVEL (not --loglevel below) decides what the worker logs.
+    # Pinned to INFO because task args (send_password_reset_otp) hold a raw
+    # e-mail address and DEBUG can log task arguments. An explicit `environment`
+    # replaces the one inherited from x-app, so DJANGO_SETTINGS_MODULE is repeated.
+    environment:
+      DJANGO_SETTINGS_MODULE: config.settings.staging
+      LOG_LEVEL: INFO
     command: celery -A config worker --loglevel=info --concurrency=2
     # Conservative placeholder pending real sibling-project usage data (Section 7 item 6) - revisit once known.
     deploy:

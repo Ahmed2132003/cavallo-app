@@ -10,22 +10,31 @@ from content.serializers import (
 )
 from content.tasks import transcode_reel
 from core.pagination import StandardCursorPagination
+from monetization.permissions import HasActiveSubscription
+from monetization.quota import quota_guard
+from monetization.visibility import exclude_locked_businesses
 
 
-def _get_post_or_404(pk):
+def _get_post_or_404(pk, hide_locked=False):
     """
     DRF NotFound explicitly, not django.shortcuts.get_object_or_404 —
     per the P-038 rule, so the error envelope's code is NOT_FOUND, not
     the generic ERROR fallback.
     """
-    post = Post.objects.filter(pk=pk).first()
+    queryset = Post.objects.filter(pk=pk)
+    if hide_locked:
+        queryset = exclude_locked_businesses(queryset)
+    post = queryset.first()
     if post is None:
         raise NotFound("Post not found.")
     return post
 
 
-def _get_reel_or_404(pk):
-    reel = Reel.objects.filter(pk=pk).first()
+def _get_reel_or_404(pk, hide_locked=False):
+    queryset = Reel.objects.filter(pk=pk)
+    if hide_locked:
+        queryset = exclude_locked_businesses(queryset)
+    reel = queryset.first()
     if reel is None:
         raise NotFound("Reel not found.")
     return reel
@@ -43,7 +52,7 @@ class PostListCreateView(generics.ListCreateAPIView):
     """
 
     serializer_class = PostSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveSubscription]
     pagination_class = StandardCursorPagination
 
     def get_queryset(self):
@@ -58,7 +67,8 @@ class PostListCreateView(generics.ListCreateAPIView):
             raise PermissionDenied(
                 "Only an authenticated business account can create posts."
             )
-        serializer.save(business=business)
+        with quota_guard(business, serializer):
+            serializer.save(business=business)
 
 
 class PostDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -76,11 +86,14 @@ class PostDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_permissions(self):
         if self.request.method in ("PATCH", "PUT", "DELETE"):
-            return [permissions.IsAuthenticated()]
+            return [permissions.IsAuthenticated(), HasActiveSubscription()]
         return [permissions.AllowAny()]
 
     def get_object(self):
-        post = _get_post_or_404(self.kwargs["pk"])
+        post = _get_post_or_404(
+            self.kwargs["pk"],
+            hide_locked=self.request.method in permissions.SAFE_METHODS,
+        )
         self.check_object_permissions(self.request, post)
         return post
 
@@ -90,7 +103,8 @@ class PostDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_update(self, serializer):
         self._check_ownership(serializer.instance)
-        serializer.save()
+        with quota_guard(serializer.instance.business, serializer):
+            serializer.save()
 
     def perform_destroy(self, instance):
         self._check_ownership(instance)
@@ -122,6 +136,7 @@ class PostPublicListView(generics.ListAPIView):
 
     def get_queryset(self):
         queryset = Post.published_objects.select_related("business")
+        queryset = exclude_locked_businesses(queryset)
         business_id = self.request.query_params.get("business_id")
         if business_id is not None:
             queryset = queryset.filter(business_id=business_id)
@@ -142,7 +157,7 @@ class ReelListCreateView(generics.ListCreateAPIView):
     """
 
     serializer_class = ReelSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveSubscription]
     pagination_class = StandardCursorPagination
 
     def get_queryset(self):
@@ -157,7 +172,8 @@ class ReelListCreateView(generics.ListCreateAPIView):
             raise PermissionDenied(
                 "Only an authenticated business account can create reels."
             )
-        reel = serializer.save(business=business)
+        with quota_guard(business, serializer):
+            reel = serializer.save(business=business)
         transcode_reel.delay(reel.id)
 
 
@@ -174,11 +190,14 @@ class ReelDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_permissions(self):
         if self.request.method in ("PATCH", "PUT", "DELETE"):
-            return [permissions.IsAuthenticated()]
+            return [permissions.IsAuthenticated(), HasActiveSubscription()]
         return [permissions.AllowAny()]
 
     def get_object(self):
-        reel = _get_reel_or_404(self.kwargs["pk"])
+        reel = _get_reel_or_404(
+            self.kwargs["pk"],
+            hide_locked=self.request.method in permissions.SAFE_METHODS,
+        )
         self.check_object_permissions(self.request, reel)
         return reel
 
@@ -188,7 +207,8 @@ class ReelDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_update(self, serializer):
         self._check_ownership(serializer.instance)
-        serializer.save()
+        with quota_guard(serializer.instance.business, serializer):
+            serializer.save()
 
     def perform_destroy(self, instance):
         self._check_ownership(instance)
@@ -210,6 +230,7 @@ class ReelPublicListView(generics.ListAPIView):
 
     def get_queryset(self):
         queryset = Reel.published_objects.select_related("business")
+        queryset = exclude_locked_businesses(queryset)
         business_id = self.request.query_params.get("business_id")
         if business_id is not None:
             queryset = queryset.filter(business_id=business_id)
