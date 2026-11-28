@@ -9927,10 +9927,10 @@ Executed in 2 steps (data layer, then services/admin), one confirmation per step
 5. Both models registered in Django Admin.
 
 ### LOCKED CONTRACT (P-079 and P-082 depend on these exact strings)
-notification_type: `chat_message`, `moderation_approved`, `moderation_rejected`, `new_follower`, `comment_on_content`, `new_like`, `new_share`, `new_rating`, `system_announcement`
-deep_link_type: `business_profile`, `post_detail`, `reel_detail`, `product_detail`, `chat_thread`  (blank = navigates nowhere)
-target_id meaning by deep_link_type: business_profile -> BusinessProfile id; post_detail -> Post id; reel_detail -> Reel id; product_detail -> Product id; chat_thread -> Conversation id.
-Preference category -> notification_type (enforced by P-079, not here): chat_notifications_enabled -> chat_message; moderation_notifications_enabled -> moderation_approved, moderation_rejected; social_notifications_enabled -> new_follower, comment_on_content, new_like, new_share, new_rating. system_announcement has no toggle (always delivered).
+notification_type: `chat_message`, `moderation_approved`, `moderation_rejected`, `new_follower`, `comment_on_content`, `new_like`, `new_share`, `new_rating`, `system_announcement`, `subscription`
+deep_link_type: `business_profile`, `post_detail`, `reel_detail`, `product_detail`, `chat_thread`, `subscription_plans`  (blank = navigates nowhere)
+target_id meaning by deep_link_type: business_profile -> BusinessProfile id; post_detail -> Post id; reel_detail -> Reel id; product_detail -> Product id; chat_thread -> Conversation id; subscription_plans -> no id (target_id is null).
+Preference category -> notification_type (enforced by P-079, not here): chat_notifications_enabled -> chat_message; moderation_notifications_enabled -> moderation_approved, moderation_rejected; social_notifications_enabled -> new_follower, comment_on_content, new_like, new_share, new_rating. system_announcement and subscription (BE-11, billing-critical) have no toggle (always delivered).
 Flutter route names for these deep links already exist in `lib/routing/app_router.dart` (businessProfile, postDetail, reelDetail, productDetail, chatThread).
 A test (`test_choice_values_are_the_locked_contract`) pins both choice lists; changing a value requires updating that test and this section deliberately.
 
