@@ -248,7 +248,7 @@ def build_business_queryset(filters: SearchFilters) -> QuerySet:
     if filters.min_rating is not None:
         qs = qs.filter(average_rating__gte=filters.min_rating)
     if filters.featured_only:
-        qs = qs.filter(is_featured=True)
+        qs = qs.filter(is_featured_effective=True)
     return qs
 
 
@@ -268,7 +268,7 @@ def build_product_queryset(filters: SearchFilters) -> QuerySet:
     if filters.max_price is not None:
         qs = qs.filter(price__lte=filters.max_price)
     if filters.featured_only:
-        qs = qs.filter(business__is_featured=True)
+        qs = qs.filter(business__is_featured_effective=True)
     return qs
 
 
@@ -281,16 +281,16 @@ def _fetch_business_entries(filters, *, search_query, mode, cursor, limit, text=
             Q(search_vector=search_query)
             | _contains_every_token(text or "", ("business_name", "description"))
         ).annotate(rank=_rank_expression(search_query))
-        qs = qs.order_by("-is_featured", "-rank", "-id")
+        qs = qs.order_by("-is_featured_effective", "-rank", "-id")
         secondary_field = "rank"
     else:
-        qs = qs.order_by("-is_featured", "-created_at", "-id")
+        qs = qs.order_by("-is_featured_effective", "-created_at", "-id")
         secondary_field = "created_at"
 
     if cursor is not None:
         qs = qs.filter(
             _rows_after(
-                "is_featured",
+                "is_featured_effective",
                 secondary_field,
                 content_type=CONTENT_TYPE_BUSINESS,
                 cursor=cursor,
@@ -304,7 +304,7 @@ def _fetch_business_entries(filters, *, search_query, mode, cursor, limit, text=
             SearchResult(
                 content_type=CONTENT_TYPE_BUSINESS,
                 obj=obj,
-                is_featured=obj.is_featured,
+                is_featured=obj.is_featured_effective,
                 secondary=secondary,
             )
         )
@@ -320,16 +320,16 @@ def _fetch_product_entries(filters, *, search_query, mode, cursor, limit, text=N
             Q(search_vector=search_query)
             | _contains_every_token(text or "", ("name", "description"))
         ).annotate(rank=_rank_expression(search_query))
-        qs = qs.order_by("-business__is_featured", "-rank", "-id")
+        qs = qs.order_by("-business__is_featured_effective", "-rank", "-id")
         secondary_field = "rank"
     else:
-        qs = qs.order_by("-business__is_featured", "-created_at", "-id")
+        qs = qs.order_by("-business__is_featured_effective", "-created_at", "-id")
         secondary_field = "created_at"
 
     if cursor is not None:
         qs = qs.filter(
             _rows_after(
-                "business__is_featured",
+                "business__is_featured_effective",
                 secondary_field,
                 content_type=CONTENT_TYPE_PRODUCT,
                 cursor=cursor,
@@ -344,7 +344,7 @@ def _fetch_product_entries(filters, *, search_query, mode, cursor, limit, text=N
             SearchResult(
                 content_type=CONTENT_TYPE_PRODUCT,
                 obj=obj,
-                is_featured=obj.business.is_featured,
+                is_featured=obj.business.is_featured_effective,
                 secondary=secondary,
             )
         )

@@ -108,7 +108,16 @@ class BusinessProfile(TimestampedModel, SoftDeleteModel):
     # action, P-088 expiry job) recomputes it. Do not set it by hand.
     # It deliberately lives here, NOT duplicated on Post/Reel/Product:
     # their queries resolve it through `business__is_featured`.
+    # Do not set it by hand.
+    # It deliberately lives here, NOT duplicated on Post/Reel/Product:
+    # their queries resolve it through `business__is_featured`.
+    # BE-10: this is now the MANUAL / Admin Featured flag only. Ranking
+    # and public payloads read is_featured_effective below.
     is_featured = models.BooleanField(default=False)
+    # BE-10: is_featured OR the storage plan grants Featured (ultra /
+    # infinity, trialing/active). Written ONLY by
+    # monetization.featured.sync_featured_effective(). Do not set by hand.
+    is_featured_effective = models.BooleanField(default=False)
     # Part P-063 (Phase 11, ADR-003): denormalized full-text search
     # vector over business_name + description. Kept in sync exclusively
     # by search/signals.py's post_save handler (STEP 3) via a direct

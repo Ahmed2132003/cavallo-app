@@ -48,7 +48,10 @@ def _make_business(email, name, featured=False):
         city="Ismailia",
     )
     if featured:
-        BusinessProfile.objects.filter(pk=business.pk).update(is_featured=True)
+        # BE-10: .update() bypasses the sync, so set both flags here.
+        BusinessProfile.objects.filter(pk=business.pk).update(
+            is_featured=True, is_featured_effective=True
+        )
         business.refresh_from_db()
     return business
 
@@ -125,7 +128,10 @@ class TestPublicPostIsFeatured(APITestCase):
 
     def test_flag_follows_business_state_not_the_post(self):
         self.assertIs(PostPublicSerializer(self.plain_post).data["is_featured"], False)
-        BusinessProfile.objects.filter(pk=self.plain.pk).update(is_featured=True)
+        # BE-10: .update() bypasses the sync, so set both flags.
+        BusinessProfile.objects.filter(pk=self.plain.pk).update(
+            is_featured=True, is_featured_effective=True
+        )
         fresh = Post.objects.get(pk=self.plain_post.pk)
         self.assertIs(PostPublicSerializer(fresh).data["is_featured"], True)
 
@@ -182,7 +188,10 @@ class TestPublicReelIsFeatured(APITestCase):
 
     def test_serializer_flag_follows_business_state(self):
         self.assertIs(ReelPublicSerializer(self.plain_reel).data["is_featured"], False)
-        BusinessProfile.objects.filter(pk=self.plain.pk).update(is_featured=True)
+        # BE-10: .update() bypasses the sync, so set both flags.
+        BusinessProfile.objects.filter(pk=self.plain.pk).update(
+            is_featured=True, is_featured_effective=True
+        )
         fresh = Reel.objects.get(pk=self.plain_reel.pk)
         self.assertIs(ReelPublicSerializer(fresh).data["is_featured"], True)
 

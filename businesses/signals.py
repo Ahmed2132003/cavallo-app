@@ -16,7 +16,7 @@ uses one for verification.)
 """
 
 from django.core.cache import cache
-from django.db.models.signals import post_save
+from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
 from accounts.models import User
@@ -35,3 +35,43 @@ def invalidate_business_profile_cache_on_user_save(sender, instance, **kwargs):
     )
     if profile_id is not None:
         cache.delete(_business_profile_cache_key(profile_id))
+
+
+# BE-10: keep BusinessProfile.is_featured_effective in sync with the
+# storage subscription (activate / upgrade / pending downgrade applied /
+# expiry all go through Subscription.save(); purge may delete the row).
+@receiver(
+    post_save,
+    sender="monetization.Subscription",
+    dispatch_uid="businesses_featured_effective_on_subscription_save",
+)
+def sync_featured_effective_on_subscription_save(sender, instance, raw=False, **kwargs):
+    if raw:
+        return
+    from monetization.featured import sync_featured_effective
+
+    sync_featured_effective([instance.business_id])
+
+
+@receiver(
+    post_delete,
+    sender="monetization.Subscription",
+    dispatch_uid="businesses_featured_effective_on_subscription_delete",
+)
+def sync_featured_effective_on_subscription_delete(sender, instance, **kwargs):
+    from monetization.featured import sync_featured_effective
+
+    sync_featured_effective([instance.business_id])
+
+
+@receiver(
+    post_save,
+    sender="businesses.BusinessProfile",
+    dispatch_uid="businesses_featured_effective_on_profile_save",
+)
+def sync_featured_effective_on_profile_save(sender, instance, raw=False, **kwargs):
+    if raw:
+        return
+    from monetization.featured import sync_featured_effective
+
+    sync_featured_effective([instance.pk])

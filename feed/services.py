@@ -160,11 +160,12 @@ def _backfill_rows_after(content_type: str, cursor: FeedCursor) -> Q:
         uses (reused as-is: that comparison never looks at is_featured).
     """
     same_featured_tiebreak = _following_rows_after(content_type, cursor)
+    # BE-10: ranking reads the effective flag (manual OR plan).
     if cursor.is_featured:
-        return Q(business__is_featured=False) | (
-            Q(business__is_featured=True) & same_featured_tiebreak
+        return Q(business__is_featured_effective=False) | (
+            Q(business__is_featured_effective=True) & same_featured_tiebreak
         )
-    return Q(business__is_featured=False) & same_featured_tiebreak
+    return Q(business__is_featured_effective=False) & same_featured_tiebreak
 
 
 def fetch_following_tier(
@@ -224,14 +225,14 @@ def fetch_backfill_tier(
         if after is not None:
             queryset = queryset.filter(_backfill_rows_after(content_type, after))
         queryset = queryset.select_related("business").order_by(
-            "-business__is_featured", "-created_at", "-id"
+            "-business__is_featured_effective", "-created_at", "-id"
         )
         for obj in queryset[:limit]:
             entries.append(
                 FeedEntry(
                     content_type=content_type,
                     obj=obj,
-                    is_featured=obj.business.is_featured,
+                    is_featured=obj.business.is_featured_effective,
                 )
             )
 

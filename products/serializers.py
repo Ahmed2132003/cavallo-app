@@ -96,8 +96,9 @@ class ProductSerializer(serializers.ModelSerializer):
     variants = ProductVariantSerializer(many=True, read_only=True)
     # Part P-110: the owning business's Featured state, resolved through
     # the join (P-087 design) -- never a column on Product.
+    # BE-10: reads the EFFECTIVE flag (manual Admin OR ultra/infinity plan).
     is_featured = serializers.BooleanField(
-        source="business.is_featured", read_only=True
+        source="business.is_featured_effective", read_only=True
     )
     is_active = _FormSafeBooleanField(required=False)
 
