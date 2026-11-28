@@ -128,6 +128,7 @@ def test_choice_values_are_the_locked_contract():
         "new_share",
         "new_rating",
         "system_announcement",
+        "subscription",  # BE-11
     }
     assert set(Notification.DeepLinkType.values) == {
         "business_profile",
@@ -135,6 +136,7 @@ def test_choice_values_are_the_locked_contract():
         "reel_detail",
         "product_detail",
         "chat_thread",
+        "subscription_plans",
     }
 
 

@@ -140,9 +140,12 @@ class TestDeferredEnqueueHook:
         item = DummyDeferredContent.objects.create(title="raw upload")
         content_type = ContentType.objects.get_for_model(DummyDeferredContent)
 
-        assert ModerationQueue.objects.filter(
-            content_type=content_type, object_id=item.pk
-        ).count() == 0
+        assert (
+            ModerationQueue.objects.filter(
+                content_type=content_type, object_id=item.pk
+            ).count()
+            == 0
+        )
 
         ModerationQueue.objects.create(
             content_type=content_type,

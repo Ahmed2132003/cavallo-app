@@ -127,9 +127,7 @@ class TestTranscodeReelFailure:
             b"this is not a real video file, just plain text pretending to be mp4",
             content_type="video/mp4",
         )
-        reel = Reel.objects.create(
-            business=business, caption="hi", video=corrupt_video
-        )
+        reel = Reel.objects.create(business=business, caption="hi", video=corrupt_video)
 
         transcode_reel(reel.id)
 

@@ -30,12 +30,14 @@ from django.db import transaction as db_transaction
 
 from monetization.services import activate_subscription
 from payments.models import (
+    KIND_STORAGE,
     STATUS_COMPLETED,
     STATUS_FAILED,
     STATUS_PENDING,
     Subscription,
     Transaction,
 )
+from payments.storage_activation import activate_storage_subscription
 
 if TYPE_CHECKING:
     from payments.views import WebhookEvent
@@ -214,9 +216,21 @@ def process_webhook_event(event: "WebhookEvent") -> str:
             subscription.status = STATUS_COMPLETED
             subscription.save(update_fields=["status", "updated_at"])
 
-            activate_subscription(
-                business=subscription.business, plan=subscription.plan
-            )
+            # BE-07: a storage-plan payment activates the storage plan
+            # (stub, replaced by BE-08); anything else keeps the Featured
+            # path. Same guards above apply to both (HMAC, idempotency,
+            # amount match, lock, one atomic block).
+            if subscription.kind == KIND_STORAGE:
+                activate_storage_subscription(
+                    business=subscription.business,
+                    plan=subscription.plan,
+                    gb=subscription.gb,
+                    payment=subscription,
+                )
+            else:
+                activate_subscription(
+                    business=subscription.business, plan=subscription.plan
+                )
             return OUTCOME_ACTIVATED
 
         # Final failure.

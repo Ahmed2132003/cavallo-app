@@ -50,7 +50,8 @@ class Notification(TimestampedModel):
     nullable for the same reason. The meaning of target_id depends on
     deep_link_type: business_profile -> BusinessProfile id,
     post_detail -> Post id, reel_detail -> Reel id, product_detail ->
-    Product id, chat_thread -> Conversation id.
+    Product id, chat_thread -> Conversation id, subscription_plans -> no id
+    (target_id is None).
 
     Notification inherits TimestampedModel only (no SoftDeleteModel):
     it is per-user bookkeeping, not user-facing content, so it is
@@ -67,6 +68,8 @@ class Notification(TimestampedModel):
         NEW_SHARE = "new_share", "New share"
         NEW_RATING = "new_rating", "New rating"
         SYSTEM_ANNOUNCEMENT = "system_announcement", "System announcement"
+        # BE-11: billing events. No preference toggle: always delivered.
+        SUBSCRIPTION = "subscription", "Subscription"
 
     class DeepLinkType(models.TextChoices):
         BUSINESS_PROFILE = "business_profile", "Business profile"
@@ -74,6 +77,8 @@ class Notification(TimestampedModel):
         REEL_DETAIL = "reel_detail", "Reel detail"
         PRODUCT_DETAIL = "product_detail", "Product detail"
         CHAT_THREAD = "chat_thread", "Chat thread"
+        # BE-11: the plans screen. target_id is always None.
+        SUBSCRIPTION_PLANS = "subscription_plans", "Subscription plans"
 
     recipient = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -141,7 +146,8 @@ class NotificationPreference(TimestampedModel):
     * social_notifications_enabled -> new_follower, comment_on_content,
       new_like, new_share, new_rating
 
-    system_announcement has no toggle: it is always delivered.
+    system_announcement and subscription (BE-11, billing-critical) have no
+    toggle: they are always delivered.
 
     Rows are created automatically by the post_save signal in
     notifications/signals.py (all toggles default True), so no

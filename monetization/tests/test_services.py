@@ -308,7 +308,11 @@ def _sets_active_true(tree):
             return True
         if isinstance(node, ast.Call):
             func = node.func
-            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            name = (
+                func.attr
+                if isinstance(func, ast.Attribute)
+                else getattr(func, "id", "")
+            )
             if name in _WRITE_CALLS or name == "FeaturedSubscription":
                 for keyword in node.keywords:
                     if (

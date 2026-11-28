@@ -57,9 +57,7 @@ def enqueue_new_moderatable_content(sender, instance, created, **kwargs):
     if not getattr(instance, "auto_enqueue_on_create", True):
         return
 
-    priority = getattr(
-        instance, "moderation_priority", ModerationQueue.Priority.NORMAL
-    )
+    priority = getattr(instance, "moderation_priority", ModerationQueue.Priority.NORMAL)
 
     ModerationQueue.objects.create(
         content_type=ContentType.objects.get_for_model(instance),

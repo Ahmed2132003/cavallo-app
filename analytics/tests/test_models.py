@@ -70,12 +70,15 @@ class TestBusinessDailyStatsModel:
 
     def test_no_fields_for_untracked_metrics(self):
         """
-        Product views / profile views are not tracked anywhere in this
-        system. This test pins the honest field set so nobody adds a
-        fabricated metric by accident.
+        Product views / profile views must not be added to
+        BusinessDailyStats without a real tracking mechanism.
+
+        BI-02 metadata is allowed, but fabricated metrics
+        are not.
         """
         names = {f.name for f in BusinessDailyStats._meta.get_fields()}
-        assert names == {
+
+        expected = {
             "id",
             "created_at",
             "updated_at",
@@ -90,4 +93,11 @@ class TestBusinessDailyStatsModel:
             "active_products_count",
             "published_posts_count",
             "published_reels_count",
+            "bi_rollups_computed_at",
         }
+
+        assert names == expected
+
+        # These metrics are not tracked by BusinessDailyStats.
+        assert "product_views" not in names
+        assert "profile_views" not in names

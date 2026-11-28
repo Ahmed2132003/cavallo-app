@@ -57,9 +57,7 @@ class TestPlanModel:
         assert list(field.choices) == list(Product.CURRENCY_CHOICES)
 
     def test_full_clean_rejects_zero_duration(self):
-        plan = Plan(
-            name="Zero", duration_days=0, price=Decimal("1.00"), currency="EGP"
-        )
+        plan = Plan(name="Zero", duration_days=0, price=Decimal("1.00"), currency="EGP")
         with pytest.raises(ValidationError):
             plan.full_clean()
 
@@ -83,9 +81,7 @@ class TestFeaturedSubscriptionModel:
 
     def test_expires_at_is_stored_and_never_recomputed(self):
         plan = _make_plan(days=7)
-        sub = FeaturedSubscription.objects.create(
-            business=_make_business(), plan=plan
-        )
+        sub = FeaturedSubscription.objects.create(business=_make_business(), plan=plan)
         original_start = sub.starts_at
         original_expiry = sub.expires_at
 

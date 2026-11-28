@@ -30,6 +30,7 @@ managed by SoftDeleteModel.delete()). This task must never call either.
 from celery import shared_task
 from django.utils import timezone
 
+from monetization.storage_usage import purge_instance_files
 from stories.models import Story
 
 
@@ -57,6 +58,13 @@ def expire_stale_stories():
     never touched here.
     """
     now = timezone.now()
+    # BE-04: an expired Story's media is deleted from storage for good and
+    # stops counting toward the business's usage. The row itself is kept
+    # (archived_at, view counts, moderation history). Also catches stories
+    # archived before BE-04 that still hold a file.
+    for story in Story.objects.filter(expires_at__lte=now).exclude(media=""):
+        purge_instance_files(story, ["media"])
+
     archived_count = Story.objects.filter(
         expires_at__lte=now,
         archived_at__isnull=True,

@@ -9927,10 +9927,10 @@ Executed in 2 steps (data layer, then services/admin), one confirmation per step
 5. Both models registered in Django Admin.
 
 ### LOCKED CONTRACT (P-079 and P-082 depend on these exact strings)
-notification_type: `chat_message`, `moderation_approved`, `moderation_rejected`, `new_follower`, `comment_on_content`, `new_like`, `new_share`, `new_rating`, `system_announcement`
-deep_link_type: `business_profile`, `post_detail`, `reel_detail`, `product_detail`, `chat_thread`  (blank = navigates nowhere)
-target_id meaning by deep_link_type: business_profile -> BusinessProfile id; post_detail -> Post id; reel_detail -> Reel id; product_detail -> Product id; chat_thread -> Conversation id.
-Preference category -> notification_type (enforced by P-079, not here): chat_notifications_enabled -> chat_message; moderation_notifications_enabled -> moderation_approved, moderation_rejected; social_notifications_enabled -> new_follower, comment_on_content, new_like, new_share, new_rating. system_announcement has no toggle (always delivered).
+notification_type: `chat_message`, `moderation_approved`, `moderation_rejected`, `new_follower`, `comment_on_content`, `new_like`, `new_share`, `new_rating`, `system_announcement`, `subscription`
+deep_link_type: `business_profile`, `post_detail`, `reel_detail`, `product_detail`, `chat_thread`, `subscription_plans`  (blank = navigates nowhere)
+target_id meaning by deep_link_type: business_profile -> BusinessProfile id; post_detail -> Post id; reel_detail -> Reel id; product_detail -> Product id; chat_thread -> Conversation id; subscription_plans -> no id (target_id is null).
+Preference category -> notification_type (enforced by P-079, not here): chat_notifications_enabled -> chat_message; moderation_notifications_enabled -> moderation_approved, moderation_rejected; social_notifications_enabled -> new_follower, comment_on_content, new_like, new_share, new_rating. system_announcement and subscription (BE-11, billing-critical) have no toggle (always delivered).
 Flutter route names for these deep links already exist in `lib/routing/app_router.dart` (businessProfile, postDetail, reelDetail, productDetail, chatThread).
 A test (`test_choice_values_are_the_locked_contract`) pins both choice lists; changing a value requires updating that test and this section deliberately.
 
@@ -13576,3 +13576,170 @@ Date 2026-10-10, branch part-111 (cavallo-mobile). Supersedes the "NOT COMPLETE 
 The visual and localization layers are stable and the Arabic is approved. Store listing assets and screenshots should be produced from this design in both languages and both themes.
 
 Tracking line: Phase 23 COMPLETE (P-115 closed 2026-10-10; Arabic approved by the owner; exceptions: online dot and thread Block/Report not built by decision; D-1/D-2/G-1/O-1 and the Messages/Chats label carried forward).
+
+
+## Phase 1 correction - SMTP TLS/SSL flags (password reset)
+
+Date 2026-11-05, branch develop. Corrects commit 665a4ee: EMAIL_USE_TLS and EMAIL_USE_SSL were only a comment in config/settings/base.py, not real settings, and .env.example had no SMTP entries.
+- base.py: EMAIL_USE_SSL and EMAIL_USE_TLS are now env-driven (1/true/yes/on; blank = default). TLS defaults to on unless SSL is on. Enabling both raises ImproperlyConfigured.
+- .env.example: added EMAIL_HOST, EMAIL_PORT, EMAIL_HOST_USER, EMAIL_HOST_PASSWORD, EMAIL_USE_TLS, EMAIL_USE_SSL, EMAIL_TIMEOUT, DEFAULT_FROM_EMAIL.
+- dev.py unchanged: still overrides EMAIL_BACKEND with the console backend.
+## Password reset - real SMTP delivery from Docker (dev stack)
+
+Date 2026-11-08, branch develop. Status: PARTIAL.
+- dev.py: EMAIL_USE_REAL_SMTP (default false = console backend; true = SMTP settings from base.py). base.py: DEFAULT_FROM_EMAIL falls back to EMAIL_HOST_USER, then noreply@localhost. TLS+SSL still raises ImproperlyConfigured.
+- docker-compose.yml unchanged: web, celery_worker and celery_beat already get every EMAIL_* variable through env_file: .env.
+- New: python manage.py send_test_email --to <addr> (prints backend/host/port/tls/ssl/from, never the password). .env.example documents the Gmail setup.
+- New tests: accounts/tests/test_email_settings.py, accounts/tests/test_password_reset_otp_not_logged.py.
+- PASSED (Docker, Postgres): accounts/ + core/ = 357 passed, 1 skipped. black --check and flake8 clean on every file of this change. send_test_email against Gmail SMTP (smtp.gmail.com:587, TLS) printed OK, meaning the server accepted the message; the test email arrived in the inbox (confirmed by the owner). prod.py and staging.py have unrelated local edits (W292 + black) that are NOT part of this commit.
+- NOT VERIFIED (deferred until the Flutter password-reset flow is built): full register/request/verify/confirm/login flow with a real OTP email, celery_worker logs checked for OTP/password after a real flow, lockout / expired OTP / unknown-email behaviour against real SMTP.
+
+
+## PART P-116A — Backend: user avatar + display_name (profile, chat, comments, ratings) — STATUS: COMPLETE (with recorded exceptions)
+
+Date 2026-11-13, branch part-116a. Backend only (cavallo-app); cavallo-mobile untouched. One migration (A1 only); A2a, A2b, A2c and A3 add none. No model change after A1.
+
+### What was built
+- A1 (90720df): User.avatar + User.display_name, PATCH /api/v1/auth/me/profile/, new fields on GET /api/v1/auth/me/.
+- A2a (eff5347): UserPublicSerializer (accounts/serializers.py), used for chat other_participant; participants/user/profiles prefetched on the conversation list.
+- A2b (3f7d251): CommentSerializer gets `user_public` via UserPublicSerializer; the bare `user` id stays.
+- A2c (77d3a2c): the public ratings list gets `reviewer` via UserPublicSerializer; queryset uses select_related (no N+1).
+- A3: verification and this entry only (no code change).
+
+### Files created / modified
+Modified: accounts/admin.py, accounts/models.py, accounts/serializers.py, accounts/services.py, accounts/urls.py, accounts/views.py, accounts/tests/test_me.py, chat/serializers.py, chat/views.py, social/serializers.py, social/views.py, ratings/serializers.py, ratings/views.py.
+Created: accounts/migrations/0006_user_avatar_display_name.py, accounts/tests/test_profile_avatar.py, accounts/tests/test_user_public_serializer.py, chat/test_participant_public.py, social/tests/test_comment_user_public.py, ratings/tests/test_reviewer_public.py.
+Also inside commit 90720df but NOT part of P-116A (see Findings): config/settings/prod.py, config/settings/staging.py, docker-compose.prod.yml, docker-compose.staging.yml.
+
+### Endpoint contract (from the code of 90720df)
+PATCH /api/v1/auth/me/profile/ — any authenticated user (Customer, Business, Moderator, Staff); always acts on request.user. Methods allowed: PATCH, OPTIONS. Body: multipart, form or JSON.
+- display_name: string, optional, max 80 characters, blank allowed (clears it).
+- avatar: file, optional. Allowed real types (sniffed with libmagic, not filename or Content-Type): image/jpeg, image/png, image/webp. Max 5 MB. Stored under a server-generated name (uuid + extension of the real type); the client filename is never kept.
+- remove_avatar: boolean, optional. Cannot be combined with avatar.
+- At least one of display_name, avatar, remove_avatar is required. Any other key (id, email, is_staff, is_moderator, account_type, preferred_language, ...) is silently ignored.
+- Response 200: same shape as GET /api/v1/auth/me/ (below).
+- Errors (P-012 envelope): 401 when not authenticated; 400 VALIDATION_ERROR for display_name over 80 characters, avatar of a wrong type or over 5 MB (messages come from core.media.validate_upload), avatar together with remove_avatar ({"remove_avatar": "Cannot be combined with avatar."}), and an empty body ("Provide at least one of: display_name, avatar, remove_avatar."); 405 for other methods.
+
+GET /api/v1/auth/me/ (also returned by PATCH /auth/me/ preferences): `{"id", "email", "account_type", "is_moderator", "is_staff", "preferred_language", "display_name", "avatar"}`. New: display_name (string, "" when unset) and avatar (absolute URL string, or null when the user has none).
+
+### JSON shapes added
+- chat other_participant (A2a): `{"id", "account_type", "display_name", "avatar"}`. Keys are the same as before; display_name and avatar now come from UserPublicSerializer first (User.display_name / User.avatar), with the old chat resolvers as fallback.
+- comment (A2b): new key `user_public` = `{"display_name", "avatar"}` next to the existing `user` (id).
+- rating (A2c), GET /api/v1/businesses/{id}/ratings/, per item: `{"id", "customer", "reviewer": {"display_name", "avatar"}, "score", "review_text", "created_at"}`. Example: `{"id": 7, "customer": 42, "reviewer": {"display_name": "Sara A", "avatar": "http://host/media/avatars/sara.png"}, "score": 5, "review_text": "nice", "created_at": "2026-11-12T10:00:00Z"}`.
+- UserPublicSerializer output is exactly `{"display_name", "avatar"}`. avatar is an absolute URL, or null when there is no avatar or no request in the serializer context. display_name falls back: User.display_name -> BusinessProfile business name -> CustomerProfile display name -> "".
+
+### Decisions
+- Avatar and display_name live on User, not on BusinessProfile/CustomerProfile, so every account type can have them independently of any profile row (a Moderator or Staff user has neither profile).
+- Sync between User.display_name and CustomerProfile.display_name (accounts/services.update_own_profile, A1): User.display_name is the source of truth. When a profile update changes display_name, the value is written through to the user's CustomerProfile (businesses.models.CustomerProfile), if one exists, in the same transaction, cut to that column's max_length. Users without a CustomerProfile (Business, Moderator, Staff) just keep the value on User. The sync is one-way and runs only inside update_own_profile; no reverse sync appears in the A1 diff of services.py/models.py (not checked elsewhere), so a CustomerProfile.display_name changed by other code does not update User.display_name.
+- The old `user` / `customer` ids stay in comments and ratings (rule: keep all old keys, only add).
+
+### Results (real, A3, Docker, Postgres)
+- manage.py check: System check identified no issues (0 silenced).
+- makemigrations --check --dry-run: No changes detected.
+- Full suite (pytest -q . , run before the A2b/A2c commits on the same files): 2115 passed, 0 failed, 1 skipped, 1 xfailed in 1717.93s (0:28:37).
+- Last recorded full backend figure with "xfailed" in this file (line 12916): 1762 passed, 1 skipped, 1 xfailed (+1 failed, fixed afterwards). Difference: +353 passed; it covers every part since that entry, not only P-116A.
+- flake8 (no output) and black --check (13 files unchanged): all .py files of A1/A2a (accounts/*, chat/*). A2b files (3): flake8 clean, black unchanged. A2c files (3): flake8 clean, black unchanged.
+- A2c on its own (owner run): pytest ratings accounts -q = 360 passed in 154.39s.
+- config/settings/prod.py, staging.py: flake8 W292 (prod.py:58, staging.py:48); black --check: would reformat both. NOT fixed (outside scope).
+- No test failed, so no fix was made in A3.
+
+### Known issues / Findings (nothing below was changed by this part)
+- Commit 90720df (A1) also contains pre-deploy hardening unrelated to avatar/display_name:
+  - config/settings/prod.py and staging.py: startup check that raises ImproperlyConfigured when JWT_ACCESS_TTL_MINUTES > 15; NUM_PROXIES default 1 for staging; comments.
+  - docker-compose.prod.yml and docker-compose.staging.yml: celery_worker gets an explicit environment (DJANGO_SETTINGS_MODULE, LOG_LEVEL: INFO); comments.
+  Behaviour risk: prod and staging refuse to start when the server .env has JWT_ACCESS_TTL_MINUTES above 15. NOT verified in A3: that these settings load with the real server .env, or that the celery_worker change works. No P-116A test covers these files. Not reverted or rewritten; owner decision needed.
+- Those four files lack a trailing newline. git show also displays added lines as CRLF next to LF lines (^M) in these files and in accounts/serializers.py, chat/serializers.py, social/serializers.py (mixed line endings). flake8 and black reported the .py files of P-116A clean; the two settings files are not clean.
+- chat other_participant still exposes `id` and `account_type` (existing keys, kept). Its display_name fallback (old chat resolver) can still derive a name from first/last name or the e-mail prefix, and its avatar falls back to the old resolver.
+- The public ratings list returns the raw user id in `customer`, and comments return the raw `user` id (both existing keys, kept).
+- RatingsListView returns 200 with an empty list for an unknown business id (RateBusinessView returns 404). S-2 (P-096): a business owner can rate their own business. Not touched.
+- build_me_payload (accounts/views.py) builds the avatar URL without a try/except, while UserPublicSerializer.get_avatar catches storage errors and returns null. Read from the code, not tested: a storage error could make GET /auth/me/ return 500.
+- UserPublicSerializer returns avatar null when the caller passes no request in the context; every new caller must pass it.
+- Avatar URLs were only exercised with the test storage backend; behaviour with the production MediaStorage is NOT verified.
+- The mobile app does not use the new fields yet.
+- Stale names in comments: the User.avatar comment in accounts/models.py mentions "AvatarUploadSerializer", but the serializer that validates the avatar is MeProfileUpdateSerializer; the update_own_profile docstring points to "PROJECT_PROGRESS notes for P-116A-1". Documentation only; not changed.
+- The full run shows 1 skipped and 1 xfailed. The xfail matches the P-096 entry (P-095's strict G-1 marker); the skip was not investigated.
+- manage.py printed "Invalid line" warnings for the SMTP lines of .env (leading spaces), echoing a secret into the terminal output. Not part of P-116A; fix the .env and rotate that secret.
+- Untracked files intentionally NOT committed: DEVICE_TEST.md, P058_review_bundle.txt, accounts.zip, apply_email_smtp_fix.ps1, config/settings/devicetest.py, docker-compose.devicetest.yml, env.example, nginx/devicetest.conf, p116a2a.patch, scripts/deploy/devicetest_deploy.ps1, scripts/deploy/devicetest_up.sh.
+- Commit db6c209 shows 8 lines deleted and re-added in the older "Password reset - real SMTP delivery from Docker (dev stack)" entry (and the last line of "Phase 1 correction"). `git diff -w` shows no change of content (whitespace/line endings only; 68 insertions, 0 deletions). Not reverted.
+
+Tracking line: P-116A COMPLETE (backend, 2026-11-13): avatar and display_name available in /auth/me, /auth/me/profile, chat other_participant, comments and ratings; exceptions: the four out-of-scope files inside A1, production storage and the settings change not verified, mobile not yet using the fields.
+
+- P-116A backend real-storage check 2026-11-13 (dev stack, MinIO, port 8095): avatar upload returned an absolute presigned URL (host 10.0.2.2:9010, the Android emulator alias); that URL served 200 image/png when fetched through localhost:9010; /me/ returned the same file; a text file as avatar -> 400; remove_avatar -> null (HTTP 200) and the old URL then returned 404 (object removed). Not verified: that the storage object of the FIRST uploaded test avatar was removed (only the API response was checked); the public URL host for a real device or production; the signature changes on every request.
+
+---
+
+## P-116B: Edit my profile (display name + avatar) for all account types - branch `part-116b-edit-profile` (2026-11-13)
+
+**Scope:** one shared screen where any account type (Customer, Business, Moderator, Staff) edits the display name and the personal photo. Business data stays in `BusinessProfileEditScreen` (not merged).
+
+**Backend contract used:** `PATCH /api/v1/auth/me/profile/` (multipart only when a photo is sent: `display_name`, `avatar`; JSON otherwise, `remove_avatar: true` to remove) and `GET /api/v1/auth/me/` returning `display_name` and `avatar`. Taken from the P-116B brief; the P-116A section of this file was NOT available when this was written, so the response shape was NOT checked against the real backend.
+
+**What was added:**
+- Data: `User` got `displayName` (default `''`) and `avatarUrl` (default null) plus `withProfile(...)`; `MeResponseDto` parses `display_name` / `avatar` (null, empty or missing = no photo). Every existing `User(...)` call site is unchanged because of the defaults.
+- New `MyProfileRepository` (`profile_hub/data/`), separate from `AuthRepository` on purpose (that interface is implemented by many test fakes). It sends bytes + filename, so tests need no real files.
+- `SessionNotifier.updateMyProfile`: writes the result straight into the session (no extra request when the response carries the profile, one `fetchMe` otherwise). It never sets the state to loading, and on failure the session is untouched and the error is rethrown.
+- Screen `edit_my_profile_screen.dart`: tappable avatar -> bottom sheet (gallery / remove), name field (max 80), save with loading, "no changes" sends no request, device check of 5 MB and JPEG/PNG/WebP by magic bytes (the backend is the final judge), localized errors only (`localizedApiError`), the typed edits stay on screen after a failure.
+- Routing: `editMyProfile` / `/profile/edit` (top-level, no guard change), manifest entry for all three audiences (hub row), a new first row in the hub. The hub header now uses the display name and the photo.
+- L10n: 16 keys in EN + AR (one with a placeholder).
+
+**Verification (REAL results):**
+- Targeted tests (`profile_hub`, `auth`, `routing`, `l10n`, `core/widgets`): 00:53 +394: All tests passed! (includes arb parity, no hardcoded strings, navigation reachability)
+- Goldens of this screen: 4 generated (light/dark x en/ar), reviewed visually by Ahmed, stable on a second run (+4).
+- `flutter analyze`: No issues found.
+- Full `flutter test`: 04:16 +1682 -64. The 64 failures are the same old goldens (P-114, P-115, P-116 forgot-password), not related to P-116B.
+
+**Known issues (honest):**
+- The 64 old goldens fail by 0.27% to 2.92% pixel diff. Confirmed with `git stash` that they fail on the code WITHOUT P-116B (28 of them re-run: all failed). Likely a rendering-environment difference on this machine. They were NOT regenerated.
+- Steps D and E not done: avatar in comments, chat participants and unifying initials need the real P-116A contract (the comment payload only carries a bare user id) and the result of the `initialsOf` search.
+- Manual test on a real device with the real backend (port 8095) for Customer, Business, Moderator, restart and chat: NOT done.
+- Backend response shape of `/auth/me/profile/` not verified against the real backend (see above).
+- 3 test files in `profile_hub` were modified outside this work (`language_preference_repository_test`, `business_shortcuts_test`, `hub_selectors_test`) and were deliberately not committed.
+
+**Status: PARTIAL.** Steps A, B, C and the tests are done; D, E and the manual walk-through are open.
+
+
+---
+
+## PART BI-01: Chat -> product interest -> merchant-recorded orders - branch `part-116a` (2026-11-14)
+
+**Decision:** Merchant-Recorded Orders are allowed (the merchant records a sale by hand after agreeing it in chat). Still forbidden: cart, checkout, payment, inventory, SKU.
+
+**What was added:**
+- chat: `ConversationProductInterest` (UniqueConstraint on conversation+product), `chat/product_interest.py`. `POST /conversations/start/` accepts an optional `product_id`. A customer sharing a Product into a conversation records the interest only if it is not recorded yet.
+- chat: `MessageSerializer.order` (additive, null when the message has no order).
+- orders (new app, in INSTALLED_APPS, mounted at `/api/v1/orders/`): `Order`, `OrderEvent` (append-only), `constants.py`, `services.py`, serializers, views, urls, admin, tests.
+- Endpoints: from-chat, merchant list/detail/status/notes/events/by-product, customer my-list/my-detail.
+
+**Definitions (orders/constants.py):**
+- Sales Value = sum of total_amount of orders in confirmed/processing/shipped/delivered. pending and cancelled are excluded.
+- It is merchant-recorded sales, NOT payments received. Totals are per currency only.
+- Allowed transitions live in one dict (ALLOWED_TRANSITIONS): pending -> confirmed -> processing -> shipped -> delivered; cancel allowed before delivered; delivered and cancelled are terminal.
+
+**Decisions:**
+- All identities (business, customer, product, currency) come from the server. The request body is never trusted for them.
+- One order per source message (UniqueConstraint + row lock + IntegrityError path). A replay returns 200 with the same order and ignores the new body.
+- Inactive product: allowed for recording an order (the deal was already agreed). Soft-deleted product: rejected (400). ConversationStart requires an active, non-deleted product of that business (404 otherwise).
+- Non-participant -> 403. Another merchant's order or product -> 404/400 without revealing existence.
+- The customer serializers never expose internal_note, is_internal or the merchant user id; internal events are filtered in the queryset too.
+- Migrations: chat 0004_conversationproductinterest, orders 0001_initial. New tables only, no backfill, no existing table altered.
+- ConversationProductInterest is registered in the admin from orders/admin.py (read-only), not from chat/admin.py.
+
+**Known limits (from reading the code, not tested here):**
+- "Customer-only" is enforced by the queryset (customer == request.user), not by account_type.
+- OrderEvent is append-only at the model level; QuerySet.update/delete bypass it.
+- Analytics is not wired yet (only the constants exist). No notification and no WebSocket event is sent for orders.
+- Date filters use UTC calendar dates (TIME_ZONE = UTC).
+- conftest.py was modified in this part; see git diff.
+- config/urls.py shows 3 extra deleted/re-added lines in git diff: line endings only (CRLF -> LF) in the old payments/monetization lines. `git diff --ignore-space-at-eol` shows 3 insertions, 0 deletions.
+
+**Verification (REAL results, Docker, Postgres, 2026-11-14):**
+- manage.py check: System check identified no issues (0 silenced).
+- makemigrations --check --dry-run: No changes detected.
+- migrate: chat.0004_conversationproductinterest and orders.0001_initial applied OK.
+- Targeted tests (orders, chat/test_product_interest.py, test_message_order_field.py, test_start_by_business.py, test_shared_content.py, test_permission_sweep.py, test_consumers.py): 178 passed, 2 skipped in 205.16s.
+- Full suite (pytest -q .): 2214 passed, 3 skipped, 1 xfailed, 0 failed in 1226.36s (0:20:26). Previous recorded figure: 2115 passed, 1 skipped, 1 xfailed. The extra 2 skipped were NOT investigated.
+- flake8 orders chat config: only the old W292 in config/settings/prod.py and staging.py (listed under the P-116A known issues).
+- black --check orders chat config: only prod.py and staging.py would be reformatted (old). config/urls.py was reformatted by hand (one blank line removed) and is clean.
+- Not verified: behaviour on a real device / mobile client, and the deploy path (CI deploy runs only from develop/main).
+
+Tracking line: PART BI-01 COMPLETE (backend, 2026-11-14): chat product interest + merchant-recorded orders; full suite green (2214 passed); mobile client and deploy not verified; Analytics not wired yet.

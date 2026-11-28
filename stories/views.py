@@ -5,6 +5,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.pagination import StandardCursorPagination
+from monetization.permissions import HasActiveSubscription
+from monetization.quota import quota_guard
+from monetization.visibility import exclude_locked_businesses
 from stories.models import Story, StoryView
 from stories.serializers import StorySerializer
 
@@ -34,7 +37,7 @@ class StoryListCreateView(generics.ListCreateAPIView):
     """
 
     serializer_class = StorySerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveSubscription]
     pagination_class = StandardCursorPagination
 
     def get_queryset(self):
@@ -49,7 +52,8 @@ class StoryListCreateView(generics.ListCreateAPIView):
             raise PermissionDenied(
                 "Only an authenticated business account can create stories."
             )
-        serializer.save(business=business)
+        with quota_guard(business, serializer):
+            serializer.save(business=business)
 
 
 class StoryPublicListView(generics.ListAPIView):
@@ -86,20 +90,24 @@ class StoryPublicListView(generics.ListAPIView):
             status=Story.Status.PUBLISHED,
             expires_at__gt=timezone.now(),
         )
+        queryset = exclude_locked_businesses(queryset)
         business_id = self.request.query_params.get("business_id")
         if business_id is not None:
             queryset = queryset.filter(business_id=business_id)
         return queryset
 
 
-def _get_story_or_404(pk):
+def _get_story_or_404(pk, hide_locked=False):
     """
     Part P-049. Same DRF-NotFound-explicitly convention as
     content/views.py's _get_post_or_404 — a genuine 404 with the
     NOT_FOUND error code, not django.shortcuts.get_object_or_404's
     generic Http404.
     """
-    story = Story.objects.filter(pk=pk).first()
+    queryset = Story.objects.filter(pk=pk)
+    if hide_locked:
+        queryset = exclude_locked_businesses(queryset)
+    story = queryset.first()
     if story is None:
         raise NotFound("Story not found.")
     return story
@@ -127,7 +135,7 @@ class StoryViewRecordView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        story = _get_story_or_404(pk)
+        story = _get_story_or_404(pk, hide_locked=True)
         StoryView.objects.get_or_create(story=story, viewer=request.user)
         return Response(status=status.HTTP_200_OK)
 
@@ -150,7 +158,7 @@ class StoryViewCountView(APIView):
     literal accessor name this part's own spec calls out.
     """
 
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, HasActiveSubscription]
 
     def get(self, request, pk):
         story = _get_story_or_404(pk)

@@ -27,6 +27,7 @@ exists specifically to let anyone view a business's public profile.
 
 from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.utils import timezone
 from rest_framework.exceptions import NotFound
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.generics import RetrieveAPIView
@@ -36,6 +37,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.cache import cache_get_or_set
+from monetization.visibility import lock_state
 
 from . import services
 from .models import BusinessProfile, CustomerProfile
@@ -244,15 +246,35 @@ class BusinessProfilePublicView(RetrieveAPIView):
         # raise Http404 — both happen only inside _compute(), i.e.
         # only on a cache miss, exactly like an uncached view would.
         pk = self.kwargs["pk"]
+        # BE-06: a locked merchant's public page is hidden. Checked BEFORE
+        # the cache: the lock can start by date passing, which fires no
+        # signal that could invalidate a cached copy.
         cache_key = _business_profile_cache_key(pk)
+        lock_key = f"business_profile_lock_end:{pk}"
 
         def _compute():
+            # BE-06: a locked merchant's public page is hidden. The DB check
+            # runs only on a cache miss (a hit stays 0 queries, P-030); the
+            # moment the subscription will lock is cached next to the payload
+            # and compared with the clock on every read below.
+            locked, end = lock_state(pk)
+            if locked:
+                raise NotFound("Business not found.")
             instance = self.get_object()
-            return self.get_serializer(instance).data
+            data = self.get_serializer(instance).data
+            cache.set(
+                lock_key,
+                end.timestamp() if end else 0,
+                BUSINESS_PROFILE_CACHE_TTL_SECONDS + 60,
+            )
+            return data
 
         data = cache_get_or_set(
             cache_key, _compute, ttl_seconds=BUSINESS_PROFILE_CACHE_TTL_SECONDS
         )
+        end_ts = cache.get(lock_key)
+        if end_ts and timezone.now().timestamp() >= end_ts:
+            raise NotFound("Business not found.")
         return Response(data)
 
 

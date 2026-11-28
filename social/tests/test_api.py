@@ -21,6 +21,28 @@ from accounts.models import User
 from businesses.models import BusinessProfile
 from social.models import Follow
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.contrib.contenttypes.models import ContentType
+
+from content.models import Post, Reel
+from social.models import Like
+
+from categories.models import Category
+from products.models import Product
+
+from social.models import Save
+
+from moderation.models import Moderatable, ModerationQueue
+from social.models import Comment
+from social.serializers import COMMENT_MAX_LENGTH
+from django.contrib.auth.models import Group
+from social.models import Share
+
+from social.services import (
+    COMMENT_AUTO_HIDE_THRESHOLD,
+    check_and_hide_if_threshold_exceeded,
+)
+from social.views import ShareCreateView
+
 
 pytestmark = pytest.mark.django_db
 
@@ -200,12 +222,6 @@ class TestFollowConcurrency:
         assert Follow.objects.filter(follower=follower, business=business).count() == 1
         business.refresh_from_db()
         assert business.follower_count == 1
-
-
-from django.contrib.contenttypes.models import ContentType
-
-from content.models import Post, Reel
-from social.models import Like
 
 
 def _make_post(business=None):
@@ -425,12 +441,6 @@ class TestLikeConcurrency:
         )
         post.refresh_from_db()
         assert post.likes_count == 1
-
-
-from categories.models import Category
-from products.models import Product
-
-from social.models import Save
 
 
 def _make_category(name="Fashion"):
@@ -742,11 +752,6 @@ class TestSaveList:
         assert response.json()["results"] == []
 
 
-from moderation.models import Moderatable, ModerationQueue
-from social.models import Comment
-from social.serializers import COMMENT_MAX_LENGTH
-
-
 def _comments_url():
     return reverse("comments:collection")
 
@@ -938,14 +943,6 @@ class TestCommentCreate:
 
         assert response.status_code == 401
         assert Comment.objects.count() == 0
-
-
-from django.contrib.auth.models import Group
-
-from social.services import (
-    COMMENT_AUTO_HIDE_THRESHOLD,
-    check_and_hide_if_threshold_exceeded,
-)
 
 
 def _make_moderator(email):
@@ -1178,9 +1175,6 @@ class TestCommentCountConcurrency:
         assert Comment.objects.filter(object_id=post.pk).count() == 2
         post.refresh_from_db()
         assert post.comments_count == 2
-
-
-from social.models import Share
 
 
 def _shares_url():
@@ -1425,9 +1419,6 @@ class TestShareValidation:
     def test_get_is_not_allowed(self, api_client):
         client = self._authed(api_client, "p056-v10@example.com")
         assert client.get(_shares_url()).status_code == 405
-
-
-from social.views import ShareCreateView
 
 
 @pytest.mark.django_db(transaction=True)

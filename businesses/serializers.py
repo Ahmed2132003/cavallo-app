@@ -60,7 +60,9 @@ class BusinessProfileSerializer(serializers.ModelSerializer):
     # (P-087). Read-only, so a client can never write it. Public profile
     # and Search both use this serializer, so the Flutter "Featured"
     # badge gets its data from here.
-    is_featured = serializers.BooleanField(read_only=True)
+    # BE-10: the wire name stays `is_featured`; the value is the EFFECTIVE
+    # flag (manual Admin Featured OR ultra/infinity plan).
+    is_featured = serializers.BooleanField(source="is_featured_effective", read_only=True)
     # Profile photo URL (null when the business has none). READ-ONLY here: it
     # is written only through BusinessAvatarView (multipart), so the existing
     # JSON POST/PATCH /me/ contract is unchanged and a client can never set

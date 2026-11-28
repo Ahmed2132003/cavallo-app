@@ -48,6 +48,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from analytics.models import BusinessDailyStats
+from analytics.rollups import run_bi_rollups
 from businesses.models import BusinessProfile
 from content.models import Post, Reel
 from products.models import Product
@@ -151,6 +152,22 @@ def compute_daily_stats(target_date=None):
                 business.pk,
                 target_date,
             )
+
+    # Part BI-02: product / content rollups for the SAME day, inside the same
+    # task (no second task). Failure is logged and never touches the
+    # BusinessDailyStats results above. The return value below is unchanged
+    # on purpose (old callers/tests compare it exactly).
+    try:
+        bi_summary = run_bi_rollups(target_date)
+        logger.info(
+            "compute_daily_stats BI-02 rollups date=%s summary=%s",
+            target_date,
+            bi_summary,
+        )
+    except Exception:
+        logger.exception(
+            "compute_daily_stats BI-02 rollups failed for date=%s", target_date
+        )
 
     return {
         "date": target_date.isoformat(),

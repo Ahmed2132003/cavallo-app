@@ -16,3 +16,15 @@ class PaymentInitiateSerializer(serializers.Serializer):
     plan_id = serializers.PrimaryKeyRelatedField(
         queryset=Plan.objects.all(), source="plan"
     )
+
+
+class SubscriptionCheckoutSerializer(serializers.Serializer):
+    """
+    BE-07: body of POST subscriptions/checkout/. Only ``plan`` (a Plan
+    code) and ``gb`` are read; any amount/price/business field sent by
+    the client is not declared, so it is dropped. ``gb`` is validated by
+    payments.services.quote_storage_plan() (monetization.parse_gb).
+    """
+
+    plan = serializers.CharField(max_length=20)
+    gb = serializers.JSONField(required=False, allow_null=True)

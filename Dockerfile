@@ -10,6 +10,7 @@ WORKDIR /app
 # real libmagic C library, which isn't bundled in python:3.12-slim.
 # ffmpeg is Part P-042's requirement: real video transcoding + thumbnail
 # extraction for the Reel model's async pipeline (transcode_reel task).
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
@@ -17,7 +18,9 @@ RUN apt-get update \
         libmagic1 \
         ffmpeg \
         curl \
+        gettext \
     && rm -rf /var/lib/apt/lists/*
+
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

@@ -55,6 +55,10 @@ _EXCEPTION_CODE_MAP = {
     "conflict": "CONFLICT",
     # Part P-092: payment gateway down or unconfigured (HTTP 503).
     "service_unavailable": "SERVICE_UNAVAILABLE",
+    # Part BE-05: upload refused because the storage quota is full (403).
+    "storage_quota_exceeded": "STORAGE_QUOTA_EXCEEDED",
+    # Part BE-06: merchant subscription expired/locked (403).
+    "subscription_required": "SUBSCRIPTION_REQUIRED",
 }
 
 # Human-readable fallback messages, used only when the exception itself
@@ -86,6 +90,23 @@ class ConflictError(APIException):
     status_code = 409
     default_detail = "The request conflicts with the current state of the resource."
     default_code = "conflict"
+
+
+class StorageQuotaExceeded(APIException):
+    """
+    BE-05. HTTP 403, code "STORAGE_QUOTA_EXCEEDED". ``details`` (optional
+    dict) is returned as ``error.details`` in the envelope (additive: the
+    code/message/fields keys are unchanged). Raised only by
+    monetization.quota.ensure_quota_available().
+    """
+
+    status_code = 403
+    default_detail = "Your storage is full. Upgrade your plan to upload more."
+    default_code = "storage_quota_exceeded"
+
+    def __init__(self, detail=None, details=None, code=None):
+        super().__init__(detail=detail, code=code)
+        self.extra_details = details or {}
 
 
 def _extract_message(exc, code):
@@ -258,11 +279,13 @@ def custom_exception_handler(exc, context):
     message = _extract_message(exc, code)
     fields = _extract_fields(exc)
 
-    response.data = {
-        "error": {
-            "code": code,
-            "message": message,
-            "fields": fields,
-        }
+    error = {
+        "code": code,
+        "message": message,
+        "fields": fields,
     }
+    extra_details = getattr(exc, "extra_details", None)
+    if extra_details:
+        error["details"] = extra_details
+    response.data = {"error": error}
     return response

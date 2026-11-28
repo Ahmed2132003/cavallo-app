@@ -82,4 +82,11 @@ class RatingsListView(generics.ListAPIView):
         # `ordering` attribute), matching this queryset's plain
         # business filter - no extra .order_by() needed here since
         # Rating.Meta.ordering already defaults to the same "-created_at".
-        return Rating.objects.filter(business_id=self.kwargs["pk"])
+        # select_related: UserPublicSerializer reads the reviewer's
+        # business_profile / customer_profile, so load them in the same
+        # query (no N+1 per row).
+        return Rating.objects.filter(business_id=self.kwargs["pk"]).select_related(
+            "customer",
+            "customer__business_profile",
+            "customer__customer_profile",
+        )

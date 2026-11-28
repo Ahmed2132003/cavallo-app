@@ -220,8 +220,9 @@ class PostPublicSerializer(serializers.ModelSerializer):
     is_saved = serializers.SerializerMethodField()
     # Part P-110: resolved through the business join (P-087 design); no
     # is_featured column exists on Post. Views/feed use select_related.
+    # BE-10: reads the EFFECTIVE flag (manual Admin OR ultra/infinity plan).
     is_featured = serializers.BooleanField(
-        source="business.is_featured", read_only=True
+        source="business.is_featured_effective", read_only=True
     )
 
     class Meta:
@@ -274,8 +275,9 @@ class ReelPublicSerializer(serializers.ModelSerializer):
     is_liked = serializers.SerializerMethodField()
     is_saved = serializers.SerializerMethodField()
     # Part P-110: same join-based resolution as PostPublicSerializer.
+    # BE-10: reads the EFFECTIVE flag (manual Admin OR ultra/infinity plan).
     is_featured = serializers.BooleanField(
-        source="business.is_featured", read_only=True
+        source="business.is_featured_effective", read_only=True
     )
 
     class Meta:

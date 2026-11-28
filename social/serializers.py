@@ -8,6 +8,7 @@ that needs a real list representation.
 
 from rest_framework import serializers
 
+from accounts.serializers import UserPublicSerializer
 from .models import Comment, Save
 
 
@@ -87,12 +88,16 @@ class CommentSerializer(serializers.ModelSerializer):
     """
 
     content_type = serializers.SerializerMethodField()
+    # Part P-116A-2b: public info of the comment author. The bare `user` id
+    # stays as it is. Needs select_related(user, profiles) on the queryset.
+    user_public = UserPublicSerializer(source="user", read_only=True)
 
     class Meta:
         model = Comment
         fields = (
             "id",
             "user",
+            "user_public",
             "content_type",
             "object_id",
             "text",
